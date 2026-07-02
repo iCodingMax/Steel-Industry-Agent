@@ -1,0 +1,234 @@
+Channels:
+ - conda-forge
+ - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free
+ - defaults
+Platform: win-64
+Collecting package metadata (repodata.json): - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | done
+Solving environment: - \ | / - \ | / - \ done
+
+## Package Plan ##
+
+  environment location: D:\Anaconda\miniconda3
+
+  added / updated specs:
+    - python-jose
+
+
+The following packages will be downloaded:
+
+    package                    |            build
+    ---------------------------|-----------------
+    ecdsa-0.19.2               |     pyhd8ed1ab_0         126 KB  conda-forge
+    gmp-6.3.0                  |       hfeafd45_2         554 KB  conda-forge
+    gmpy2-2.3.0                |  py313hb6bface_1         185 KB  conda-forge
+    libgcc-15.2.0              |      h8ee18e1_19         803 KB  conda-forge
+    libgomp-15.2.0             |      h8ee18e1_19         649 KB  conda-forge
+    mpc-1.4.0                  |       hc817d3a_0         138 KB  conda-forge
+    mpfr-4.2.2                 |       h883a981_0         717 KB  conda-forge
+    python-jose-3.5.0          |     pyhff2d567_0          74 KB  conda-forge
+    ------------------------------------------------------------
+                                           Total:         3.2 MB
+
+The following NEW packages will be INSTALLED:
+
+  _openmp_mutex      conda-forge/win-64::_openmp_mutex-4.5-20_gnu 
+  ecdsa              conda-forge/noarch::ecdsa-0.19.2-pyhd8ed1ab_0 
+  gmp                conda-forge/win-64::gmp-6.3.0-hfeafd45_2 
+  gmpy2              conda-forge/win-64::gmpy2-2.3.0-py313hb6bface_1 
+  libgcc             conda-forge/win-64::libgcc-15.2.0-h8ee18e1_19 
+  libgomp            conda-forge/win-64::libgomp-15.2.0-h8ee18e1_19 
+  mpc                conda-forge/win-64::mpc-1.4.0-hc817d3a_0 
+  mpfr               conda-forge/win-64::mpfr-4.2.2-h883a981_0 
+  pyasn1             conda-forge/noarch::pyasn1-0.6.3-pyhcf101f3_0 
+  python-jose        conda-forge/noarch::python-jose-3.5.0-pyhff2d567_0 
+  rsa                conda-forge/noarch::rsa-4.9.1-pyhd8ed1ab_0 
+
+
+Proceed ([y]/n)? 
+
+Downloading and Extracting Packages: ...working...libgcc-15.2.0        | 803 KB    |            |   0% 
+mpfr-4.2.2           | 717 KB    |            |   0% [A
+
+libgomp-15.2.0       | 649 KB    |            |   0% [A[A
+
+
+gmp-6.3.0            | 554 KB    |            |   0% [A[A[A
+
+
+
+gmpy2-2.3.0          | 185 KB    |            |   0% [A[A[A[A
+
+
+
+
+mpc-1.4.0            | 138 KB    |            |   0% [A[A[A[A[A
+
+
+
+
+
+ecdsa-0.19.2         | 126 KB    |            |   0% [A[A[A[A[A[A
+
+
+
+
+
+
+python-jose-3.5.0    | 74 KB     |            |   0% [A[A[A[A[A[A[A
+
+libgomp-15.2.0       | 649 KB    | 2          |   2% [A[A
+
+
+
+gmpy2-2.3.0          | 185 KB    | 8          |   9% [A[A[A[A
+
+
+gmp-6.3.0            | 554 KB    | 2          |   3% [A[A[Alibgcc-15.2.0        | 803 KB    | 1          |   2% 
+mpfr-4.2.2           | 717 KB    | 2          |   2% [A
+
+libgomp-15.2.0       | 649 KB    | #9         |  20% [A[A
+
+
+
+gmpy2-2.3.0          | 185 KB    | ######9    |  69% [A[A[A[A
+
+
+gmp-6.3.0            | 554 KB    | ##         |  20% [A[A[A
+
+
+
+gmpy2-2.3.0          | 185 KB    | ########## | 100% [A[A[A[Alibgcc-15.2.0        | 803 KB    | #1         |  12% 
+mpfr-4.2.2           | 717 KB    | #1         |  11% [A
+
+
+
+gmpy2-2.3.0          | 185 KB    | ########## | 100% [A[A[A[A
+
+
+gmp-6.3.0            | 554 KB    | ###4       |  35% [A[A[A
+
+libgomp-15.2.0       | 649 KB    | ####6      |  47% [A[A
+
+
+
+
+mpc-1.4.0            | 138 KB    | #1         |  12% [A[A[A[A[Alibgcc-15.2.0        | 803 KB    | ##1        |  22% 
+mpfr-4.2.2           | 717 KB    | ##         |  20% [A
+
+libgomp-15.2.0       | 649 KB    | ######9    |  69% [A[A
+
+
+
+
+mpc-1.4.0            | 138 KB    | ########## | 100% [A[A[A[A[A
+
+
+
+
+mpc-1.4.0            | 138 KB    | ########## | 100% [A[A[A[A[A
+
+
+
+
+mpc-1.4.0            | 138 KB    | ########## | 100% [A[A[A[A[A
+
+
+gmp-6.3.0            | 554 KB    | ####9      |  49% [A[A[Alibgcc-15.2.0        | 803 KB    | ##9        |  30% 
+mpfr-4.2.2           | 717 KB    | ##9        |  29% [A
+
+libgomp-15.2.0       | 649 KB    | ########## | 100% [A[A
+
+
+
+
+
+ecdsa-0.19.2         | 126 KB    | #2         |  13% [A[A[A[A[A[A
+
+
+gmp-6.3.0            | 554 KB    | ######9    |  69% [A[A[A
+
+
+
+
+
+ecdsa-0.19.2         | 126 KB    | ########## | 100% [A[A[A[A[A[A
+mpfr-4.2.2           | 717 KB    | ###7       |  38% [Alibgcc-15.2.0        | 803 KB    | ####1      |  42% 
+
+libgomp-15.2.0       | 649 KB    | ########## | 100% [A[A
+
+libgomp-15.2.0       | 649 KB    | ########## | 100% [A[A
+
+
+
+
+
+
+python-jose-3.5.0    | 74 KB     | ##1        |  22% [A[A[A[A[A[A[A
+
+
+
+
+
+ecdsa-0.19.2         | 126 KB    | ########## | 100% [A[A[A[A[A[A
+
+
+
+
+
+
+python-jose-3.5.0    | 74 KB     | ########## | 100% [A[A[A[A[A[A[A
+
+
+gmp-6.3.0            | 554 KB    | #########2 |  92% [A[A[A
+
+
+gmp-6.3.0            | 554 KB    | ########## | 100% [A[A[A
+mpfr-4.2.2           | 717 KB    | ####9      |  49% [A
+
+
+
+
+
+
+python-jose-3.5.0    | 74 KB     | ########## | 100% [A[A[A[A[A[A[A
+
+
+gmp-6.3.0            | 554 KB    | ########## | 100% [A[A[Alibgcc-15.2.0        | 803 KB    | ####9      |  50% libgcc-15.2.0        | 803 KB    | #####9     |  60% 
+mpfr-4.2.2           | 717 KB    | #####8     |  58% [Alibgcc-15.2.0        | 803 KB    | ######9    |  70% 
+mpfr-4.2.2           | 717 KB    | ######6    |  67% [A
+mpfr-4.2.2           | 717 KB    | #######8   |  78% [Alibgcc-15.2.0        | 803 KB    | ########1  |  82% 
+mpfr-4.2.2           | 717 KB    | ########7  |  87% [Alibgcc-15.2.0        | 803 KB    | #########1 |  92% libgcc-15.2.0        | 803 KB    | ########## | 100% 
+mpfr-4.2.2           | 717 KB    | #########5 |  96% [A
+mpfr-4.2.2           | 717 KB    | ########## | 100% [A
+mpfr-4.2.2           | 717 KB    | ########## | 100% [Alibgcc-15.2.0        | 803 KB    | ########## | 100%                                                      
+                                                     [A
+
+                                                     [A[A
+
+
+                                                     [A[A[A
+
+
+
+                                                     [A[A[A[A
+
+
+
+
+                                                     [A[A[A[A[A
+
+
+
+
+
+                                                     [A[A[A[A[A[A
+
+
+
+
+
+
+                                                     [A[A[A[A[A[A[A done
+Preparing transaction: / done
+Verifying transaction: \ done
+Executing transaction: / - \ | / - \ | / - \ done

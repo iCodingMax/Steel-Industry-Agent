@@ -1,0 +1,9 @@
+Channels:
+ - conda-forge
+ - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free
+ - defaults
+Platform: win-64
+Collecting package metadata (repodata.json): - \ | / - \ failed
+终止批处理操作吗(Y/N)? 终止批处理操作吗(Y/N)? 
+终止批处理操作吗(Y/N)? 
+终止批处理操作吗(Y/N)? 

@@ -1,0 +1,42 @@
+Channels:
+ - conda-forge
+ - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free
+ - defaults
+Platform: win-64
+Collecting package metadata (repodata.json): - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ done
+Solving environment: / - \ | / - done
+
+## Package Plan ##
+
+  environment location: D:\Anaconda\miniconda3
+
+  added / updated specs:
+    - asyncpg
+
+
+The following packages will be downloaded:
+
+    package                    |            build
+    ---------------------------|-----------------
+    async-timeout-5.0.1        |     pyhcf101f3_2          13 KB  conda-forge
+    asyncpg-0.31.0             |  py313h5fd188c_1         618 KB  conda-forge
+    ------------------------------------------------------------
+                                           Total:         632 KB
+
+The following NEW packages will be INSTALLED:
+
+  async-timeout      conda-forge/noarch::async-timeout-5.0.1-pyhcf101f3_2 
+  asyncpg            conda-forge/win-64::asyncpg-0.31.0-py313h5fd188c_1 
+
+
+Proceed ([y]/n)? 
+
+Downloading and Extracting Packages: ...working...asyncpg-0.31.0       | 618 KB    |            |   0% 
+async-timeout-5.0.1  | 13 KB     |            |   0% [A
+async-timeout-5.0.1  | 13 KB     | ########## | 100% [A
+async-timeout-5.0.1  | 13 KB     | ########## | 100% [A
+async-timeout-5.0.1  | 13 KB     | ########## | 100% [Aasyncpg-0.31.0       | 618 KB    | 2          |   3% asyncpg-0.31.0       | 618 KB    | #          |  10% asyncpg-0.31.0       | 618 KB    | ##8        |  28% asyncpg-0.31.0       | 618 KB    | #####1     |  52% asyncpg-0.31.0       | 618 KB    | #########8 |  98% asyncpg-0.31.0       | 618 KB    | ########## | 100% asyncpg-0.31.0       | 618 KB    | ########## | 100%                                                      
+                                                     [A done
+Preparing transaction: | done
+Verifying transaction: - done
+Executing transaction: | / - \ | done
