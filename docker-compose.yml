@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: steel-agent-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-steelagent@2024}
+      MYSQL_DATABASE: ${MYSQL_DB:-steel_agent}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - steel-agent-net
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: steel-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-steelagent@2024}
+      POSTGRES_DB: ${PG_DB:-steel_agent_vector}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - steel-agent-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: steel-agent-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - steel-agent-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: steel-agent-backend
+    restart: unless-stopped
+    environment:
+      - ENV=production
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER:-root}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-steelagent@2024}
+      - MYSQL_DB=${MYSQL_DB:-steel_agent}
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=${PG_USER:-postgres}
+      - PG_PASSWORD=${PG_PASSWORD:-steelagent@2024}
+      - PG_DB=${PG_DB:-steel_agent_vector}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8000
+      - XINFERENCE_BASE_URL=${XINFERENCE_BASE_URL:-http://172.1.2.198:9997}
+      - XINFERENCE_EMBED_MODEL=${XINFERENCE_EMBED_MODEL:-bge-m3}
+      - XINFERENCE_RERANK_MODEL=${XINFERENCE_RERANK_MODEL:-bge-reranker-large}
+      - NEWAPI_BASE_URL=${NEWAPI_BASE_URL:-http://172.1.8.152:3000/v1}
+      - NEWAPI_API_KEY=${NEWAPI_API_KEY:-}
+      - NEWAPI_MODEL=${NEWAPI_MODEL:-glm-5.1-fp8}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-20480}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/.env:/app/.env:ro
+      - uploads_data:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - steel-agent-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: steel-agent-frontend
+    restart: unless-stopped
+    environment:
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - steel-agent-net
+
+volumes:
+  mysql_data:
+    driver: local
+  pg_data:
+    driver: local
+  redis_data:
+    driver: local
+  uploads_data:
+    driver: local
+
+networks:
+  steel-agent-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
