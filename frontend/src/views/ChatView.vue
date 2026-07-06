@@ -229,7 +229,7 @@
                 </div>
               </div>
 
-              <div class="message-bubble">
+              <div class="message-bubble" v-if="msg.content || !msg.isStreaming">
                 <div class="bubble-arrow"></div>
                 <div v-if="msg.isStreaming && !msg.content" class="typing-indicator">
                   <span></span>
@@ -569,13 +569,15 @@ function updateChartOption(msgId: string, columnMeta?: any[]) {
   } else {
     config.option = {
       tooltip: { trigger: 'axis' },
-      grid: { top: 40, right: 20, bottom: 40, left: 20, containLabel: true },
+      grid: { top: 40, right: 20, bottom: 60, left: 20, containLabel: true },
       xAxis: {
         type: 'category',
         name: xAxisName,
         data: xData,
-        axisLabel: { rotate: xData.length > 10 ? 45 : 0, fontSize: 11 },
-        nameTextStyle: { fontSize: 12, padding: [8, 0, 0, 0] },
+        axisLabel: { rotate: xData.length > 10 ? 45 : 0, fontSize: 11, interval: 0 },
+        nameTextStyle: { fontSize: 12, padding: [10, 0, 0, 0] },
+        nameLocation: 'middle',
+        nameGap: 30,
       },
       yAxis: {
         type: 'value',
@@ -768,14 +770,16 @@ watch(
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
     border-bottom: 1px solid #e2e8f0;
   }
 
   .sidebar-title {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
     color: #1e293b;
     margin: 0;
+    white-space: nowrap;
   }
 
   .new-chat-btn {
@@ -913,6 +917,8 @@ watch(
   display: flex;
   flex-direction: column;
   background-color: #f1f5f9;
+  min-width: 0;
+  overflow: hidden;
 
   .chat-header {
     padding: 16px 24px;
@@ -991,6 +997,7 @@ watch(
   .chat-messages {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 24px;
     background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
 
@@ -1073,6 +1080,8 @@ watch(
     .message-content {
       display: flex;
       max-width: 85%;
+      min-width: 0;
+      overflow: hidden;
       gap: 12px;
 
       &.user {
@@ -1090,9 +1099,10 @@ watch(
           display: flex;
           flex-direction: column;
           gap: 12px;
-          flex: 1;
+          flex: 0 1 auto;
           min-width: 0;
           max-width: 100%;
+          overflow: hidden;
           align-items: flex-end;
         }
 
@@ -1105,6 +1115,7 @@ watch(
           font-size: 14px;
           line-height: 1.7;
           word-break: break-word;
+          overflow-wrap: break-word;
           box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
           width: auto;
           max-width: 100%;
@@ -1138,8 +1149,8 @@ watch(
           gap: 12px;
           flex: 1;
           min-width: 0;
-          max-width: 100%;
-          align-items: flex-start;
+          align-items: stretch;
+          overflow: hidden;
         }
 
         .message-bubble {
@@ -1151,9 +1162,10 @@ watch(
           font-size: 14px;
           line-height: 1.7;
           word-break: break-word;
+          overflow-wrap: break-word;
+          overflow: hidden;
           box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
-          width: auto;
-          max-width: 100%;
+          width: 100%;
 
           .bubble-arrow {
             position: absolute;

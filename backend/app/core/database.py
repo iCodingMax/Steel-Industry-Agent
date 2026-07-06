@@ -107,7 +107,7 @@ async def _auto_add_columns(conn) -> None:
 
     def _add_missing_columns(sync_conn):
         inspector = inspect(sync_conn)
-        # 检查 messages 表是否缺少 data_result 列
+        # 检查 messages 表是否缺少新列
         if 'messages' in inspector.get_table_names():
             existing_cols = {col['name'] for col in inspector.get_columns('messages')}
             if 'data_result' not in existing_cols:
@@ -115,5 +115,20 @@ async def _auto_add_columns(conn) -> None:
                     "ALTER TABLE messages ADD COLUMN data_result JSON DEFAULT NULL COMMENT '查询结果数据(JSON)'"
                 ))
                 logger.info("已为 messages 表添加 data_result 列")
+            if 'column_meta' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE messages ADD COLUMN column_meta JSON DEFAULT NULL COMMENT '字段元信息(JSON)'"
+                ))
+                logger.info("已为 messages 表添加 column_meta 列")
+            if 'chart_type' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE messages ADD COLUMN chart_type VARCHAR(20) DEFAULT NULL COMMENT '推荐图表类型'"
+                ))
+                logger.info("已为 messages 表添加 chart_type 列")
+            if 'thinking_steps' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE messages ADD COLUMN thinking_steps JSON DEFAULT NULL COMMENT '思考过程步骤(JSON)'"
+                ))
+                logger.info("已为 messages 表添加 thinking_steps 列")
 
     await conn.run_sync(_add_missing_columns)

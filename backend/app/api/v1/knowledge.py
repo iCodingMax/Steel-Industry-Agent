@@ -10,7 +10,7 @@ import os
 import uuid
 
 from app.core.database import get_mysql_session
-from app.models.knowledge import Document
+from app.models.knowledge import Document, DocumentSegment
 from app.schemas.knowledge import (
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
@@ -197,6 +197,87 @@ async def delete_document(
     """删除文档"""
     await document_service.delete(db, doc_id)
     return success_response(message="删除成功")
+
+
+@router.get("/{kb_id}/documents/{doc_id}", summary="获取文档详情")
+async def get_document_detail(
+    kb_id: int,
+    doc_id: int,
+    db: AsyncSession = Depends(get_mysql_session),
+    user: User = Depends(get_current_user),
+):
+    """获取文档详情，包含统计信息"""
+    doc = await document_service.get_by_id(db, doc_id)
+    if not doc:
+        raise BusinessException(code=404, message="文档不存在")
+
+    # 统计分块信息
+    stmt = select(
+        func.count(DocumentSegment.id),
+        func.sum(func.length(DocumentSegment.content)),
+    ).where(DocumentSegment.document_id == doc_id)
+    result = await db.execute(stmt)
+    row = result.one()
+    segment_count = row[0] or 0
+    total_chars = row[1] or 0
+
+    doc_dict = doc.to_dict()
+    doc_dict["totalChars"] = total_chars
+    doc_dict["avgChunkChars"] = round(total_chars / segment_count, 1) if segment_count > 0 else 0
+
+    return success_response(data=doc_dict)
+
+
+@router.get("/{kb_id}/documents/{doc_id}/segments", summary="获取文档分块列表")
+async def get_document_segments(
+    kb_id: int,
+    doc_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    keyword: str = Query(None, description="搜索关键词"),
+    db: AsyncSession = Depends(get_mysql_session),
+    user: User = Depends(get_current_user),
+):
+    """获取文档分块列表，支持关键词搜索"""
+    # 基础查询
+    stmt = select(DocumentSegment).where(DocumentSegment.document_id == doc_id)
+
+    # 关键词搜索
+    if keyword:
+        stmt = stmt.where(DocumentSegment.content.like(f"%{keyword}%"))
+
+    # 统计总数
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar() or 0
+
+    # 分页查询
+    stmt = stmt.order_by(DocumentSegment.segment_index).offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    segments = list(result.scalars().all())
+
+    # 为每个分块添加字数统计
+    segment_list = []
+    for seg in segments:
+        seg_dict = seg.to_dict()
+        seg_dict["charCount"] = len(seg.content) if seg.content else 0
+        # 搜索时高亮截取摘要
+        if keyword and seg.content and keyword in seg.content:
+            idx = seg.content.find(keyword)
+            start = max(0, idx - 50)
+            end = min(len(seg.content), idx + len(keyword) + 50)
+            highlight = seg.content[start:end]
+            if start > 0:
+                highlight = "..." + highlight
+            if end < len(seg.content):
+                highlight = highlight + "..."
+            seg_dict["highlight"] = highlight
+        segment_list.append(seg_dict)
+
+    return success_response(data={
+        "total": total,
+        "segments": segment_list,
+    })
 
 
 @router.post("/{kb_id}/query", summary="知识问答")

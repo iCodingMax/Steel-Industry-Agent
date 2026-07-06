@@ -48,13 +48,20 @@
                 {{ formatDate(row.createdAt) }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="240" fixed="right">
+            <el-table-column label="操作" width="180" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="handleTestConn(row)">测试连接</el-button>
-                <el-button link type="primary" @click="handleViewSchema(row)">查看Schema</el-button>
                 <el-button link type="primary" @click="handleSyncSchema(row)">同步</el-button>
                 <el-button link type="primary" @click="handleEditDatasource(row)">编辑</el-button>
                 <el-button link type="danger" @click="handleDeleteDatasource(row)">删除</el-button>
+                <el-dropdown trigger="click">
+                  <el-button link type="primary">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item @click="handleTestConn(row)">测试连接</el-dropdown-item>
+                      <el-dropdown-item @click="handleViewSchema(row)">查看Schema</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </template>
             </el-table-column>
           </el-table>
@@ -396,7 +403,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { Plus, Search, Loading } from '@element-plus/icons-vue'
+import { Plus, Search, Loading, ArrowDown } from '@element-plus/icons-vue'
 import {
   getDatasources,
   createDatasource,

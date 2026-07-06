@@ -152,7 +152,6 @@ class SchemaLinkingEngine:
         # 构建Schema描述
         schema_desc = []
         for schema in schemas:
-            import json
             columns = json.loads(schema.columns) if schema.columns else []
             col_names = [col["name"] for col in columns]
             schema_desc.append(f"表 {schema.table_name}: {', '.join(col_names)}")
@@ -296,7 +295,6 @@ class NL2SQLEngine:
         # 构建Schema描述（包含字段注释，便于LLM生成中文别名）
         schema_desc = []
         for schema in schemas:
-            import json
             columns = json.loads(schema.columns) if schema.columns else []
             col_info = []
             for col in columns:
@@ -334,13 +332,24 @@ class NL2SQLEngine:
         """移除SQL中的时间过滤条件，用于重试查询"""
         import re
         new_sql = sql
-        new_sql = re.sub(r"\s+AND\s+[a-zA-Z_]+\s*>=?\s*['\"]\d{4}-\d{2}-\d{2}['\"]", "", new_sql, flags=re.IGNORECASE)
-        new_sql = re.sub(r"\s+AND\s+[a-zA-Z_]+\s*<=?\s*['\"]\d{4}-\d{2}-\d{2}['\"]", "", new_sql, flags=re.IGNORECASE)
-        new_sql = re.sub(r"\s+AND\s+[a-zA-Z_]+\s*>=?\s*['\"]\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}['\"]", "", new_sql, flags=re.IGNORECASE)
-        new_sql = re.sub(r"\s+WHERE\s+[a-zA-Z_]+\s*>=?\s*['\"]\d{4}-\d{2}-\d{2}['\"]", "", new_sql, flags=re.IGNORECASE)
-        new_sql = re.sub(r"\s+WHERE\s+[a-zA-Z_]+\s*<=?\s*['\"]\d{4}-\d{2}-\d{2}['\"]", "", new_sql, flags=re.IGNORECASE)
-        new_sql = new_sql.replace("WHERE  AND", "WHERE").replace("WHERE AND", "WHERE").strip()
-        new_sql = new_sql.replace("WHERE  ", "WHERE ").strip()
+
+        # 先移除 AND 连接的时间条件（不影响WHERE子句）
+        new_sql = re.sub(r"\s+AND\s+[a-zA-Z_]+\s*>=?\s*['\"]\d{4}-\d{2}-\d{2}(\s+\d{2}:\d{2}:\d{2})?['\"]", "", new_sql, flags=re.IGNORECASE)
+        new_sql = re.sub(r"\s+AND\s+[a-zA-Z_]+\s*<=?\s*['\"]\d{4}-\d{2}-\d{2}(\s+\d{2}:\d{2}:\d{2})?['\"]", "", new_sql, flags=re.IGNORECASE)
+
+        # 处理 WHERE + 时间条件：如果后面还有AND，将 WHERE xxx AND 替换为 WHERE
+        # 否则整行WHERE子句移除
+        new_sql = re.sub(r"\s+WHERE\s+[a-zA-Z_]+\s*>=?\s*['\"]\d{4}-\d{2}-\d{2}(\s+\d{2}:\d{2}:\d{2})?['\"]\s+AND\b", " WHERE", new_sql, flags=re.IGNORECASE)
+        new_sql = re.sub(r"\s+WHERE\s+[a-zA-Z_]+\s*<=?\s*['\"]\d{4}-\d{2}-\d{2}(\s+\d{2}:\d{2}:\d{2})?['\"]\s+AND\b", " WHERE", new_sql, flags=re.IGNORECASE)
+
+        # WHERE后只剩时间条件（没有其他AND条件），移除整个WHERE子句
+        new_sql = re.sub(r"\s+WHERE\s+[a-zA-Z_]+\s*>=?\s*['\"]\d{4}-\d{2}-\d{2}(\s+\d{2}:\d{2}:\d{2})?['\"]", "", new_sql, flags=re.IGNORECASE)
+        new_sql = re.sub(r"\s+WHERE\s+[a-zA-Z_]+\s*<=?\s*['\"]\d{4}-\d{2}-\d{2}(\s+\d{2}:\d{2}:\d{2})?['\"]", "", new_sql, flags=re.IGNORECASE)
+
+        # 清理残留
+        new_sql = new_sql.replace("WHERE  AND", "WHERE").replace("WHERE AND", "WHERE")
+        new_sql = new_sql.replace("WHERE  ", "WHERE ")
+        new_sql = " ".join(new_sql.split())
         return new_sql
 
     @staticmethod
@@ -419,6 +428,16 @@ class NL2SQLEngine:
         is_valid, error = SQLValidator.validate(sql, dialect)
         if not is_valid:
             return False, error, None, None
+
+        # 2.5 修正中文日期格式（如"2023年8月" → "2023-08-01"）
+        import re as _re
+        def fix_chinese_date(s: str) -> str:
+            # 匹配 "YYYY年MM月DD日" → "YYYY-MM-DD"（自动补零）
+            s = _re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", lambda m: f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", s)
+            # 匹配 "YYYY年MM月" → "YYYY-MM-01"（自动补零）
+            s = _re.sub(r"(\d{4})年(\d{1,2})月(?!\d)", lambda m: f"{m.group(1)}-{int(m.group(2)):02d}-01", s)
+            return s
+        sql = fix_chinese_date(sql)
 
         # 3. 获取字段注释（从INFORMATION_SCHEMA）
         column_meta = await NL2SQLEngine._fetch_column_meta(sql, datasource)

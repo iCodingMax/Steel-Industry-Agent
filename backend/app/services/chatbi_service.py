@@ -56,6 +56,14 @@ class ChatBIService:
         """
         start_time = time.time()
 
+        # 验证数据源可用性，不可用则自动fallback
+        if datasource_id:
+            ds_check = select(DataSource).where(DataSource.id == datasource_id, DataSource.status == "active")
+            ds_result = await db.execute(ds_check)
+            if not ds_result.scalar_one_or_none():
+                logger.warning(f"数据源ID={datasource_id}不存在或未激活，自动选择可用数据源")
+                datasource_id = None
+
         sql_traces = []
         results = None
         explanation = ""
@@ -69,7 +77,7 @@ class ChatBIService:
             if sql and matched_metric:
                 # NL2Metrics成功
                 datasource_id = matched_metric.datasource_id
-                ds_stmt = select(DataSource).where(DataSource.id == datasource_id)
+                ds_stmt = select(DataSource).where(DataSource.id == datasource_id, DataSource.status == "active")
                 ds_result = await db.execute(ds_stmt)
                 datasource = ds_result.scalar_one_or_none()
 
@@ -87,6 +95,9 @@ class ChatBIService:
                         })
                     else:
                         logger.warning(f"NL2Metrics SQL执行失败: {error}")
+                else:
+                    logger.warning(f"NL2Metrics匹配的数据源ID={datasource_id}不存在，重置为自动选择")
+                    datasource_id = None
 
             # 2. NL2Metrics失败，尝试NL2SQL兜底
             if results is None:

@@ -32,6 +32,10 @@ async def lifespan(app: FastAPI):
     async with MySQLAsyncSession() as db:
         await auth_service.init_default_admin(db)
 
+    # 自动初始化种子数据
+    from seed_data import seed
+    await seed()
+
     logger.success("系统启动成功!")
     yield
     logger.info("系统关闭中...")

@@ -160,11 +160,97 @@ class NL2MetricsEngine:
         # 基础SQL模板
         base_sql = metric.sql_expression
 
-        # 添加WHERE条件
-        where_clauses = []
+        # 从维度中分离日期维度和非日期维度
+        date_dims = []
+        other_dims = []
         for dim, value in dimensions:
-            # 根据维度类型构建条件，转义单引号防止SQL注入
-            safe_value = str(value).replace("'", "''")
+            if dim.data_type == "date" or dim.column_name.upper() in ("PRODUCE_DATE", "DATE", "CREATED_AT", "HEAT_DATE"):
+                date_dims.append((dim, value))
+            else:
+                other_dims.append((dim, value))
+
+        # 替换SQL模板变量（时间范围）
+        from datetime import datetime, timedelta
+        import re as _re
+
+        def fix_chinese_date(s: str) -> str:
+            """修正中文日期格式"""
+            s = _re.sub(r"(\d{4})年(\d{1,2})月(\d{1,2})日", lambda m: f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", s)
+            s = _re.sub(r"(\d{4})年(\d{1,2})月(?!\d)", lambda m: f"{m.group(1)}-{int(m.group(2)):02d}-01", s)
+            return s
+
+        def parse_date_value(val: str) -> tuple:
+            """解析用户输入的日期值，返回(start_date, end_date)
+            支持: 2024年10月, 2024年, 2024-10, 2024-10-01 等格式
+            """
+            val = val.strip()
+            # 优先匹配中文格式（避免先转成YYYY-MM-DD后误匹配）
+            # YYYY年MM月DD日
+            m = _re.match(r"^(\d{4})年(\d{1,2})月(\d{1,2})日$", val)
+            if m:
+                year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                start = f"{year}-{month:02d}-{day:02d}"
+                day += 1
+                if day > 28:
+                    return start, None  # 简单处理，回退
+                return start, f"{year}-{month:02d}-{day:02d}"
+            # YYYY年MM月
+            m = _re.match(r"^(\d{4})年(\d{1,2})月$", val)
+            if m:
+                year, month = int(m.group(1)), int(m.group(2))
+                if month == 12:
+                    return f"{year}-12-01", f"{year+1}-01-01"
+                else:
+                    return f"{year}-{month:02d}-01", f"{year}-{month+1:02d}-01"
+            # YYYY年
+            m = _re.match(r"^(\d{4})年$", val)
+            if m:
+                year = int(m.group(1))
+                return f"{year}-01-01", f"{year+1}-01-01"
+            # 再尝试标准格式
+            val = fix_chinese_date(val)
+            # YYYY-MM-DD
+            m = _re.match(r"^(\d{4})-(\d{2})-(\d{2})$", val)
+            if m:
+                return val, f"{m.group(1)}-{m.group(2)}-{str(int(m.group(3))+1).zfill(2)}" if int(m.group(3)) < 28 else None
+            # YYYY-MM
+            m = _re.match(r"^(\d{4})-(\d{2})$", val)
+            if m:
+                year, month = int(m.group(1)), int(m.group(2))
+                if month == 12:
+                    return f"{year}-12-01", f"{year+1}-01-01"
+                else:
+                    return f"{year}-{month:02d}-01", f"{year}-{month+1:02d}-01"
+            # YYYY
+            m = _re.match(r"^(\d{4})$", val)
+            if m:
+                return f"{m.group(1)}-01-01", f"{int(m.group(1))+1}-01-01"
+            return None, None
+
+        if date_dims:
+            # 用户指定了时间范围，用用户的时间替换模板默认值
+            _, date_val = date_dims[0]
+            start_date, end_date = parse_date_value(date_val)
+            if start_date and end_date:
+                base_sql = base_sql.replace("{start_date}", start_date).replace("{end_date}", end_date)
+            else:
+                # 解析失败，回退到精确匹配条件
+                base_sql = base_sql.replace("{start_date}", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")).replace("{end_date}", datetime.now().strftime("%Y-%m-%d"))
+                # 将日期维度作为普通条件追加
+                other_dims.extend(date_dims)
+        else:
+            # 没有用户指定时间，使用默认最近30天
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            base_sql = base_sql.replace("{start_date}", start_date).replace("{end_date}", end_date)
+
+        # 添加非日期维度的WHERE条件
+        where_clauses = []
+        for dim, value in other_dims:
+            # 修正中文日期格式
+            safe_value = fix_chinese_date(str(value))
+            # 转义单引号防止SQL注入
+            safe_value = safe_value.replace("'", "''")
             where_clauses.append(f"{dim.column_name} = '{safe_value}'")
 
         if where_clauses:

@@ -230,11 +230,20 @@ class KnowledgeQAService:
             if not references:
                 return "抱歉，未找到相关知识内容。", [], time.time() - start_time
 
-            # 2. 构建上下文
-            context_text = "\n\n".join([
-                f"【文档{i+1}】{ref.content}"
-                for i, ref in enumerate(references)
-            ])
+            # 2. 去重：内容相同的引用只保留第一个
+            seen_contents = set()
+            unique_refs = []
+            for ref in references:
+                content_key = ref.content.strip()
+                if content_key not in seen_contents:
+                    seen_contents.add(content_key)
+                    unique_refs.append(ref)
+
+            # 3. 构建上下文
+            context_parts = []
+            for i, ref in enumerate(unique_refs):
+                context_parts.append(f"【文档{i+1}】{ref.content}")
+            context_text = "\n\n".join(context_parts)
 
             # 3. 调用LLM生成回答
             from app.services.llm_service import llm_service
@@ -253,7 +262,7 @@ class KnowledgeQAService:
             query_time = time.time() - start_time
             logger.info(f"知识问答完成: 问题={query.question}, 耗时={query_time:.2f}s")
 
-            return answer, references, query_time
+            return answer, unique_refs, query_time
 
         except Exception as e:
             logger.error(f"知识问答失败: {e}")
