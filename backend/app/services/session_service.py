@@ -98,6 +98,7 @@ class MessageService:
         data_result: Optional[List[dict]] = None,
         column_meta: Optional[List[dict]] = None,
         chart_type: Optional[str] = None,
+        thinking_steps: Optional[List[dict]] = None,
         query_time: Optional[int] = None,
     ) -> Message:
         """创建消息"""
@@ -111,6 +112,7 @@ class MessageService:
             data_result=data_result,
             column_meta=column_meta,
             chart_type=chart_type,
+            thinking_steps=thinking_steps,
             query_time=query_time,
         )
         db.add(message)

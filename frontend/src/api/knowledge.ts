@@ -86,6 +86,40 @@ export function deleteDocument(kbId: number, docId: number) {
   return request.delete(`/knowledge-bases/${kbId}/documents/${docId}`)
 }
 
+export interface DocumentDetail extends Document {
+  totalChars: number
+  avgChunkChars: number
+}
+
+export interface DocumentSegment {
+  id: number
+  documentId: number
+  knowledgeBaseId: number
+  content: string
+  segmentIndex: number
+  startChar?: number
+  endChar?: number
+  metadata: any
+  charCount: number
+  highlight?: string
+  createdAt: string
+}
+
+export function getDocumentDetail(kbId: number, docId: number) {
+  return request.get<DocumentDetail>(`/knowledge-bases/${kbId}/documents/${docId}`)
+}
+
+export function getDocumentSegments(
+  kbId: number,
+  docId: number,
+  params?: { skip?: number; limit?: number; keyword?: string }
+) {
+  return request.get<{ total: number; segments: DocumentSegment[] }>(
+    `/knowledge-bases/${kbId}/documents/${docId}/segments`,
+    { params }
+  )
+}
+
 export function buildIndex(kbId: number) {
   return request.post<{ indexedDocuments: number }>(`/knowledge-bases/${kbId}/build-index`)
 }

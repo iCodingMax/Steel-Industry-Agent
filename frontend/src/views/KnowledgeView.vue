@@ -42,6 +42,91 @@
       </div>
     </div>
 
+    <div v-else-if="currentDoc" class="doc-detail-view">
+      <div class="page-header">
+        <div class="header-left">
+          <el-button text @click="backToDocList">
+            <el-icon><ArrowLeft /></el-icon>
+            返回文档列表
+          </el-button>
+          <h2 class="page-title">{{ currentDoc.fileName }}</h2>
+          <el-tag size="small" style="margin-left: 8px">{{ currentDoc.fileType?.toUpperCase() }}</el-tag>
+          <el-tag :type="docStatusType[currentDoc.status]" effect="plain" size="small" style="margin-left: 4px">
+            {{ docStatusText[currentDoc.status] || currentDoc.status }}
+          </el-tag>
+        </div>
+      </div>
+
+      <div class="doc-stats">
+        <div class="stat-card">
+          <div class="stat-value">{{ currentDoc.segmentCount }}</div>
+          <div class="stat-label">分块数量</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ currentDoc.totalChars?.toLocaleString() }}</div>
+          <div class="stat-label">总字数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ currentDoc.avgChunkChars }}</div>
+          <div class="stat-label">平均分块字数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ formatFileSize(currentDoc.fileSize) }}</div>
+          <div class="stat-label">文件大小</div>
+        </div>
+      </div>
+
+      <div class="segment-toolbar">
+        <el-input
+          v-model="segmentKeyword"
+          placeholder="搜索分块内容..."
+          style="width: 300px"
+          clearable
+          @keyup.enter="handleSegmentSearch"
+          @clear="handleSegmentSearch"
+        >
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+        <el-button type="primary" @click="handleSegmentSearch">
+          <el-icon><Search /></el-icon>
+          搜索
+        </el-button>
+        <span class="segment-total" v-if="segmentKeyword.trim()">
+          找到 {{ segmentTotal }} 个匹配分块
+        </span>
+      </div>
+
+      <div class="segment-list" v-loading="loadingSegments">
+        <div v-for="seg in docSegments" :key="seg.id" class="segment-card">
+          <div class="segment-header">
+            <span class="segment-index">分块 #{{ seg.segmentIndex + 1 }}</span>
+            <span class="segment-chars">{{ seg.charCount }} 字</span>
+            <span class="segment-range" v-if="seg.startChar != null && seg.endChar != null">
+              字符位置: {{ seg.startChar }} - {{ seg.endChar }}
+            </span>
+          </div>
+          <div class="segment-content" v-if="seg.highlight">
+            <span v-html="seg.highlight"></span>
+          </div>
+          <div class="segment-content" v-else>{{ seg.content }}</div>
+        </div>
+
+        <el-empty v-if="!loadingSegments && docSegments.length === 0" description="暂无分块数据" />
+      </div>
+
+      <div class="segment-pagination" v-if="segmentTotal > segmentPageSize">
+        <el-pagination
+          v-model:current-page="segmentPage"
+          :page-size="segmentPageSize"
+          :total="segmentTotal"
+          layout="prev, pager, next"
+          @current-change="handleSegmentPageChange"
+        />
+      </div>
+    </div>
+
     <div v-else class="kb-detail-view">
       <div class="page-header">
         <div class="header-left">
@@ -79,7 +164,11 @@
           </div>
 
           <el-table :data="filteredDocuments" style="width: 100%" v-loading="loadingDocs">
-            <el-table-column prop="fileName" label="文件名" min-width="200" />
+            <el-table-column prop="fileName" label="文件名" min-width="200">
+              <template #default="{ row }">
+                <el-link type="primary" @click="handleViewDoc(row)">{{ row.fileName }}</el-link>
+              </template>
+            </el-table-column>
             <el-table-column prop="fileType" label="类型" width="100">
               <template #default="{ row }">
                 <el-tag size="small">{{ row.fileType?.toUpperCase() }}</el-tag>
@@ -182,7 +271,7 @@ import {
   Search,
   RefreshRight,
 } from '@element-plus/icons-vue'
-import { getKnowledgeBases, createKnowledgeBase, getDocuments, uploadDocument, deleteDocument, buildIndex, updateKnowledgeBase, type KnowledgeBase } from '@/api/knowledge'
+import { getKnowledgeBases, createKnowledgeBase, getDocuments, uploadDocument, deleteDocument, buildIndex, updateKnowledgeBase, getDocumentDetail, getDocumentSegments, type KnowledgeBase, type DocumentDetail, type DocumentSegment } from '@/api/knowledge'
 
 const dialogVisible = ref(false)
 const loadingDocs = ref(false)
@@ -211,6 +300,14 @@ const kbSettings = reactive({
 
 const knowledgeBases = ref<KnowledgeBase[]>([])
 
+// 文档详情相关
+const currentDoc = ref<DocumentDetail | null>(null)
+const docSegments = ref<DocumentSegment[]>([])
+const segmentTotal = ref(0)
+const segmentKeyword = ref('')
+const segmentPage = ref(1)
+const segmentPageSize = ref(20)
+const loadingSegments = ref(false)
 const statusText: Record<string, string> = {
   ready: '已就绪',
   building: '构建中',
@@ -310,7 +407,61 @@ async function handleDetail(kb: KnowledgeBase) {
 
 function backToList() {
   currentKB.value = null
+  currentDoc.value = null
   loadKnowledgeBases()
+}
+
+async function handleViewDoc(doc: any) {
+  if (!currentKB.value) return
+  try {
+    const res = await getDocumentDetail(currentKB.value.id, doc.id) as any
+    if (res.code === 0 && res.data) {
+      currentDoc.value = res.data
+      segmentKeyword.value = ''
+      segmentPage.value = 1
+      await loadSegments()
+    }
+  } catch (e) {
+    ElMessage.error('获取文档详情失败')
+  }
+}
+
+function backToDocList() {
+  currentDoc.value = null
+  docSegments.value = []
+}
+
+async function loadSegments() {
+  if (!currentKB.value || !currentDoc.value) return
+  loadingSegments.value = true
+  try {
+    const params: any = {
+      skip: (segmentPage.value - 1) * segmentPageSize.value,
+      limit: segmentPageSize.value,
+    }
+    if (segmentKeyword.value.trim()) {
+      params.keyword = segmentKeyword.value.trim()
+    }
+    const res = await getDocumentSegments(currentKB.value.id, currentDoc.value.id, params) as any
+    if (res.code === 0 && res.data) {
+      docSegments.value = res.data.segments || []
+      segmentTotal.value = res.data.total || 0
+    }
+  } catch (e) {
+    console.error('加载分块列表失败', e)
+  } finally {
+    loadingSegments.value = false
+  }
+}
+
+function handleSegmentSearch() {
+  segmentPage.value = 1
+  loadSegments()
+}
+
+function handleSegmentPageChange(page: number) {
+  segmentPage.value = page
+  loadSegments()
 }
 
 function handleUpload() {
@@ -409,15 +560,125 @@ onMounted(() => {
   .header-left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
+  }
+
+  .page-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #1e293b;
+    margin: 0;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
   }
 }
 
-.page-title {
-  font-size: 20px;
-  font-weight: 600;
-  color: $text-primary;
-  margin: 0;
+// 文档详情统计卡片
+.doc-stats {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+
+  .stat-card {
+    flex: 1;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: #3b82f6;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 13px;
+      color: #64748b;
+    }
+  }
+}
+
+// 分块搜索工具栏
+.segment-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+
+  .segment-total {
+    font-size: 13px;
+    color: #64748b;
+  }
+}
+
+// 分块列表
+.segment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.segment-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+
+  .segment-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+
+    .segment-index {
+      font-size: 13px;
+      font-weight: 600;
+      color: #3b82f6;
+      background: #eff6ff;
+      padding: 2px 10px;
+      border-radius: 6px;
+    }
+
+    .segment-chars {
+      font-size: 12px;
+      color: #64748b;
+      background: #f1f5f9;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .segment-range {
+      font-size: 12px;
+      color: #94a3b8;
+    }
+  }
+
+  .segment-content {
+    font-size: 13px;
+    color: #475569;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+}
+
+.segment-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
 }
 
 .kb-grid {
@@ -558,8 +819,9 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
-.header-actions {
+.doc-detail-view {
+  height: 100%;
   display: flex;
-  gap: 8px;
+  flex-direction: column;
 }
 </style>

@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     MYSQL_PASSWORD: str = ""
     MYSQL_DB: str = "steel_agent"
 
+    # 业务数据库（钢铁生产数据，与系统库分开）
+    BUSINESS_DB_HOST: str = ""
+    BUSINESS_DB_PORT: int = 0
+    BUSINESS_DB_USER: str = ""
+    BUSINESS_DB_PASSWORD: str = ""
+    BUSINESS_DB_NAME: str = "steel_test"
+
     PG_HOST: str = "localhost"
     PG_PORT: int = 5432
     PG_USER: str = "postgres"

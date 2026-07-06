@@ -49,6 +49,7 @@ class Message(Base):
     data_result = Column(JSON, nullable=True, comment="查询结果数据(JSON)")
     column_meta = Column(JSON, nullable=True, comment="字段元信息(JSON)")
     chart_type = Column(String(20), nullable=True, comment="推荐图表类型")
+    thinking_steps = Column(JSON, nullable=True, comment="思考过程步骤(JSON)")
     query_time = Column(Integer, nullable=True, comment="查询耗时(毫秒)")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
 
@@ -65,6 +66,7 @@ class Message(Base):
             "dataResult": self.data_result,
             "columnMeta": self.column_meta,
             "chartType": self.chart_type,
+            "thinkingSteps": self.thinking_steps,
             "queryTime": self.query_time,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
         }

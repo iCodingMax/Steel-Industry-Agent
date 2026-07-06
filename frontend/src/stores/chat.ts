@@ -108,7 +108,7 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role,
           content: m.content,
           timestamp: new Date(m.createdAt),
-          type: m.intent === 'data' ? 'data' : 'text',
+          type: (m.intent === 'data' || m.intent === 'hybrid') && m.dataResult ? 'data' : 'text',
           isStreaming: false,
           references: m.references,
           sqlTraces: m.sqlTraces,
@@ -117,6 +117,7 @@ export const useChatStore = defineStore('chat', () => {
           chartType: (m as any).chartType,
           queryTime: m.queryTime,
           intent: m.intent,
+          thinkingSteps: (m as any).thinkingSteps || [],
         }))
       }
     } catch (e) {

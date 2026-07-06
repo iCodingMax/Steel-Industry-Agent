@@ -44,7 +44,7 @@ class LLMService:
             messages.append({"role": "user", "content": prompt})
 
             import json
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
                     f"{self.base_url}/v1/chat/completions",
                     headers={
@@ -74,7 +74,7 @@ class LLMService:
             raise Exception(f"大模型服务连接失败: 请检查 {self.base_url} 是否可访问")
         except httpx.TimeoutException as e:
             logger.error(f"LLM调用超时: {e}")
-            raise Exception(f"大模型调用超时(60s): 请检查模型服务状态或网络连接")
+            raise Exception(f"大模型调用超时(120s): 请检查模型服务状态或网络连接")
         except KeyError as e:
             logger.error(f"LLM返回格式异常: {e}, raw_data={data if 'data' in dir() else 'N/A'}")
             raise Exception(f"大模型返回格式异常: {str(e)}")
@@ -168,9 +168,21 @@ class LLMService:
         default_prompt = """你是一个意图分类助手，请根据用户问题判断其意图类型。
 
 分类规则：
-- knowledge: 用户询问工艺知识、技术规范、操作规程等文档类问题
-- data: 用户查询生产数据、指标数值、统计报表等数据类问题
-- hybrid: 用户问题同时涉及知识查询和数据查询
+- knowledge: 用户仅询问工艺知识、技术规范、操作规程、概念解释等文档类问题
+- data: 用户仅查询生产数据、指标数值、统计报表、图表展示等数据类问题
+- hybrid: 用户问题同时包含知识查询和数据查询两部分意图
+
+判断要点：
+- 如果问题中出现"展示"、"查询"、"统计"、"次数"、"数量"等数据相关关键词，同时出现"解释"、"什么是"、"原理"等知识相关关键词，则属于hybrid
+- 包含"并且"、"同时"、"另外"、"以及"等连接词连接不同类型的问题时，通常属于hybrid
+- 只要问题中有一部分涉及数据查询，另一部分涉及知识问答，就是hybrid
+
+示例：
+- "高炉炼铁的还原过程是什么" → knowledge
+- "展示2023年8月的每日吹炼次数" → data
+- "展示2023年8月的每日吹炼次数，并且解释什么是高炉炼铁的还原过程" → hybrid
+- "转炉炼钢的吹炼制度有哪些？上个月吹炼次数是多少" → hybrid
+- "什么是铁水预处理？同时统计一下近一周的钢水产量" → hybrid
 
 请直接返回分类结果（knowledge/data/hybrid），不要返回其他内容。"""
 
