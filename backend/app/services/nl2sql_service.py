@@ -215,7 +215,7 @@ class NL2SQLEngine:
         
         return f"""你是一个钢铁行业数据分析SQL专家。请根据用户问题和数据库Schema，生成一个MySQL SELECT查询语句。
 
-数据库Schema（DDL格式）：
+数据库Schema（DDL格式，字段注释即中文名称）：
 {schema_text}
 {term_text}
 
@@ -228,7 +228,9 @@ class NL2SQLEngine:
 4. 如果表中存在时间相关字段（如produce_date、create_time、update_time、date等），默认添加最近一周的数据过滤：
    时间字段 >= '{one_week_ago.strftime("%Y-%m-%d")}'
 5. 限制返回行数不超过{NL2SQLEngine.MAX_ROWS}行（使用LIMIT）
-6. 只返回纯SQL语句，不要包含markdown代码块标记或解释文字
+6. 为每个查询字段和聚合结果添加中文别名（AS子句），别名优先使用字段COMMENT中的中文名称；聚合函数使用语义化中文别名，如SUM(BLOW_COUNT) AS 总吹炼次数
+7. ORDER BY子句中也使用中文别名排序
+8. 只返回纯SQL语句，不要包含markdown代码块标记或解释文字
 
 请直接返回SQL语句："""
 
@@ -291,14 +293,19 @@ class NL2SQLEngine:
             if s.table_name not in NL2SQLEngine.SYSTEM_TABLES
         ]
 
-        # 构建Schema描述
+        # 构建Schema描述（包含字段注释，便于LLM生成中文别名）
         schema_desc = []
         for schema in schemas:
             import json
             columns = json.loads(schema.columns) if schema.columns else []
             col_info = []
             for col in columns:
-                col_info.append(f"{col['name']}({col['type']})")
+                col_type = col['type']
+                col_comment = col.get('comment', '') or col.get('remarks', '') or ''
+                if col_comment:
+                    col_info.append(f"{col['name']}({col_type}) COMMENT '{col_comment}'")
+                else:
+                    col_info.append(f"{col['name']}({col_type})")
             schema_desc.append(f"CREATE TABLE {schema.table_name} ({', '.join(col_info)})")
 
         schema_text = "\n".join(schema_desc)

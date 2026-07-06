@@ -27,6 +27,8 @@ class ChatBIResponse(BaseModel):
     data: Optional[List[dict]]
     sqlTraces: List[dict]
     queryTime: float
+    columnMeta: Optional[List[dict]] = None
+    chartType: Optional[str] = None
 
 
 @router.post("/query", summary="智能问数")
@@ -36,7 +38,7 @@ async def query_data(
     user: User = Depends(get_current_user),
 ):
     """智能问数查询"""
-    explanation, results, sql_traces, query_time, _ = await chatbi_service.query(
+    explanation, results, sql_traces, query_time, _, column_meta, chart_type = await chatbi_service.query(
         db,
         data.question,
         data.datasourceId,
@@ -47,5 +49,7 @@ async def query_data(
         data=results,
         sqlTraces=sql_traces,
         queryTime=query_time,
+        columnMeta=column_meta,
+        chartType=chart_type,
     )
     return success_response(data=response)
