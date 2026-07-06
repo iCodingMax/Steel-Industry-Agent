@@ -40,14 +40,14 @@ class RouterService:
         question: str,
         knowledge_base_id: Optional[int] = None,
         datasource_id: Optional[int] = None,
-    ) -> Tuple[str, List[dict], List[dict], float]:
+    ) -> Tuple[str, List[dict], List[dict], float, Optional[List[dict]], Optional[str]]:
         """
         路由分发
         :param db: 数据库会话
         :param question: 用户问题
         :param knowledge_base_id: 知识库ID
         :param datasource_id: 数据源ID
-        :return: (回答内容, 知识引用, SQL溯源, 查询耗时)
+        :return: (回答内容, 知识引用, SQL溯源, 查询耗时, 字段元信息, 推荐图表类型)
         """
         start_time = time.time()
 
@@ -57,6 +57,8 @@ class RouterService:
         references = []
         sql_traces = []
         answer = ""
+        column_meta = None
+        chart_type = None
 
         try:
             if intent == "knowledge":
@@ -81,7 +83,7 @@ class RouterService:
 
             elif intent == "data":
                 # 数据查询通道
-                explanation, results, traces, query_time = await chatbi_service.query(
+                explanation, results, traces, query_time, _, column_meta, chart_type = await chatbi_service.query(
                     db, question, datasource_id
                 )
                 answer = explanation
@@ -105,7 +107,7 @@ class RouterService:
                         references = [ref.model_dump() for ref in refs]
 
                 # 再执行数据查询
-                explanation, results, traces, _ = await chatbi_service.query(
+                explanation, results, traces, _, _, column_meta, chart_type = await chatbi_service.query(
                     db, question, datasource_id
                 )
                 sql_traces = traces
@@ -127,11 +129,11 @@ class RouterService:
             query_time = time.time() - start_time
             logger.info(f"路由分发完成: 意图={intent}, 耗时={query_time:.2f}s")
 
-            return answer, references, sql_traces, query_time
+            return answer, references, sql_traces, query_time, column_meta, chart_type
 
         except Exception as e:
             logger.error(f"路由分发失败: {e}")
-            return f"处理失败: {str(e)}", [], [], time.time() - start_time
+            return f"处理失败: {str(e)}", [], [], time.time() - start_time, None, None
 
 
 # 服务实例

@@ -48,6 +48,8 @@ class ChatResponse(BaseModel):
     references: List[dict]
     sqlTraces: List[dict]
     queryTime: int
+    columnMeta: Optional[List[dict]] = None
+    chartType: Optional[str] = None
 
 
 @router.get("", summary="获取会话列表")
@@ -149,7 +151,7 @@ async def send_message(
     )
 
     # 调用路由分发
-    answer, references, sql_traces, query_time = await router_service.route(
+    answer, references, sql_traces, query_time, column_meta, chart_type = await router_service.route(
         db,
         data.question,
         data.knowledgeBaseId,
@@ -175,6 +177,8 @@ async def send_message(
         references=references,
         sqlTraces=sql_traces,
         queryTime=int(query_time * 1000),
+        columnMeta=column_meta,
+        chartType=chart_type,
     )
 
     return success_response(data=response)
@@ -331,7 +335,7 @@ async def stream_chat(
                 yield f"data: {json.dumps({'type': 'content', 'content': '正在分析您的问题...'})}\n\n"
 
                 # 简化处理
-                answer, references, sql_traces, query_time = await router_service.route(
+                answer, references, sql_traces, query_time, column_meta, chart_type = await router_service.route(
                     db,
                     data.question,
                     data.knowledgeBaseId,

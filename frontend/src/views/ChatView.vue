@@ -245,6 +245,10 @@
               <div v-if="msg.sqlTraces && msg.sqlTraces.length > 0" class="sql-section">
                 <div class="section-header">
                   <span>SQL查询</span>
+                  <el-button text size="small" class="sql-copy-btn" @click="copySql(msg.sqlTraces[0].sql)">
+                    <el-icon><CopyDocument /></el-icon>
+                    复制
+                  </el-button>
                 </div>
                 <div class="sql-content">
                   <pre class="sql-code">{{ msg.sqlTraces[0].sql }}</pre>
@@ -384,6 +388,7 @@ import {
   Delete,
   Reading,
   Collection,
+  CopyDocument,
 } from '@element-plus/icons-vue'
 import { getKnowledgeBases } from '@/api/knowledge'
 import { getDatasources } from '@/api/datasource'
@@ -625,6 +630,14 @@ function scrollToBottom() {
   if (messagesRef.value) {
     messagesRef.value.scrollTop = messagesRef.value.scrollHeight
   }
+}
+
+function copySql(sql: string) {
+  navigator.clipboard.writeText(sql).then(() => {
+    ElMessage.success('SQL已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败，请手动复制')
+  })
 }
 
 async function loadKnowledgeBases() {
@@ -1422,6 +1435,17 @@ watch(
             font-size: 13px;
             font-weight: 600;
             color: #f1f5f9;
+          }
+
+          .sql-copy-btn {
+            margin-left: auto;
+            color: #94a3b8;
+            font-size: 12px;
+            gap: 4px;
+
+            &:hover {
+              color: #e2e8f0;
+            }
           }
         }
 

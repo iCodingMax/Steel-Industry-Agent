@@ -163,11 +163,9 @@ class NL2MetricsEngine:
         # 添加WHERE条件
         where_clauses = []
         for dim, value in dimensions:
-            # 根据维度类型构建条件
-            if dim.hierarchy_level:
-                where_clauses.append(f"{dim.column_name} = '{value}'")
-            else:
-                where_clauses.append(f"{dim.column_name} = '{value}'")
+            # 根据维度类型构建条件，转义单引号防止SQL注入
+            safe_value = str(value).replace("'", "''")
+            where_clauses.append(f"{dim.column_name} = '{safe_value}'")
 
         if where_clauses:
             if "WHERE" in base_sql.upper():
