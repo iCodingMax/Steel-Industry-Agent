@@ -1,11 +1,11 @@
-"""
+﻿"""
 数据源API
 """
 from typing import List
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.schemas.datasource import (
     DataSourceCreate,
     DataSourceUpdate,
@@ -25,7 +25,7 @@ router = APIRouter()
 async def list_datasources(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取所有数据源"""
@@ -36,7 +36,7 @@ async def list_datasources(
 @router.get("/{ds_id}", summary="获取数据源详情")
 async def get_datasource(
     ds_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """根据ID获取数据源"""
@@ -49,7 +49,7 @@ async def get_datasource(
 @router.post("", summary="创建数据源")
 async def create_datasource(
     data: DataSourceCreate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """创建新数据源"""
@@ -61,7 +61,7 @@ async def create_datasource(
 async def update_datasource(
     ds_id: int,
     data: DataSourceUpdate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """更新数据源"""
@@ -74,7 +74,7 @@ async def update_datasource(
 @router.delete("/{ds_id}", summary="删除数据源")
 async def delete_datasource(
     ds_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """删除数据源"""
@@ -85,7 +85,7 @@ async def delete_datasource(
 @router.post("/test-connection", summary="测试连接")
 async def test_connection(
     data: TestConnectionRequest,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """测试数据库连接"""
@@ -98,7 +98,7 @@ async def test_connection(
 @router.post("/{ds_id}/sync-schema", summary="同步表结构")
 async def sync_schema(
     ds_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """同步数据源表结构"""
@@ -109,7 +109,7 @@ async def sync_schema(
 @router.get("/{ds_id}/schema", summary="获取表结构")
 async def get_schema(
     ds_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取数据源表结构"""

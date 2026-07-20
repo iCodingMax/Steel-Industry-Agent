@@ -1,4 +1,4 @@
-"""
+﻿"""
 审计日志API
 功能：审计日志列表查询、统计汇总、从现有业务表自动采集
 """
@@ -9,7 +9,7 @@ from sqlalchemy import select, func, and_
 from pydantic import BaseModel
 from datetime import datetime
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.models.knowledge import KnowledgeBase, Document
@@ -25,7 +25,7 @@ router = APIRouter()
 async def get_audit_stats(
     start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取审计日志统计概览"""
@@ -95,7 +95,7 @@ async def list_audit_logs(
     start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
     keyword: Optional[str] = Query(None, description="关键词搜索"),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取审计日志列表（支持多维度筛选）"""
@@ -143,7 +143,7 @@ async def list_audit_logs(
 
 @router.post("/collect", summary="从现有业务数据采集审计日志")
 async def collect_audit_logs(
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """从现有业务表中采集审计日志（初始化用）"""

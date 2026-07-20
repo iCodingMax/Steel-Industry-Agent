@@ -17,7 +17,7 @@ import os
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.core.database import MySQLAsyncSession, init_db
+from app.core.database import SystemAsyncSession, init_db
 from app.core.config import settings
 from app.models.datasource import DataSource
 from app.models.metric import Metric
@@ -494,7 +494,7 @@ async def seed():
     # 初始化数据库表
     await init_db()
 
-    async with MySQLAsyncSession() as db:
+    async with SystemAsyncSession() as db:
         # 1. 确保唯一数据源存在且密码正确
         # 查找任何现有数据源（名称可能不同，但应该是唯一的业务数据源）
         all_ds_result = await db.execute(select(DataSource))

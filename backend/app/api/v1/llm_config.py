@@ -1,11 +1,11 @@
-"""
+﻿"""
 大模型配置API
 """
 from typing import List
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.schemas.llm_config import LLMConfigCreate, LLMConfigUpdate, LLMConfigResponse
 from app.services.llm_config_service import llm_config_service
 from app.middlewares.exception_handler import success_response
@@ -20,7 +20,7 @@ async def list_llm_configs(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     config_type: str = Query(None, description="配置类型"),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取所有LLM配置"""
@@ -34,7 +34,7 @@ async def list_llm_configs(
 @router.get("/{config_id}", summary="获取LLM配置详情")
 async def get_llm_config(
     config_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """根据ID获取配置"""
@@ -47,7 +47,7 @@ async def get_llm_config(
 @router.post("", summary="创建LLM配置")
 async def create_llm_config(
     data: LLMConfigCreate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """创建新LLM配置"""
@@ -59,7 +59,7 @@ async def create_llm_config(
 async def update_llm_config(
     config_id: int,
     data: LLMConfigUpdate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """更新LLM配置"""
@@ -72,7 +72,7 @@ async def update_llm_config(
 @router.delete("/{config_id}", summary="删除LLM配置")
 async def delete_llm_config(
     config_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """删除LLM配置"""

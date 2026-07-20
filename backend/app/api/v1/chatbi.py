@@ -1,4 +1,4 @@
-"""
+﻿"""
 ChatBI智能问数API
 """
 from typing import Optional, List
@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.services.chatbi_service import chatbi_service
 from app.middlewares.exception_handler import success_response
 from app.middlewares.auth_deps import get_current_user
@@ -34,7 +34,7 @@ class ChatBIResponse(BaseModel):
 @router.post("/query", summary="智能问数")
 async def query_data(
     data: ChatBIQuery,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """智能问数查询"""

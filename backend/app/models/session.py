@@ -2,7 +2,8 @@
 会话与消息模型
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.core.base_model import Base
@@ -44,12 +45,12 @@ class Message(Base):
     role = Column(String(20), nullable=False, comment="角色: user/assistant")
     content = Column(Text, nullable=False, comment="消息内容")
     intent = Column(String(20), nullable=True, comment="消息意图: knowledge/data/hybrid")
-    references = Column(JSON, nullable=True, comment="引用信息(JSON)")
-    sql_traces = Column(JSON, nullable=True, comment="SQL溯源(JSON)")
-    data_result = Column(JSON, nullable=True, comment="查询结果数据(JSON)")
-    column_meta = Column(JSON, nullable=True, comment="字段元信息(JSON)")
+    references = Column(JSONB, nullable=True, comment="引用信息(JSON)")
+    sql_traces = Column(JSONB, nullable=True, comment="SQL溯源(JSON)")
+    data_result = Column(JSONB, nullable=True, comment="查询结果数据(JSON)")
+    column_meta = Column(JSONB, nullable=True, comment="字段元信息(JSON)")
     chart_type = Column(String(20), nullable=True, comment="推荐图表类型")
-    thinking_steps = Column(JSON, nullable=True, comment="思考过程步骤(JSON)")
+    thinking_steps = Column(JSONB, nullable=True, comment="思考过程步骤(JSON)")
     query_time = Column(Integer, nullable=True, comment="查询耗时(毫秒)")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
 

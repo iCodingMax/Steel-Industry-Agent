@@ -1,11 +1,11 @@
-"""
+﻿"""
 维度API
 """
 from typing import List
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.schemas.dimension import DimensionCreate, DimensionUpdate, DimensionResponse
 from app.services.dimension_service import dimension_service
 from app.middlewares.exception_handler import success_response
@@ -19,7 +19,7 @@ router = APIRouter()
 async def list_dimensions(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取所有维度"""
@@ -30,7 +30,7 @@ async def list_dimensions(
 @router.get("/{dimension_id}", summary="获取维度详情")
 async def get_dimension(
     dimension_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """根据ID获取维度"""
@@ -43,7 +43,7 @@ async def get_dimension(
 @router.post("", summary="创建维度")
 async def create_dimension(
     data: DimensionCreate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """创建新维度"""
@@ -55,7 +55,7 @@ async def create_dimension(
 async def update_dimension(
     dimension_id: int,
     data: DimensionUpdate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """更新维度"""
@@ -68,7 +68,7 @@ async def update_dimension(
 @router.delete("/{dimension_id}", summary="删除维度")
 async def delete_dimension(
     dimension_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """删除维度"""

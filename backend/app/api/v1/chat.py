@@ -12,7 +12,7 @@ import json
 import asyncio
 import time
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.models.session import Session, Message
 from app.services.session_service import session_service, message_service
 from app.services.router_service import router_service
@@ -58,7 +58,7 @@ class ChatResponse(BaseModel):
 async def list_sessions(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取用户的会话列表"""
@@ -69,7 +69,7 @@ async def list_sessions(
 @router.post("", summary="创建会话")
 async def create_session(
     data: SessionCreate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """创建新会话"""
@@ -80,7 +80,7 @@ async def create_session(
 @router.get("/{session_id}", summary="获取会话详情")
 async def get_session(
     session_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取会话详情"""
@@ -100,7 +100,7 @@ async def get_session(
 async def update_session(
     session_id: int,
     data: SessionUpdate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """更新会话标题"""
@@ -111,7 +111,7 @@ async def update_session(
 @router.delete("/{session_id}", summary="删除会话")
 async def delete_session(
     session_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """删除会话"""
@@ -124,7 +124,7 @@ async def list_messages(
     session_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取会话的消息列表"""
@@ -135,7 +135,7 @@ async def list_messages(
 @router.post("/send", summary="发送消息")
 async def send_message(
     data: ChatRequest,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """发送消息并获取回复"""
@@ -213,8 +213,8 @@ async def stream_chat(
             return f"data: {json.dumps({'type': 'thinking', 'step': step, 'total_steps': total_steps, 'title': title, 'description': description})}\n\n"
         try:
             # 手动创建数据库session，避免依赖注入在yield后关闭session
-            from app.core.database import MySQLAsyncSession
-            db = MySQLAsyncSession()
+            from app.core.database import SystemAsyncSession
+            db = SystemAsyncSession()
             await db.__aenter__()
 
             # 检查会话是否存在

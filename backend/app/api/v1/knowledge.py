@@ -9,7 +9,7 @@ from pathlib import Path
 import os
 import uuid
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.models.knowledge import Document, DocumentSegment
 from app.schemas.knowledge import (
     KnowledgeBaseCreate,
@@ -40,7 +40,7 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 async def list_knowledge_bases(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取所有知识库"""
@@ -58,7 +58,7 @@ async def list_knowledge_bases(
 @router.get("/{kb_id}", summary="获取知识库详情")
 async def get_knowledge_base(
     kb_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """根据ID获取知识库"""
@@ -75,7 +75,7 @@ async def get_knowledge_base(
 @router.post("", summary="创建知识库")
 async def create_knowledge_base(
     data: KnowledgeBaseCreate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """创建新知识库"""
@@ -87,7 +87,7 @@ async def create_knowledge_base(
 async def update_knowledge_base(
     kb_id: int,
     data: KnowledgeBaseUpdate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """更新知识库"""
@@ -102,7 +102,7 @@ async def update_knowledge_base(
 @router.delete("/{kb_id}", summary="删除知识库")
 async def delete_knowledge_base(
     kb_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """删除知识库"""
@@ -116,7 +116,7 @@ async def list_documents(
     kb_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取知识库下的所有文档"""
@@ -129,7 +129,7 @@ async def upload_document(
     kb_id: int,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """上传文档到知识库"""
@@ -173,8 +173,8 @@ async def upload_document(
 
 async def process_document_task(db_session, doc_id: int, kb_id: int):
     """后台处理文档任务"""
-    from app.core.database import MySQLAsyncSession
-    async with MySQLAsyncSession() as db:
+    from app.core.database import SystemAsyncSession
+    async with SystemAsyncSession() as db:
         try:
             doc = await document_service.get_by_id(db, doc_id)
             kb = await knowledge_base_service.get_by_id(db, kb_id)
@@ -191,7 +191,7 @@ async def process_document_task(db_session, doc_id: int, kb_id: int):
 async def delete_document(
     kb_id: int,
     doc_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """删除文档"""
@@ -203,7 +203,7 @@ async def delete_document(
 async def get_document_detail(
     kb_id: int,
     doc_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取文档详情，包含统计信息"""
@@ -235,7 +235,7 @@ async def get_document_segments(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     keyword: str = Query(None, description="搜索关键词"),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取文档分块列表，支持关键词搜索"""
@@ -284,7 +284,7 @@ async def get_document_segments(
 async def query_knowledge(
     kb_id: int,
     data: KnowledgeQuery,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """知识问答检索"""
@@ -305,7 +305,7 @@ async def query_knowledge(
 @router.post("/{kb_id}/build-index", summary="构建向量索引")
 async def build_vector_index(
     kb_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """手动触发向量索引构建"""

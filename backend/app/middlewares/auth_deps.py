@@ -1,4 +1,4 @@
-"""
+﻿"""
 JWT认证依赖
 """
 from fastapi import Depends, status
@@ -6,7 +6,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.utils.security import decode_token
 from app.services.auth_service import auth_service
 from app.middlewares.exception_handler import BusinessException
@@ -16,7 +16,7 @@ security = HTTPBearer(auto_error=False)
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """获取当前登录用户"""
     if not credentials:
