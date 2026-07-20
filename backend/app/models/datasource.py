@@ -3,6 +3,7 @@
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.core.base_model import Base
@@ -62,18 +63,17 @@ class TableSchema(Base):
     datasource_id = Column(Integer, nullable=False, index=True, comment="数据源ID")
     table_name = Column(String(100), nullable=False, comment="表名")
     table_comment = Column(Text, nullable=True, comment="表注释")
-    columns = Column(Text, nullable=True, comment="列信息(JSON)")
+    columns = Column(JSONB, nullable=True, comment="列信息(JSON)")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     def to_dict(self) -> dict:
         """转换为字典"""
-        import json
         return {
             "id": self.id,
             "datasourceId": self.datasource_id,
             "tableName": self.table_name,
             "tableComment": self.table_comment,
-            "columns": json.loads(self.columns) if self.columns else [],
+            "columns": self.columns if self.columns else [],
             "createdAt": self.created_at.isoformat() if self.created_at else None,
         }

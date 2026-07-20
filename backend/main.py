@@ -28,8 +28,8 @@ async def lifespan(app: FastAPI):
     await init_db()
 
     from app.services.auth_service import auth_service
-    from app.core.database import MySQLAsyncSession
-    async with MySQLAsyncSession() as db:
+    from app.core.database import SystemAsyncSession
+    async with SystemAsyncSession() as db:
         await auth_service.init_default_admin(db)
 
     # 自动初始化种子数据
@@ -41,9 +41,9 @@ async def lifespan(app: FastAPI):
     logger.info("系统关闭中...")
 
     # 优雅关闭数据库连接池
-    from app.core.database import mysql_engine, pg_engine
-    await mysql_engine.dispose()
-    await pg_engine.dispose()
+    from app.core.database import system_engine, pgvector_engine
+    await system_engine.dispose()
+    await pgvector_engine.dispose()
     logger.info("数据库连接池已关闭")
 
 

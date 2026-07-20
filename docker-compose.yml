@@ -28,11 +28,12 @@ services:
     environment:
       POSTGRES_USER: ${PG_USER:-postgres}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-steelagent@2024}
-      POSTGRES_DB: ${PG_DB:-steel_agent_vector}
+      POSTGRES_DB: ${PG_DB:-steel_agent}
     ports:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+      - ./backend/init_pg.sh:/docker-entrypoint-initdb.d/init_pg.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -69,12 +70,22 @@ services:
       - MYSQL_PORT=3306
       - MYSQL_USER=${MYSQL_USER:-root}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-steelagent@2024}
-      - MYSQL_DB=${MYSQL_DB:-steel_agent}
+      - MYSQL_DB=${MYSQL_DB:-steel_test}
+      - BUSINESS_DB_HOST=mysql
+      - BUSINESS_DB_PORT=3306
+      - BUSINESS_DB_USER=${MYSQL_USER:-root}
+      - BUSINESS_DB_PASSWORD=${MYSQL_PASSWORD:-steelagent@2024}
+      - BUSINESS_DB_NAME=${MYSQL_DB:-steel_test}
       - PG_HOST=postgres
       - PG_PORT=5432
       - PG_USER=${PG_USER:-postgres}
       - PG_PASSWORD=${PG_PASSWORD:-steelagent@2024}
-      - PG_DB=${PG_DB:-steel_agent_vector}
+      - PG_DB=${PG_DB:-steel_agent}
+      - PGVECTOR_HOST=postgres
+      - PGVECTOR_PORT=5432
+      - PGVECTOR_USER=${PG_USER:-postgres}
+      - PGVECTOR_PASSWORD=${PG_PASSWORD:-steelagent@2024}
+      - PGVECTOR_DATABASE=steel_agent_vector
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0

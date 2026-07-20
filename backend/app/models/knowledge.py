@@ -3,6 +3,7 @@
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Enum
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 import enum
 
@@ -104,12 +105,11 @@ class DocumentSegment(Base):
     segment_index = Column(Integer, nullable=False, comment="切片序号")
     start_char = Column(Integer, nullable=True, comment="起始字符位置")
     end_char = Column(Integer, nullable=True, comment="结束字符位置")
-    meta_data = Column(Text, nullable=True, comment="元数据(JSON)")
+    meta_data = Column(JSONB, nullable=True, comment="元数据(JSON)")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
 
     def to_dict(self) -> dict:
         """转换为字典"""
-        import json
         return {
             "id": self.id,
             "documentId": self.document_id,
@@ -118,6 +118,6 @@ class DocumentSegment(Base):
             "segmentIndex": self.segment_index,
             "startChar": self.start_char,
             "endChar": self.end_char,
-            "metadata": json.loads(self.meta_data) if self.meta_data else {},
+            "metadata": self.meta_data if self.meta_data else {},
             "createdAt": self.created_at.isoformat() if self.created_at else None,
         }

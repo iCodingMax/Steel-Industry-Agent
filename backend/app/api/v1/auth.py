@@ -1,10 +1,10 @@
-"""
+﻿"""
 认证API
 """
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.schemas.auth import LoginRequest, LoginResponse, ChangePasswordRequest, UserInfoResponse
 from app.services.auth_service import auth_service
 from app.middlewares.exception_handler import success_response
@@ -17,7 +17,7 @@ router = APIRouter()
 @router.post("/login", summary="用户登录")
 async def login(
     req: LoginRequest,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """用户登录"""
     result = await auth_service.login(db, req)
@@ -39,7 +39,7 @@ async def get_current_user_info(
 async def change_password(
     req: ChangePasswordRequest,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """修改当前用户密码"""
     await auth_service.change_password(db, user.id, req)

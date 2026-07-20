@@ -3,6 +3,7 @@
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, Float
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.core.base_model import Base
@@ -23,7 +24,7 @@ class LLMConfig(Base):
     max_tokens = Column(Integer, default=2048, comment="最大输出token")
     temperature = Column(Float, default=0.7, comment="温度参数")
     top_p = Column(Float, nullable=True, comment="Top-p采样")
-    extra_params = Column(Text, nullable=True, comment="额外参数(JSON)")
+    extra_params = Column(JSONB, nullable=True, comment="额外参数(JSON)")
     is_default = Column(Boolean, default=False, comment="是否默认配置")
     status = Column(String(20), default="active", comment="状态: active/inactive")
     description = Column(Text, nullable=True, comment="描述")
@@ -32,7 +33,6 @@ class LLMConfig(Base):
 
     def to_dict(self, include_secret: bool = False) -> dict:
         """转换为字典"""
-        import json
         return {
             "id": self.id,
             "name": self.name,
@@ -44,7 +44,7 @@ class LLMConfig(Base):
             "maxTokens": self.max_tokens,
             "temperature": self.temperature,
             "topP": self.top_p,
-            "extraParams": json.loads(self.extra_params) if self.extra_params else {},
+            "extraParams": self.extra_params if self.extra_params else {},
             "isDefault": self.is_default,
             "status": self.status,
             "description": self.description,

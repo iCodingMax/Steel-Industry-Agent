@@ -36,14 +36,14 @@ class Settings(BaseSettings):
     PG_PORT: int = 5432
     PG_USER: str = "postgres"
     PG_PASSWORD: str = ""
-    PG_DB: str = "steel_agent_vector"
+    PG_DB: str = "steel_agent"
 
-    # pgvector专用配置（默认跟随PG配置，可单独覆盖）
+    # 向量数据库（系统库与向量库使用同一PG实例，不同数据库）
     PGVECTOR_HOST: str = ""
     PGVECTOR_PORT: int = 0
     PGVECTOR_USER: str = ""
     PGVECTOR_PASSWORD: str = ""
-    PGVECTOR_DATABASE: str = ""
+    PGVECTOR_DATABASE: str = "steel_agent_vector"
 
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379

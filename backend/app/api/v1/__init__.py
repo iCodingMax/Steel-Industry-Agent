@@ -1,4 +1,4 @@
-"""
+﻿"""
 v1 API 路由模块
 """
 from fastapi import APIRouter

@@ -1,11 +1,11 @@
-"""
+﻿"""
 指标API
 """
 from typing import List
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_mysql_session
+from app.core.database import get_db_session
 from app.schemas.metric import MetricCreate, MetricUpdate, MetricResponse
 from app.services.metric_service import metric_service
 from app.middlewares.exception_handler import success_response
@@ -19,7 +19,7 @@ router = APIRouter()
 async def list_metrics(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """获取所有指标"""
@@ -30,7 +30,7 @@ async def list_metrics(
 @router.get("/{metric_id}", summary="获取指标详情")
 async def get_metric(
     metric_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """根据ID获取指标"""
@@ -43,7 +43,7 @@ async def get_metric(
 @router.post("", summary="创建指标")
 async def create_metric(
     data: MetricCreate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """创建新指标"""
@@ -55,7 +55,7 @@ async def create_metric(
 async def update_metric(
     metric_id: int,
     data: MetricUpdate,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """更新指标"""
@@ -68,7 +68,7 @@ async def update_metric(
 @router.delete("/{metric_id}", summary="删除指标")
 async def delete_metric(
     metric_id: int,
-    db: AsyncSession = Depends(get_mysql_session),
+    db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
     """删除指标"""
