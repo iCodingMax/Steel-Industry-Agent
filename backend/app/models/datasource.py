@@ -1,5 +1,19 @@
 """
-数据源模型
+数据源模型模块
+定义数据源配置和表结构缓存的数据模型
+
+数据关系：
+- DataSource（数据源）: 包含多个 TableSchema（表结构）
+- TableSchema（表结构）: 关联到 DataSource，缓存表和字段信息
+
+支持的数据库类型：
+- MySQL
+- PostgreSQL
+- Oracle
+
+注意：
+- 密码字段存储加密后的密码
+- TableSchema 使用 JSONB 缓存列信息，避免频繁查询业务数据库
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text
@@ -10,7 +24,11 @@ from app.core.base_model import Base
 
 
 class DataSource(Base):
-    """数据源配置表"""
+    """
+    数据源配置表
+    存储业务数据库连接配置
+    支持多种数据库类型和连接池配置
+    """
 
     __tablename__ = "datasources"
 
@@ -55,7 +73,11 @@ class DataSource(Base):
 
 
 class TableSchema(Base):
-    """数据源表结构缓存"""
+    """
+    数据源表结构缓存表
+    缓存业务数据库的表结构信息，避免频繁查询INFORMATION_SCHEMA
+    列信息以JSONB格式存储，包含字段名、类型、注释等元数据
+    """
 
     __tablename__ = "table_schemas"
 

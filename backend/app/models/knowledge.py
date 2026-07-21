@@ -1,5 +1,21 @@
 """
-知识库模型
+知识库模型模块
+定义知识库、文档和文档切片的数据模型
+
+数据关系：
+- KnowledgeBase（知识库）: 包含多个 Document（文档）和 DocumentSegment（切片）
+- Document（文档）: 关联到 KnowledgeBase，记录上传的文档信息
+- DocumentSegment（文档切片）: 关联到 Document 和 KnowledgeBase，存储向量化的文本片段
+
+处理流程：
+1. 上传文档 → 创建 Document（status=pending）
+2. 解析文档 → 更新 Document（status=processing）
+3. 文本切片 → 创建 DocumentSegment
+4. 向量化入库 → 更新 Document（status=completed）
+
+注意：
+- 使用 PostgreSQL JSONB 类型存储元数据
+- DocumentSegment 是向量检索的最小单元
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Enum
@@ -11,21 +27,25 @@ from app.core.base_model import Base
 
 
 class KnowledgeBaseStatus(str, enum.Enum):
-    """知识库状态"""
-    ACTIVE = "active"
-    INACTIVE = "inactive"
+    """知识库状态枚举"""
+    ACTIVE = "active"      # 活跃状态，可用于检索
+    INACTIVE = "inactive"  # 停用状态，不可用于检索
 
 
 class DocumentStatus(str, enum.Enum):
-    """文档状态"""
-    PENDING = "pending"  # 待处理
-    PROCESSING = "processing"  # 处理中
-    COMPLETED = "completed"  # 已完成
-    FAILED = "failed"  # 处理失败
+    """文档处理状态枚举"""
+    PENDING = "pending"    # 待处理：文档已上传，等待解析
+    PROCESSING = "processing"  # 处理中：文档正在解析和切片
+    COMPLETED = "completed"    # 已完成：文档解析和向量化完成
+    FAILED = "failed"      # 处理失败：解析或向量化过程出错
 
 
 class KnowledgeBase(Base):
-    """知识库配置表"""
+    """
+    知识库配置表
+    存储知识库的基本配置和参数
+    支持配置嵌入模型、文本切片大小等参数
+    """
 
     __tablename__ = "knowledge_bases"
 
@@ -58,7 +78,11 @@ class KnowledgeBase(Base):
 
 
 class Document(Base):
-    """文档表"""
+    """
+    文档表
+    存储上传的原始文档信息
+    记录文档的处理状态和切片数量
+    """
 
     __tablename__ = "documents"
 
@@ -94,7 +118,12 @@ class Document(Base):
 
 
 class DocumentSegment(Base):
-    """文档切片表"""
+    """
+    文档切片表
+    存储文档的文本切片，是向量检索的最小单元
+    每个切片包含内容、位置信息和元数据
+    切片内容会被向量化后存入向量数据库
+    """
 
     __tablename__ = "document_segments"
 

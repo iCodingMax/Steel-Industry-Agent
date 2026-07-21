@@ -5,12 +5,12 @@
 ## 核心特性
 
 - **融合推理**：单对话框同时支持工艺知识查询与生产数据查询，自动意图识别与路由分发
-- **RAG 知识问答**：多格式文档解析（PDF/Word/TXT）、智能切片、向量+BM25 混合检索、Rerank 重排
+- **RAG 知识问答**：多格式文档解析（PDF/Word/TXT）、智能切片、向量检索、重排Rerank
 - **ChatBI 智能问数**：NL2Metrics 指标语义匹配 + NL2SQL 兜底，自动生成 SQL 并执行查询
 - **全链路溯源**：文档引用溯源、SQL 执行溯源、思考过程展示
 - **SSE 流式响应**：知识问答与数据分析并行执行，实时流式输出
 - **可视化图表**：自动推荐图表类型（折线/柱状/饼图），ECharts 渲染
-- **私有化部署**：兼容国产大模型，适配企业内网，Docker Compose 一键部署
+- **私有化部署**：兼容国产大模型（Xinference），适配企业内网，Docker Compose 一键部署
 
 ## 系统架构
 
@@ -40,10 +40,10 @@
                        │
     ┌──────────────────┼──────────────────┐
     ▼                  ▼                  ▼
-┌────────┐      ┌──────────┐      ┌────────┐
-│ MySQL  │      │PostgreSQL│      │ Redis  │
-│系统+业务│      │ +pgvector│      │ 缓存   │
-└────────┘      └──────────┘      └────────┘
+┌─────────────┐  ┌──────────┐      ┌────────┐
+│ PostgreSQL  │  │ MySQL    │      │ Redis  │
+│系统+向量库  │  │业务数据库│      │ 缓存   │
+└─────────────┘  └──────────┘      └────────┘
 ```
 
 ## 技术栈
@@ -55,10 +55,11 @@
 | Python | 3.11+ | 运行环境 |
 | FastAPI | 0.111+ | Web 框架 |
 | SQLAlchemy | 2.0+ (async) | ORM |
-| aiomysql | 0.2+ | MySQL 异步驱动 |
+| psycopg / psycopg2-binary | - | PostgreSQL 驱动 |
 | asyncpg | 0.29+ | PostgreSQL 异步驱动 |
+| aiomysql | 0.2+ | MySQL 异步驱动（业务数据库） |
 | LlamaIndex | - | RAG 框架 |
-| pgvector | - | 向量存储与检索 |
+| pgvector | - | 向量存储与检索（PostgreSQL扩展） |
 | pydantic-settings | 2.3+ | 配置管理 |
 | python-jose | 3.3+ | JWT 认证 |
 | loguru | 0.7+ | 日志 |
@@ -77,20 +78,20 @@
 | marked | 12.0+ | Markdown 渲染 |
 | highlight.js | 11.9+ | 代码高亮 |
 
-### 模型服务
+### 模型服务（Xinference）
 
 | 服务 | 模型 | 用途 |
 |------|------|------|
-| Xinference | bge-m3 | 文本嵌入 |
-| Xinference | bge-reranker-large | 重排序 |
-| NewAPI | glm-5.1-fp8 | 对话/推理 |
+| Xinference | bge-m3 | 文本嵌入（向量检索） |
+| Xinference | bge-reranker-large | 重排序（Rerank） |
+| Xinference | qwen3 | 对话/推理（LLM） |
 
 ### 基础设施
 
 | 组件 | 版本 | 用途 |
 |------|------|------|
-| MySQL | 8.0 | 系统数据库 + 业务数据库 |
-| PostgreSQL + pgvector | pg16 | 向量索引存储 |
+| PostgreSQL + pgvector | pg16 | 系统数据库 + 向量索引存储 |
+| MySQL | 8.0 | 业务数据库（钢铁生产数据） |
 | Redis | 7-alpine | 缓存 |
 | Nginx | alpine | 前端部署 + 反向代理 |
 
@@ -103,6 +104,12 @@
 - SSE 流式响应，思考过程实时展示
 - 知识引用溯源，SQL 执行溯源
 - 自动推荐图表类型并渲染可视化
+
+### 应用管理
+
+- **应用设置**：创建/编辑/删除应用，配置基本信息、模型设置、提示词管理、关联知识库、开场白
+- **集成设置**：iFrame嵌入配置，生成嵌入代码，API密钥管理，安全设置（允许的嵌入来源）
+- **应用级配置**：每个应用可独立配置模型参数、系统提示词、用户提示词模板
 
 ### 知识管理
 
@@ -120,7 +127,7 @@
 
 ### 系统设置
 
-- **模型配置**：Xinference 嵌入/重排模型配置，NewAPI 对话模型配置
+- **模型配置**：LLM模型配置（Xinference）、向量模型配置（Xinference）
 - **审计日志**：操作记录查询
 - **账号管理**：密码修改
 
@@ -139,10 +146,12 @@ Steel-Industry-Agent/
 │   │   │   ├── metric.py      # 指标管理接口
 │   │   │   ├── dimension.py   # 维度管理接口
 │   │   │   ├── term.py        # 术语管理接口
+│   │   │   ├── llm_config.py  # 模型配置接口
+│   │   │   ├── application.py  # 应用管理接口
 │   │   │   └── ...
 │   │   ├── core/              # 核心模块
 │   │   │   ├── config.py      # 全局配置（双数据库）
-│   │   │   ├── database.py    # 数据库连接（MySQL + PostgreSQL）
+│   │   │   ├── database.py    # 数据库连接（PostgreSQL系统库 + MySQL业务库）
 │   │   │   └── llm_client.py  # LLM 客户端
 │   │   ├── models/            # 数据模型
 │   │   │   ├── session.py     # 会话/消息/溯源模型
@@ -150,15 +159,16 @@ Steel-Industry-Agent/
 │   │   │   ├── datasource.py  # 数据源模型
 │   │   │   ├── metric.py      # 指标模型
 │   │   │   ├── dimension.py   # 维度模型
-│   │   │   └── term.py        # 术语模型
-│   │   ├── schemas/           # 请求/响应模型
+│   │   │   ├── term.py        # 术语模型
+│   │   │   └── application.py # 应用配置模型
+│   │   ├── schemas/           # 请求/响应模型（Pydantic）
 │   │   ├── services/          # 业务逻辑层
 │   │   │   ├── router_service.py     # 意图识别与路由
 │   │   │   ├── vector_service.py     # RAG 向量检索与知识问答
 │   │   │   ├── chatbi_service.py     # ChatBI 智能问数服务
 │   │   │   ├── nl2metrics_service.py # NL2Metrics 指标查询引擎
 │   │   │   ├── nl2sql_service.py     # NL2SQL 兜底引擎
-│   │   │   ├── llm_service.py        # LLM 调用服务
+│   │   │   ├── llm_service.py        # LLM 调用服务（Xinference）
 │   │   │   ├── knowledge_service.py  # 知识库管理服务
 │   │   │   └── session_service.py    # 会话管理服务
 │   │   └── utils/             # 工具函数
@@ -177,6 +187,9 @@ Steel-Industry-Agent/
 │   │   ├── stores/            # Pinia 状态管理
 │   │   ├── views/             # 页面视图
 │   │   │   ├── ChatView.vue          # 智能对话页
+│   │   │   ├── ChatEmbedView.vue     # iFrame嵌入聊天页
+│   │   │   ├── AppSettingsView.vue   # 应用设置页
+│   │   │   ├── AppIntegrationView.vue # 集成设置页
 │   │   │   ├── KnowledgeView.vue     # 知识管理页
 │   │   │   ├── DataConfigView.vue    # 数据管理页
 │   │   │   ├── DatasourceDetailView.vue # 数据源详情页
@@ -188,6 +201,7 @@ Steel-Industry-Agent/
 │   ├── vite.config.ts
 │   └── Dockerfile
 ├── docker-compose.yml          # Docker 编排
+├── README.md                   # 项目说明文档
 └── DEPLOYMENT.md               # 部署文档
 ```
 
@@ -198,8 +212,8 @@ Steel-Industry-Agent/
 - Python 3.11+
 - Node.js 18+
 - pnpm
-- MySQL 8.0
 - PostgreSQL 16 + pgvector 扩展
+- MySQL 8.0（业务数据库）
 - Redis 7+
 
 ### 1. 克隆项目
@@ -219,32 +233,40 @@ cp backend/.env.example backend/.env
 关键配置项：
 
 ```bash
-# MySQL（系统数据库 + 业务数据库）
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your-password
-MYSQL_DB=steel_agent
+# ==================== PostgreSQL 配置（系统数据库 + 向量数据库） ====================
+PG_HOST=localhost
+PG_PORT=5432
+PG_USER=postgres
+PG_PASSWORD=your-password
+PG_DB=steel_agent
 
-# 业务数据库（钢铁生产数据）
+# ==================== MySQL 配置（业务数据库，钢铁生产数据） ====================
 BUSINESS_DB_HOST=localhost
 BUSINESS_DB_PORT=3306
 BUSINESS_DB_USER=root
 BUSINESS_DB_PASSWORD=your-password
 BUSINESS_DB_NAME=steel_test
 
-# PostgreSQL + pgvector
-PG_HOST=localhost
-PG_PORT=5432
-PG_USER=postgres
-PG_PASSWORD=your-password
-PG_DB=steel_agent_vector
-
-# 模型服务
+# ==================== Xinference 模型服务配置 ====================
 XINFERENCE_BASE_URL=http://your-xinference-host:9997
-NEWAPI_BASE_URL=http://your-newapi-host:3000
-NEWAPI_API_KEY=your-api-key
-NEWAPI_MODEL=glm-5.1-fp8
+XINFERENCE_EMBED_MODEL=bge-m3
+XINFERENCE_RERANK_MODEL=bge-reranker-large
+XINFERENCE_LLM_MODEL=qwen3
+LLM_MAX_TOKENS=20480
+LLM_TEMPERATURE=0.7
+
+# ==================== JWT配置 ====================
+JWT_SECRET_KEY=your-jwt-secret-key-change-in-production
+JWT_ALGORITHM=HS256
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60
+JWT_REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# ==================== 应用配置 ====================
+APP_HOST=0.0.0.0
+APP_PORT=8000
+DEBUG=false
+UPLOAD_DIR=./storage/documents
+MAX_UPLOAD_SIZE=104857600
 ```
 
 ### 3. 启动后端
@@ -254,12 +276,8 @@ cd backend
 
 # 安装依赖
 pip install -r requirements.txt
-# 或使用 poetry
-# poetry install
 
 # 启动服务（自动初始化数据库和种子数据）
-python main.py
-# 或
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -297,19 +315,26 @@ docker-compose logs -f backend
 |------|------|------|
 | frontend | 8080 | Nginx 前端 |
 | backend | 8000 | FastAPI 后端 |
-| mysql | 3306 | MySQL 数据库 |
-| postgres | 5432 | PostgreSQL + pgvector |
+| postgres | 5432 | PostgreSQL + pgvector（系统库+向量库） |
+| mysql | 3306 | MySQL（业务数据库） |
 | redis | 6379 | Redis 缓存 |
 
-## 双数据库架构
+## 数据库架构
 
 系统采用双数据库架构，分离系统数据与业务数据：
 
 | 数据库 | 名称 | 用途 | 核心表 |
 |--------|------|------|--------|
-| MySQL | `steel_agent` | 系统数据库 | 用户、会话、消息、数据源、指标、维度、术语、知识库等 |
+| PostgreSQL | `steel_agent` | 系统数据库 + 向量数据库 | 用户、会话、消息、数据源、指标、维度、术语、知识库、文档切片、向量索引(pgvector)等 |
 | MySQL | `steel_test` | 业务数据库 | `bof_act_heat_add`（转炉炼钢）、`hgbf1_condition_result`（高炉炉况打分）等 |
-| PostgreSQL | `steel_agent_vector` | 向量数据库 | 文档切片向量索引（pgvector） |
+
+### 向量索引表
+
+每个知识库在PostgreSQL中对应一个独立的向量表，表名格式为 `kb_{knowledge_base_id}`，包含：
+- `id`: 主键
+- `text`: 文档切片内容
+- `embedding`: 向量（pgvector vector类型）
+- `metadata`: JSON格式元数据（segment_id, document_id等）
 
 ## 融合推理流程
 
@@ -338,9 +363,18 @@ docker-compose logs -f backend
 | 模块 | 方法 | 路径 | 说明 |
 |------|------|------|------|
 | 认证 | POST | `/api/v1/auth/login` | 用户登录 |
-| 对话 | GET | `/api/v1/chat` | 获取会话列表 |
-| 对话 | POST | `/api/v1/chat` | 创建会话 |
-| 对话 | POST | `/api/v1/chat/{id}/message` | 发送消息（SSE） |
+| 对话 | GET | `/api/v1/sessions` | 获取会话列表 |
+| 对话 | POST | `/api/v1/sessions` | 创建会话 |
+| 对话 | POST | `/api/v1/sessions/stream` | 发送消息（SSE流式） |
+| 对话 | POST | `/api/v1/sessions/embed/chat` | 嵌入模式对话（无需认证） |
+| 应用 | GET | `/api/v1/applications` | 应用列表 |
+| 应用 | POST | `/api/v1/applications` | 创建应用 |
+| 应用 | PUT | `/api/v1/applications/{id}` | 更新应用 |
+| 应用 | DELETE | `/api/v1/applications/{id}` | 删除应用 |
+| 应用 | POST | `/api/v1/applications/{id}/regenerate-api-key` | 重新生成API密钥 |
+| 应用 | GET | `/api/v1/applications/{id}/prompts` | 获取应用提示词 |
+| 应用 | POST | `/api/v1/applications/{id}/prompts` | 创建应用提示词 |
+| 应用 | GET | `/api/v1/applications/{id}/iframe-url` | 获取iframe嵌入URL |
 | 知识 | GET | `/api/v1/knowledge/bases` | 知识库列表 |
 | 知识 | POST | `/api/v1/knowledge/bases` | 创建知识库 |
 | 知识 | POST | `/api/v1/knowledge/bases/{id}/documents` | 上传文档 |
@@ -350,8 +384,67 @@ docker-compose logs -f backend
 | 指标 | GET | `/api/v1/metrics` | 指标列表 |
 | 维度 | GET | `/api/v1/dimensions` | 维度列表 |
 | 术语 | GET | `/api/v1/terms` | 术语列表 |
+| 模型配置 | GET | `/api/v1/llm-config` | 获取模型配置 |
+| 模型配置 | PUT | `/api/v1/llm-config` | 更新模型配置 |
+| 健康检查 | GET | `/api/v1/health` | 健康检查 |
 
 完整 API 文档请访问 Swagger UI：`http://localhost:8000/docs`
+
+## 代码注释规范
+
+项目遵循以下代码注释规范，便于新手理解代码逻辑和快速上手：
+
+### Python 代码
+- **模块文档字符串**：每个模块顶部添加三重引号注释，说明模块功能、数据关系、注意事项
+- **类注释**：使用三重引号，包含类的功能描述、核心属性说明、处理流程
+- **方法注释**：使用三重引号，包含参数说明（:param）、返回值说明（:return）、异常说明（:raises）
+- **关键逻辑注释**：复杂业务逻辑添加步骤说明注释
+- **日志记录**：使用 loguru 记录关键操作、错误信息和性能指标
+
+### 代码示例规范
+```python
+"""
+模块文档字符串：说明模块功能、数据关系、注意事项
+"""
+class ExampleService:
+    """
+    类文档字符串：说明类的功能、核心属性和处理流程
+    """
+
+    def example_method(self, param1: str) -> dict:
+        """
+        方法文档字符串：详细说明方法功能和参数
+        
+        :param param1: 参数说明
+        :return: 返回值说明
+        :raises BusinessException: 异常说明
+        """
+        # 步骤1：参数校验
+        # 步骤2：业务逻辑处理
+        # 步骤3：返回结果
+        pass
+```
+
+### Vue/TypeScript 代码
+- **组件注释**：使用 JSDoc 格式，说明组件功能和 props
+- **方法注释**：使用 JSDoc 格式，说明参数和返回值
+- **类型定义**：完整的 TypeScript 类型标注
+
+### 日志规范
+- **INFO**：记录关键业务流程（如"意图分类结果"、"SQL执行完成"）
+- **DEBUG**：记录详细调试信息（如"图表类型匹配"、"术语搜索完成"）
+- **WARNING**：记录潜在问题（如"指标匹配置信度低"）
+- **ERROR**：记录错误信息（如"向量检索失败"、"SQL执行异常"）
+
+## 开发流程
+
+1. **环境准备**：安装 Python 3.11+、Node.js 18+、PostgreSQL、MySQL
+2. **代码克隆**：git clone 项目代码
+3. **配置环境变量**：复制 .env.example 为 .env，配置数据库和模型服务
+4. **安装依赖**：后端 pip install，前端 pnpm install
+5. **启动服务**：后端 uvicorn，前端 pnpm dev
+6. **开发调试**：使用 IDE 调试，查看日志
+7. **代码提交**：遵循 Commitlint 规范
 
 ## License
 

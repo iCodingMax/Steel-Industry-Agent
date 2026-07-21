@@ -8,16 +8,22 @@
       <div class="section-header">
         <h3 class="section-title">
           <el-icon><Cpu /></el-icon>
-          Xinference 模型服务
+          向量模型配置
         </h3>
-        <el-button v-if="!xinferenceConfig" type="primary" @click="handleEditXinference">
-          <el-icon><Plus /></el-icon>
-          添加配置
-        </el-button>
-        <el-button v-else @click="handleEditXinference">
-          <el-icon><Edit /></el-icon>
-          编辑配置
-        </el-button>
+        <div class="section-actions">
+          <el-button v-if="!xinferenceConfig" type="primary" @click="handleEditXinference">
+            <el-icon><Plus /></el-icon>
+            添加配置
+          </el-button>
+          <el-button v-else @click="handleEditXinference">
+            <el-icon><Edit /></el-icon>
+            编辑配置
+          </el-button>
+          <el-button type="primary" @click="handleTestXinferenceConnection" :disabled="!xinferenceConfig">
+            <el-icon><Link /></el-icon>
+            测试连接
+          </el-button>
+        </div>
       </div>
       <el-descriptions :column="2" border class="config-desc" v-if="xinferenceConfig">
         <el-descriptions-item label="配置名称">
@@ -47,62 +53,59 @@
           <span class="config-value">{{ xinferenceConfig.description || '-' }}</span>
         </el-descriptions-item>
       </el-descriptions>
-      <el-empty v-else description="暂无Xinference配置，请点击右上角添加" />
+      <el-empty v-else description="暂无向量模型配置，请点击右上角添加" />
     </div>
 
     <div class="config-section">
       <div class="section-header">
         <h3 class="section-title">
           <el-icon><Link /></el-icon>
-          NewAPI LLM 服务
+          LLM模型配置
         </h3>
         <div class="section-actions">
-          <el-button v-if="!newapiConfig" type="primary" @click="handleEditNewAPI">
+          <el-button v-if="!llmConfig" type="primary" @click="handleEditLLM">
             <el-icon><Plus /></el-icon>
             添加配置
           </el-button>
-          <el-button v-else @click="handleEditNewAPI">
+          <el-button v-else @click="handleEditLLM">
             <el-icon><Edit /></el-icon>
             编辑配置
           </el-button>
-          <el-button type="primary" @click="handleTestConnection" :disabled="!newapiConfig">
+          <el-button type="primary" @click="handleTestLLMConnection" :disabled="!llmConfig">
             <el-icon><Link /></el-icon>
             测试连接
           </el-button>
         </div>
       </div>
-      <el-descriptions :column="2" border class="config-desc" v-if="newapiConfig">
+      <el-descriptions :column="2" border class="config-desc" v-if="llmConfig">
         <el-descriptions-item label="配置名称">
-          <span class="config-value">{{ newapiConfig.name }}</span>
+          <span class="config-value">{{ llmConfig.name }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="状态">
-          <el-tag :type="newapiConfig.status === 'active' ? 'success' : 'danger'" effect="plain">
-            {{ newapiConfig.status === 'active' ? '启用' : '停用' }}
+          <el-tag :type="llmConfig.status === 'active' ? 'success' : 'danger'" effect="plain">
+            {{ llmConfig.status === 'active' ? '启用' : '停用' }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="服务地址">
-          <span class="config-value">{{ newapiConfig.baseUrl }}</span>
+          <span class="config-value">{{ llmConfig.baseUrl }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="模型类型">
-          <el-tag type="warning" effect="plain">{{ newapiConfig.modelType }}</el-tag>
+          <el-tag type="warning" effect="plain">{{ llmConfig.modelType }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="API密钥">
-          <span class="config-value">{{ maskApiKey }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="对话模型">
-          <el-tag type="warning" effect="plain">{{ newapiConfig.modelName }}</el-tag>
+        <el-descriptions-item label="对话模型" :span="2">
+          <el-tag type="warning" effect="plain">{{ llmConfig.modelName }}</el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="最大输出Token">
-          <span class="config-value">{{ newapiConfig.maxTokens }}</span>
+          <span class="config-value">{{ llmConfig.maxTokens }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="温度参数">
-          <span class="config-value">{{ newapiConfig.temperature }}</span>
+          <span class="config-value">{{ llmConfig.temperature }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="描述" :span="2">
-          <span class="config-value">{{ newapiConfig.description || '-' }}</span>
+          <span class="config-value">{{ llmConfig.description || '-' }}</span>
         </el-descriptions-item>
       </el-descriptions>
-      <el-empty v-else description="暂无NewAPI配置，请点击右上角添加" />
+      <el-empty v-else description="暂无LLM模型配置，请点击右上角添加" />
     </div>
 
     <div class="config-section">
@@ -111,14 +114,20 @@
           <el-icon><Refresh /></el-icon>
           重排模型配置
         </h3>
-        <el-button v-if="!rerankConfig" type="primary" @click="handleEditRerank">
-          <el-icon><Plus /></el-icon>
-          添加配置
-        </el-button>
-        <el-button v-else @click="handleEditRerank">
-          <el-icon><Edit /></el-icon>
-          编辑配置
-        </el-button>
+        <div class="section-actions">
+          <el-button v-if="!rerankConfig" type="primary" @click="handleEditRerank">
+            <el-icon><Plus /></el-icon>
+            添加配置
+          </el-button>
+          <el-button v-else @click="handleEditRerank">
+            <el-icon><Edit /></el-icon>
+            编辑配置
+          </el-button>
+          <el-button type="primary" @click="handleTestRerankConnection" :disabled="!rerankConfig">
+            <el-icon><Link /></el-icon>
+            测试连接
+          </el-button>
+        </div>
       </div>
       <el-descriptions :column="2" border class="config-desc" v-if="rerankConfig">
         <el-descriptions-item label="配置名称">
@@ -192,7 +201,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Cpu, Link, Edit, Refresh, Plus } from '@element-plus/icons-vue'
-import { getLLMConfigs, createLLMConfig, updateLLMConfig, type LLMConfigForm } from '@/api/llmConfig'
+import { getLLMConfigs, createLLMConfig, updateLLMConfig, testLLMConnection, type LLMConfigForm } from '@/api/llmConfig'
 
 const loading = ref(false)
 const configSaving = ref(false)
@@ -200,7 +209,7 @@ const configDialogVisible = ref(false)
 const configFormRef = ref<FormInstance>()
 
 const xinferenceConfig = ref<any>(null)
-const newapiConfig = ref<any>(null)
+const llmConfig = ref<any>(null)
 const rerankConfig = ref<any>(null)
 
 const currentConfigType = ref('')
@@ -214,12 +223,7 @@ const configDialogTitle = computed(() => {
   return '编辑配置'
 })
 
-const maskApiKey = computed(() => {
-  const key = newapiConfig.value?.apiKey || ''
-  if (!key) return '-'
-  if (key.length <= 12) return key
-  return key.slice(0, 6) + '...' + key.slice(-4)
-})
+
 
 const configForm = reactive<LLMConfigForm>({
   name: '',
@@ -250,7 +254,7 @@ async function loadLLMConfigs() {
     if (res.code === 0 && res.data) {
       const configs = Array.isArray(res.data) ? res.data : (res.data.list || [])
       xinferenceConfig.value = configs.find((c: any) => c.type === 'xinference' && c.modelType === 'embedding') || null
-      newapiConfig.value = configs.find((c: any) => c.type === 'newapi' && c.modelType === 'llm') || null
+      llmConfig.value = configs.find((c: any) => c.type === 'xinference' && c.modelType === 'llm') || null
       rerankConfig.value = configs.find((c: any) => c.type === 'xinference' && c.modelType === 'rerank') || null
     }
   } catch (e) {
@@ -283,7 +287,7 @@ function handleEditXinference() {
   } else {
     editingConfigId.value = null
     Object.assign(configForm, {
-      name: 'Xinference嵌入模型',
+      name: '向量模型',
       type: 'xinference',
       baseUrl: '',
       apiKey: '',
@@ -301,34 +305,34 @@ function handleEditXinference() {
   configDialogVisible.value = true
 }
 
-function handleEditNewAPI() {
-  currentConfigType.value = 'newapi'
+function handleEditLLM() {
+  currentConfigType.value = 'xinference'
   currentConfigModelType.value = 'llm'
-  if (newapiConfig.value) {
-    editingConfigId.value = newapiConfig.value.id
+  if (llmConfig.value) {
+    editingConfigId.value = llmConfig.value.id
     Object.assign(configForm, {
-      name: newapiConfig.value.name,
-      type: 'newapi',
-      baseUrl: newapiConfig.value.baseUrl,
-      apiKey: newapiConfig.value.apiKey || '',
-      modelName: newapiConfig.value.modelName,
+      name: llmConfig.value.name,
+      type: 'xinference',
+      baseUrl: llmConfig.value.baseUrl,
+      apiKey: llmConfig.value.apiKey || '',
+      modelName: llmConfig.value.modelName,
       modelType: 'llm',
-      maxTokens: newapiConfig.value.maxTokens || 20480,
-      temperature: newapiConfig.value.temperature || 0.7,
-      topP: newapiConfig.value.topP,
-      extraParams: newapiConfig.value.extraParams || {},
-      isDefault: newapiConfig.value.isDefault,
-      description: newapiConfig.value.description || '',
-      status: newapiConfig.value.status || 'active',
+      maxTokens: llmConfig.value.maxTokens || 20480,
+      temperature: llmConfig.value.temperature || 0.7,
+      topP: llmConfig.value.topP,
+      extraParams: llmConfig.value.extraParams || {},
+      isDefault: llmConfig.value.isDefault,
+      description: llmConfig.value.description || '',
+      status: llmConfig.value.status || 'active',
     })
   } else {
     editingConfigId.value = null
     Object.assign(configForm, {
-      name: 'NewAPI对话模型',
-      type: 'newapi',
+      name: 'LLM模型',
+      type: 'xinference',
       baseUrl: '',
       apiKey: '',
-      modelName: 'glm-5.1-fp8',
+      modelName: 'qwen3',
       modelType: 'llm',
       maxTokens: 20480,
       temperature: 0.7,
@@ -417,8 +421,61 @@ async function handleSaveConfig() {
   })
 }
 
-function handleTestConnection() {
-  ElMessage.success('连接测试成功')
+async function handleTestXinferenceConnection() {
+  if (!xinferenceConfig.value) return
+  try {
+    const res: any = await testLLMConnection({
+      baseUrl: xinferenceConfig.value.baseUrl,
+      apiKey: xinferenceConfig.value.apiKey,
+      modelName: xinferenceConfig.value.modelName,
+      modelType: xinferenceConfig.value.modelType,
+    })
+    if (res.code === 0) {
+      ElMessage.success('连接测试成功')
+    } else {
+      ElMessage.error(res.message || '连接测试失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.message || e.message || '连接测试失败')
+  }
+}
+
+async function handleTestLLMConnection() {
+  if (!llmConfig.value) return
+  try {
+    const res: any = await testLLMConnection({
+      baseUrl: llmConfig.value.baseUrl,
+      apiKey: llmConfig.value.apiKey,
+      modelName: llmConfig.value.modelName,
+      modelType: llmConfig.value.modelType,
+    })
+    if (res.code === 0) {
+      ElMessage.success('连接测试成功')
+    } else {
+      ElMessage.error(res.message || '连接测试失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.message || e.message || '连接测试失败')
+  }
+}
+
+async function handleTestRerankConnection() {
+  if (!rerankConfig.value) return
+  try {
+    const res: any = await testLLMConnection({
+      baseUrl: rerankConfig.value.baseUrl,
+      apiKey: rerankConfig.value.apiKey,
+      modelName: rerankConfig.value.modelName,
+      modelType: rerankConfig.value.modelType,
+    })
+    if (res.code === 0) {
+      ElMessage.success('连接测试成功')
+    } else {
+      ElMessage.error(res.message || '连接测试失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.message || e.message || '连接测试失败')
+  }
 }
 
 onMounted(() => {

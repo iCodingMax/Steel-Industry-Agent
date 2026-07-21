@@ -64,6 +64,8 @@ services:
       dockerfile: Dockerfile
     container_name: steel-agent-backend
     restart: unless-stopped
+    tty: true
+    init: true
     environment:
       - ENV=production
       - MYSQL_HOST=mysql
@@ -95,9 +97,6 @@ services:
       - XINFERENCE_BASE_URL=${XINFERENCE_BASE_URL:-http://172.1.2.198:9997}
       - XINFERENCE_EMBED_MODEL=${XINFERENCE_EMBED_MODEL:-bge-m3}
       - XINFERENCE_RERANK_MODEL=${XINFERENCE_RERANK_MODEL:-bge-reranker-large}
-      - NEWAPI_BASE_URL=${NEWAPI_BASE_URL:-http://172.1.8.152:3000/v1}
-      - NEWAPI_API_KEY=${NEWAPI_API_KEY:-}
-      - NEWAPI_MODEL=${NEWAPI_MODEL:-glm-5.1-fp8}
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-20480}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
     ports:

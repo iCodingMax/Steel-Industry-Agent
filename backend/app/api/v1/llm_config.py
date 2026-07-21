@@ -1,4 +1,4 @@
-﻿"""
+"""
 大模型配置API
 """
 from typing import List
@@ -78,3 +78,13 @@ async def delete_llm_config(
     """删除LLM配置"""
     await llm_config_service.delete(db, config_id)
     return success_response(message="删除成功")
+
+
+@router.post("/test-connection", summary="测试LLM配置连接")
+async def test_llm_connection(
+    data: dict,
+    user: User = Depends(get_current_user),
+):
+    """测试LLM配置连接"""
+    result = await llm_config_service.test_connection(data)
+    return success_response(data=result)
