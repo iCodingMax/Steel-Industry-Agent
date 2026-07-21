@@ -1,6 +1,7 @@
 import request from './index'
 
 export interface LLMConfigForm {
+  id?: number
   name: string
   type: string
   baseUrl: string
@@ -34,4 +35,8 @@ export function updateLLMConfig(id: number, data: Partial<LLMConfigForm>) {
 
 export function deleteLLMConfig(id: number) {
   return request.delete<any>(`/llm-configs/${id}`)
+}
+
+export function testLLMConnection(data: Partial<LLMConfigForm>) {
+  return request.post<any>('/llm-configs/test-connection', data)
 }

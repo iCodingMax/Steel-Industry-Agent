@@ -1,5 +1,15 @@
 """
-会话与消息模型
+会话与消息模型模块
+定义对话会话、消息和全链路溯源的数据模型
+
+数据关系：
+- Session（会话）: 包含多个 Message（消息）和 Trace（溯源）
+- Message（消息）: 属于一个 Session，记录用户输入和助手回复
+- Trace（溯源）: 关联到 Message，记录知识引用和数据来源
+
+注意：
+- 使用 PostgreSQL JSONB 类型存储结构化数据（references、sql_traces、thinking_steps等）
+- created_at/updated_at 使用 SQLAlchemy func.now() 自动生成
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
@@ -10,7 +20,11 @@ from app.core.base_model import Base
 
 
 class Session(Base):
-    """会话表"""
+    """
+    会话表
+    存储用户与系统的对话会话信息
+    每个会话包含多条消息，支持意图分类和状态管理
+    """
 
     __tablename__ = "sessions"
 
@@ -36,7 +50,11 @@ class Session(Base):
 
 
 class Message(Base):
-    """消息表"""
+    """
+    消息表
+    存储对话中的每条消息，包括用户输入和助手回复
+    消息包含丰富的元数据，支持知识引用、SQL溯源、图表推荐等功能
+    """
 
     __tablename__ = "messages"
 
@@ -74,7 +92,11 @@ class Message(Base):
 
 
 class Trace(Base):
-    """全链路溯源表"""
+    """
+    全链路溯源表
+    记录消息的来源信息，支持知识引用、数据来源和SQL追踪
+    用于实现回答的可解释性和数据溯源
+    """
 
     __tablename__ = "traces"
 

@@ -8,6 +8,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', requiresAuth: false },
   },
   {
+    path: '/chat/embed/:appId',
+    name: 'ChatEmbed',
+    component: () => import('@/views/ChatEmbedView.vue'),
+    meta: { title: '智能助手', requiresAuth: false },
+  },
+  {
     path: '/',
     name: 'MainLayout',
     component: () => import('@/components/layout/MainLayout.vue'),
@@ -19,6 +25,18 @@ const routes: RouteRecordRaw[] = [
         name: 'Chat',
         component: () => import('@/views/ChatView.vue'),
         meta: { title: '智能对话', icon: 'ChatSquare' },
+      },
+      {
+        path: 'app-settings',
+        name: 'AppSettings',
+        component: () => import('@/views/AppSettingsView.vue'),
+        meta: { title: '应用设置', icon: 'AppSettings' },
+      },
+      {
+        path: 'app-integration',
+        name: 'AppIntegration',
+        component: () => import('@/views/AppIntegrationView.vue'),
+        meta: { title: '集成设置', icon: 'AppIntegration' },
       },
       {
         path: 'knowledge',

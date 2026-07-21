@@ -1,6 +1,6 @@
 """
 大模型客户端封装
-统一调用NewAPI LLM服务
+统一调用Xinference LLM服务
 """
 from typing import List, Dict, Optional, AsyncIterator
 import httpx
@@ -13,9 +13,9 @@ class LLMClient:
     """大模型客户端"""
 
     def __init__(self):
-        self.base_url = settings.NEWAPI_BASE_URL
-        self.api_key = settings.NEWAPI_API_KEY
-        self.model = settings.NEWAPI_MODEL
+        self.base_url = f"{settings.XINFERENCE_BASE_URL}/v1"
+        self.api_key = "not-needed"
+        self.model = settings.XINFERENCE_LLM_MODEL
         self.max_tokens = settings.LLM_MAX_TOKENS
         self.temperature = settings.LLM_TEMPERATURE
 
@@ -53,7 +53,7 @@ class LLMClient:
         async with httpx.AsyncClient(timeout=120.0) as client:
             try:
                 response = await client.post(
-                    f"{self.base_url}/v1/chat/completions",
+                    f"{self.base_url}/chat/completions",
                     headers=self._get_headers(),
                     json=payload,
                 )
@@ -92,7 +92,7 @@ class LLMClient:
             try:
                 async with client.stream(
                     "POST",
-                    f"{self.base_url}/v1/chat/completions",
+                    f"{self.base_url}/chat/completions",
                     headers=self._get_headers(),
                     json=payload,
                 ) as response:

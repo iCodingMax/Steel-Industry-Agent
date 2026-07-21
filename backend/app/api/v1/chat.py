@@ -217,6 +217,9 @@ async def stream_chat(
             db = SystemAsyncSession()
             await db.__aenter__()
 
+            # 初始化data_producer，避免finally块中引用未定义变量
+            data_producer: Optional[asyncio.Task] = None
+
             # 检查会话是否存在
             session = await session_service.get_by_id(db, data.sessionId)
             if not session:
@@ -298,6 +301,27 @@ async def stream_chat(
                             references=[r.model_dump() for r in refs],
                             thinking_steps=collected_thinking_steps,
                         )
+
+                else:
+                    # 没有指定知识库，直接调用LLM回答
+                    yield emit_thinking(2, 3, '直接回答', '未选择知识库，直接回答用户问题...')
+                    
+                    from app.services.llm_service import llm_service
+                    full_answer = ""
+                    async for chunk in llm_service.chat_stream(data.question):
+                        full_answer += chunk
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+                    
+                    # 保存AI回复
+                    await message_service.create(
+                        db,
+                        session_id=data.sessionId,
+                        role="assistant",
+                        content=full_answer,
+                        intent="knowledge",
+                        references=[],
+                        thinking_steps=collected_thinking_steps,
+                    )
 
             elif intent == "data":
                 # 数据查询
@@ -455,17 +479,23 @@ async def stream_chat(
 
                 async def _produce_data_explanation():
                     """后台生成数据分析解释，放入队列"""
-                    if not data_result or len(data_result) == 0:
-                        if explanation:
+                    try:
+                        if not data_result or len(data_result) == 0:
+                            if explanation:
+                                await data_chunks_queue.put(explanation)
+                            data_stream_done.set()
+                            return
+                        if explanation_prompt:
+                            async for chunk in llm_service.chat_stream(explanation_prompt):
+                                await data_chunks_queue.put(chunk)
+                        elif explanation:
                             await data_chunks_queue.put(explanation)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                    finally:
                         data_stream_done.set()
-                        return
-                    if explanation_prompt:
-                        async for chunk in llm_service.chat_stream(explanation_prompt):
-                            await data_chunks_queue.put(chunk)
-                    elif explanation:
-                        await data_chunks_queue.put(explanation)
-                    data_stream_done.set()
 
                 # 并行：知识回答流式输出 + 数据分析解释后台生成
                 if knowledge_prompt:
@@ -477,18 +507,15 @@ async def stream_chat(
                     data_producer = asyncio.create_task(_produce_data_explanation())
 
                     async for chunk in llm_service.chat_stream(knowledge_prompt):
-                        # 知识解答内部不产生空行，将连续换行合并为单换行
                         chunk = chunk.replace(chr(10) * 2, chr(10))
                         knowledge_answer += chunk
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
 
-                    # 知识解答结束，输出换行分隔
                     full_answer += chr(10)
                     separator = chr(10)
                     yield f"data: {json.dumps({'type': 'content', 'content': separator})}\n\n"
                 else:
-                    # 没有知识回答，直接启动数据分析解释
                     data_producer = asyncio.create_task(_produce_data_explanation())
 
                 # 流式输出数据分析解释（从队列中取出已生成的chunk）
@@ -541,12 +568,177 @@ async def stream_chat(
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            raise
+        finally:
+            if data_producer and not data_producer.done():
+                data_producer.cancel()
+                try:
+                    await data_producer
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
             if db:
-                await db.rollback()
+                await db.__aexit__(None, None, None)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+class EmbedChatRequest(BaseModel):
+    """嵌入对话请求"""
+    sessionId: str = Field(..., description="会话ID")
+    question: str = Field(..., description="用户问题", min_length=1)
+    knowledgeBaseId: Optional[int] = Field(None, description="知识库ID")
+    applicationId: Optional[int] = Field(None, description="应用ID")
+
+
+@router.post("/embed/chat", summary="嵌入模式对话")
+async def embed_chat(
+    data: EmbedChatRequest,
+):
+    """
+    嵌入模式对话API，支持iframe嵌入场景
+    无需认证，根据applicationId获取应用配置进行对话
+    """
+    async def generate():
+        db = None
+        stream_start_time = time.time()
+        collected_thinking_steps: list = []
+
+        try:
+            from app.core.database import SystemAsyncSession
+            db = SystemAsyncSession()
+            await db.__aenter__()
+
+            yield f"data: {json.dumps({'type': 'start', 'sessionId': data.sessionId})}\n\n"
+
+            knowledge_base_id = data.knowledgeBaseId
+            greeting_message = ""
+
+            if data.applicationId:
+                from app.models.application import Application
+                app_result = await db.execute(
+                    select(Application).where(Application.id == data.applicationId)
+                )
+                app = app_result.scalar_one_or_none()
+                if app:
+                    greeting_message = app.greeting_message or ""
+                    if app.knowledge_base_ids and len(app.knowledge_base_ids) > 0:
+                        knowledge_base_id = app.knowledge_base_ids[0]
+
+            from app.services.router_service import intent_classifier
+            intent = await intent_classifier.classify(data.question)
+
+            yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
+
+            if intent == "knowledge":
+                yield f"data: {json.dumps({'type': 'thinking', 'step': 1, 'total_steps': 3, 'title': '查询知识库', 'description': '正在检索相关文档知识...'})}\n\n"
+
+                if knowledge_base_id:
+                    from app.services.vector_service import VectorIndexService
+                    from app.models.knowledge import KnowledgeBase
+                    from app.schemas.knowledge import KnowledgeQuery
+
+                    kb_stmt = select(KnowledgeBase).where(KnowledgeBase.id == knowledge_base_id)
+                    kb_result = await db.execute(kb_stmt)
+                    kb = kb_result.scalar_one_or_none()
+
+                    if kb:
+                        query = KnowledgeQuery(
+                            knowledgeBaseId=knowledge_base_id,
+                            question=data.question,
+                            topK=5,
+                        )
+                        refs = await VectorIndexService.search(db, query, kb)
+
+                        yield f"data: {json.dumps({'type': 'thinking', 'step': 2, 'total_steps': 3, 'title': '知识匹配完成', 'description': f'找到 {len(refs)} 条相关文档'})}\n\n"
+
+                        yield f"data: {json.dumps({'type': 'references', 'data': [r.model_dump() for r in refs]})}\n\n"
+
+                        yield f"data: {json.dumps({'type': 'thinking', 'step': 3, 'total_steps': 3, 'title': '生成回答', 'description': '基于知识库内容生成自然语言回答...'})}\n\n"
+
+                        from app.services.llm_service import llm_service
+                        context_text = "\n\n".join([f"【文档{i+1}】{ref.content}" for i, ref in enumerate(refs)])
+                        prompt = f"""基于以下知识内容回答用户问题，如果知识内容中没有相关信息，请明确说明。
+
+知识内容：
+{context_text}
+
+用户问题：{data.question}
+
+请提供准确、简洁的回答。"""
+
+                        full_answer = ""
+                        async for chunk in llm_service.chat_stream(prompt):
+                            full_answer += chunk
+                            yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                else:
+                    yield f"data: {json.dumps({'type': 'thinking', 'step': 2, 'total_steps': 3, 'title': '直接回答', 'description': '未配置知识库，直接回答用户问题...'})}\n\n"
+
+                    from app.services.llm_service import llm_service
+                    full_answer = ""
+                    async for chunk in llm_service.chat_stream(data.question):
+                        full_answer += chunk
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+            elif intent == "data":
+                yield f"data: {json.dumps({'type': 'thinking', 'step': 1, 'total_steps': 4, 'title': '意图分析', 'description': '识别用户意图，确定查询策略...'})}\n\n"
+
+                from app.services.chatbi_service import chatbi_service
+                explanation, results, traces, query_time, explanation_prompt, column_meta, chart_type = await chatbi_service.query(
+                    db, data.question, None
+                )
+
+                yield f"data: {json.dumps({'type': 'thinking', 'step': 2, 'total_steps': 4, 'title': 'SQL生成', 'description': f'成功生成 SQL 查询语句'})}\n\n"
+
+                if traces:
+                    yield f"data: {json.dumps({'type': 'sql_traces', 'data': traces})}\n\n"
+
+                yield f"data: {json.dumps({'type': 'thinking', 'step': 3, 'total_steps': 4, 'title': '数据查询', 'description': f'执行 SQL 查询，返回 {len(results) if results else 0} 条结果'})}\n\n"
+
+                if results:
+                    yield f"data: {json.dumps({'type': 'data_result', 'data': results, 'columnMeta': column_meta, 'chartType': chart_type})}\n\n"
+
+                await db.commit()
+
+                yield f"data: {json.dumps({'type': 'thinking', 'step': 4, 'total_steps': 4, 'title': '结果分析', 'description': '分析查询结果，生成自然语言解释...'})}\n\n"
+
+                from app.services.llm_service import llm_service
+                full_answer = ""
+                if explanation_prompt:
+                    async for chunk in llm_service.chat_stream(explanation_prompt):
+                        full_answer += chunk
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+                else:
+                    full_answer = explanation
+                    yield f"data: {json.dumps({'type': 'content', 'content': explanation})}\n\n"
+
+            else:
+                from app.services.llm_service import llm_service
+                full_answer = ""
+                async for chunk in llm_service.chat_stream(data.question):
+                    full_answer += chunk
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+            await db.commit()
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         finally:
             if db:
-                await db.close()
+                await db.__aexit__(None, None, None)
 
     return StreamingResponse(
         generate(),

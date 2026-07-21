@@ -13,16 +13,42 @@
       </div>
     </div>
     <div class="sidebar-menu">
-      <div
-        v-for="item in menuItems"
-        :key="item.path"
-        class="menu-item"
-        :class="{ active: isActive(item.path) }"
-        @click="navigateTo(item.path)"
-      >
-        <svg class="menu-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="item.svgPath" />
-        <span class="menu-text">{{ item.title }}</span>
-      </div>
+      <template v-for="item in menuItems" :key="item.path">
+        <div
+          v-if="!item.children"
+          class="menu-item"
+          :class="{ active: isActive(item.path) }"
+          @click="navigateTo(item.path)"
+        >
+          <svg class="menu-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="item.svgPath" />
+          <span class="menu-text">{{ item.title }}</span>
+        </div>
+        <div v-else class="menu-group">
+          <div
+            class="menu-item menu-group-header"
+            :class="{ active: isActive(item.path), expanded: expandedGroups.includes(item.path) }"
+            @click="toggleGroup(item.path)"
+          >
+            <svg class="menu-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="item.svgPath" />
+            <span class="menu-text">{{ item.title }}</span>
+            <svg class="menu-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14M12 5l7 7-7 7"/>
+            </svg>
+          </div>
+          <div v-show="expandedGroups.includes(item.path)" class="menu-sub-items">
+            <div
+              v-for="child in item.children"
+              :key="child.path"
+              class="menu-item menu-sub-item"
+              :class="{ active: isActive(child.path) }"
+              @click.stop="navigateTo(child.path)"
+            >
+              <svg class="menu-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="child.svgPath" />
+              <span class="menu-text">{{ child.title }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
     </div>
     <div class="sidebar-footer">
       <div class="system-status">
@@ -34,17 +60,35 @@
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
 const router = useRouter()
+const expandedGroups = ref<string[]>([])
 
-// 使用 Feather Icons 风格的 SVG path，不依赖 @element-plus/icons-vue
 const menuItems = [
   {
     path: '/chat',
     title: '智能对话',
     svgPath: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  },
+  {
+    path: '/app-settings',
+    title: '应用管理',
+    svgPath: '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>',
+    children: [
+      {
+        path: '/app-settings',
+        title: '应用设置',
+        svgPath: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+      },
+      {
+        path: '/app-integration',
+        title: '集成设置',
+        svgPath: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
+      },
+    ],
   },
   {
     path: '/knowledge',
@@ -74,12 +118,33 @@ const menuItems = [
 ]
 
 const isActive = (path: string) => {
-  return route.path.startsWith(path)
+  const fullPath = path.startsWith('/') ? path : '/' + path
+  return route.path.startsWith(fullPath)
 }
 
 const navigateTo = (path: string) => {
-  router.push(path)
+  const fullPath = path.startsWith('/') ? path : '/' + path
+  router.push(fullPath)
 }
+
+const toggleGroup = (path: string) => {
+  const index = expandedGroups.value.indexOf(path)
+  if (index === -1) {
+    expandedGroups.value.push(path)
+  } else {
+    expandedGroups.value.splice(index, 1)
+  }
+}
+
+onMounted(() => {
+  const activeGroup = menuItems.find(item => item.children && item.children.some(child => {
+    const childPath = child.path.startsWith('/') ? child.path : '/' + child.path
+    return route.path.startsWith(childPath)
+  }))
+  if (activeGroup) {
+    expandedGroups.value.push(activeGroup.path)
+  }
+})
 </script>
 
 <style lang="scss" scoped>
@@ -150,6 +215,8 @@ const navigateTo = (path: string) => {
 
   .menu-text {
     font-size: 14px;
+    flex: 1;
+    white-space: nowrap;
   }
 
   &:hover {
@@ -166,6 +233,38 @@ const navigateTo = (path: string) => {
     .menu-svg-icon {
       color: #60a5fa;
     }
+  }
+}
+
+.menu-group-header {
+  position: relative;
+
+  .menu-arrow {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  &.expanded .menu-arrow {
+    transform: rotate(90deg);
+  }
+}
+
+.menu-sub-items {
+  padding-left: 12px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.menu-sub-item {
+  padding-left: 32px;
+  padding-right: 16px;
+  margin-bottom: 2px;
+
+  &.active {
+    background: rgba(59, 130, 246, 0.15);
+    border-left: 2px solid #60a5fa;
   }
 }
 

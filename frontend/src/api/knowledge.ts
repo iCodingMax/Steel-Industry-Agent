@@ -50,12 +50,18 @@ export interface KnowledgeAnswer {
   queryTime: number
 }
 
+interface ApiResponse<T> {
+  code: number
+  message: string
+  data: T
+}
+
 export function getKnowledgeBases(params?: { skip?: number; limit?: number }) {
-  return request.get<{ list: KnowledgeBase[]; total: number }>('/knowledge-bases', { params })
+  return request.get<ApiResponse<KnowledgeBase[]>>('/knowledge-bases', { params })
 }
 
 export function getKnowledgeBase(id: number) {
-  return request.get<KnowledgeBase>(`/knowledge-bases/${id}`)
+  return request.get<ApiResponse<KnowledgeBase>>(`/knowledge-bases/${id}`)
 }
 
 export function createKnowledgeBase(data: any) {

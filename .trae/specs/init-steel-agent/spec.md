@@ -5,18 +5,18 @@
 
 ## What Changes
 - 构建**统一对话入口**，单对话框同时支持纯工艺知识查询、纯生产数据查询、知识+数据混合分析
-- 实现**系统配置管理模块**：数据源管理（数据库连接配置）、指标维度管理、术语管理、大模型配置
+- 实现**系统配置管理模块**：数据源管理（数据库连接配置）、指标维度管理、术语管理、大模型配置（Xinference）
 - 实现**RAG工艺知识问答模块**：多格式文档解析、文本切片（参考Dify）、混合索引（向量+BM25 RRF融合）、重排Rerank、知识库管理
 - 实现**ChatBI智能问数模块**：NL2SQL/NL2Metrics双模式、指标语义层（参考衡石ChatBI）、数据配置管理（参考SQLBot）、五维可信机制
 - 实现**路由分发层**：意图识别（知识/数据/混合）、动态路由分发、混合分析
 - 实现**全链路溯源**：文档引用溯源、SQL溯源、执行链路日志、证据标注
 - 实现**用户认证模块**：账号密码登录，默认admin/admin，JWT token鉴权
-- 实现**私有化部署适配**：兼容国产大模型与工业主流数据库，适配企业内网
+- 实现**私有化部署适配**：兼容国产大模型与工业主流数据库（MySQL/Oracle），适配企业内网
 - 构建**FastAPI后端服务**与**Vue.js前端管理后台**（对话页 + 配置管理），支持SSE流式响应
 
 ## Impact
 - Affected specs: 用户认证、系统配置、RAG知识问答、ChatBI智能问数、路由分发、溯源机制、私有化部署
-- Affected code: 全新项目，从零构建后端服务（Python/FastAPI）、前端管理后台（Vue.js/Echarts）、向量数据库（pgvector）、关系数据库（MySQL）
+- Affected code: 全新项目，从零构建后端服务（Python/FastAPI）、前端管理后台（Vue.js/Echarts）、向量数据库（PostgreSQL/pgvector）、关系数据库（PostgreSQL系统库 + MySQL业务库）
 
 ---
 
@@ -42,15 +42,11 @@
 - **密码加密**：使用bcrypt对密码进行单向哈希存储
 - **JWT过期**：access_token有效期1小时，refresh_token有效期7天
 - **Token刷新**：支持使用refresh_token获取新的access_token
-- **默认账号**：系统初始化时创建admin/admin账号，首次登录后强制修改密码
+- **默认账号**：系统初始化时创建admin/admin账号
 
 #### Scenario: 用户登录
 - **WHEN** 用户使用默认账号admin和密码admin登录
 - **THEN** 系统验证成功，返回JWT token，用户可访问受保护的系统
-
-#### Scenario: 首次登录强制改密
-- **WHEN** 用户首次使用默认密码登录
-- **THEN** 系统提示修改密码，修改成功后方可进入系统
 
 ---
 
@@ -62,7 +58,7 @@
 
 ##### 数据源管理
 - **功能描述**：管理ChatBI所需的业务数据库连接配置
-- **支持数据库**：MySQL、PostgreSQL、ClickHouse（可选）
+- **支持数据库**：MySQL、PostgreSQL、Oracle（可选）
 - **配置项**：数据源名称、数据库类型、主机地址、端口、数据库名、用户名、密码、连接池大小
 - **连接测试**：支持测试数据库连接是否成功
 - **Schema同步**：支持同步数据库表结构，获取表名、字段名、字段类型、描述
@@ -102,17 +98,13 @@
 #### 系统设置模块
 系统设置模块负责配置系统运行所需的全局参数，包括模型配置和账号设置。
 
-##### 模型配置
+##### 模型配置（Xinference统一管理）
 - **功能描述**：配置对话、嵌入、重排使用的模型服务参数
 - **Xinference配置**：
   - Xinference服务地址（XINFERENCE_BASE_URL）
   - 嵌入模型名称（XINFERENCE_EMBED_MODEL）
   - 重排模型名称（XINFERENCE_RERANK_MODEL）
-  - 重排返回条数（RERANK_TOP_K）
-- **NewAPI配置**：
-  - NewAPI服务地址（NEWAPI_BASE_URL）
-  - API密钥（NEWAPI_API_KEY）
-  - 对话模型名称（NEWAPI_MODEL）
+  - 对话模型名称（XINFERENCE_LLM_MODEL）
   - 最大输出token数（LLM_MAX_TOKENS）
   - 温度参数（LLM_TEMPERATURE）
 - **配置展示**：当前生效的模型配置参数展示
@@ -135,7 +127,7 @@
 - **THEN** 用户在对话中使用"出钢温度"时，系统自动识别为标准字段，正确生成查询
 
 #### Scenario: 模型配置
-- **WHEN** 管理员在系统设置页配置Xinference和NewAPI模型参数
+- **WHEN** 管理员在系统设置页配置Xinference模型参数
 - **THEN** 配置生效后，系统使用新的模型服务进行推理和向量化
 
 ---
@@ -160,15 +152,15 @@
 - **元数据保留**：每个切片保留文档来源、页码、章节等元信息
 
 #### 向量索引
-- **嵌入模型**：支持bge-m3、bge-small-zh-v1.5等中文嵌入模型
-- **向量存储**：使用pgvector（PostgreSQL扩展）
+- **嵌入模型**：支持bge-m3、bge-small-zh-v1.5等中文嵌入模型（通过Xinference调用）
+- **向量存储**：使用pgvector（PostgreSQL扩展），与系统数据库统一存储
 - **索引结构**：HNSW跳表结构，支持毫秒级相似性搜索
 - **增量入库**：支持文档的增量更新与删除
 
 #### 混合检索 + 重排
 - **检索策略**：向量检索（semantic similarity）+ BM25关键词检索（基于jieba中文分词）
 - **RRF融合**：使用Reciprocal Rank Fusion算法融合多路检索结果
-- **重排Rerank**：初检Top-K结果经重排模型重新打分排序
+- **重排Rerank**：初检Top-K结果经重排模型重新打分排序（通过Xinference调用bge-reranker-large）
 - **配置参数**：top_k、similarity_threshold、reranking_enabled、rerank_top_k
 
 #### 知识库管理
@@ -237,8 +229,7 @@
 - **置信度阈值**：低于阈值返回澄清问题
 
 #### 路由分发器（MVP简化）
-- **路由规则**：知识→RAG、数据→ChatBI、混合→串行融合
-- **MVP混合查询**：串行执行RAG与ChatBI，保证结果正确性（v1.1优化为并行）
+- **路由规则**：知识→RAG、数据→ChatBI、混合→并行融合
 - **v1.1优化**：多通道并行，混合查询支持RAG与ChatBI并行处理
 - **Fallback机制**：主通道失败时自动切换备选通道
 
@@ -348,7 +339,7 @@
 - **术语管理Tab**：列表展示、新增/编辑表单、同义词管理
 
 #### 系统设置页
-- **模型配置**：Xinference嵌入模型/重排模型配置、NewAPI对话模型配置、模型参数展示
+- **模型配置**：Xinference模型配置（嵌入/重排/对话模型）、模型参数展示
 - **账号设置**：修改密码、个人信息
 
 #### Scenario: 配置数据源
@@ -357,7 +348,7 @@
 
 #### Scenario: 配置模型
 - **WHEN** 管理员在系统设置页配置模型参数
-- **THEN** 配置Xinference和NewAPI模型服务地址、密钥，保存后系统使用新配置
+- **THEN** 配置Xinference模型服务地址、模型名称，保存后系统使用新配置
 
 #### Scenario: 对话交互
 - **WHEN** 用户在智能对话页输入问题
@@ -368,23 +359,27 @@
 ### Requirement: 私有化部署
 系统 SHALL 支持私有化部署，兼容国产大模型与工业主流数据库，适配企业内网环境。
 
-#### 大模型适配
-- **模型切换**：通过配置切换OpenAI/国产模型（千问、DeepSeek、文心一言等）
-- **API兼容**：适配各厂商的API格式与鉴权方式
-- **Embedding模型**：支持本地部署的bge-m3等中文嵌入模型
+#### 大模型适配（Xinference统一管理）
+- **模型切换**：通过配置切换Xinference管理的各类模型（千问、DeepSeek、文心一言等）
+- **API兼容**：Xinference统一封装各厂商的API格式与鉴权方式
+- **Embedding模型**：支持通过Xinference调用的bge-m3等中文嵌入模型
+- **Rerank模型**：支持通过Xinference调用的bge-reranker-large等重排模型
 
 #### 数据库适配
-- **MySQL/PostgreSQL**：通过配置接入，支持pgvector扩展
+- **双数据库架构**：
+  - PostgreSQL + pgvector：系统数据库 + 向量数据库
+  - MySQL：业务数据库（钢铁生产数据）
+- **Oracle支持**：可选接入Oracle作为业务数据库
 - **连接池管理**：数据库连接池配置，支持高并发
 
 #### 部署方式
-- **Docker Compose**：一键部署所有组件（后端、前端、MySQL、PostgreSQL、Redis）
+- **Docker Compose**：一键部署所有组件（后端、前端、PostgreSQL、MySQL、Redis）
 - **环境隔离**：各组件独立容器，网络隔离
 - **健康检查**：各组件健康检查接口
 
 #### Scenario: 国产大模型接入
 - **WHEN** 部署环境无法访问外网大模型API
-- **THEN** 系统可在系统设置中切换为国产大模型，配置API地址和密钥即可使用
+- **THEN** 系统可在系统设置中配置Xinference服务，使用私有化部署的国产大模型
 
 ---
 

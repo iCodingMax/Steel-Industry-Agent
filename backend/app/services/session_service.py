@@ -1,6 +1,16 @@
 """
-会话管理服务
-功能：会话CRUD、消息管理、上下文管理
+会话管理服务模块
+管理对话会话、消息和溯源记录的完整生命周期
+
+主要功能：
+1. 会话管理：创建、查询、更新、删除会话
+2. 消息管理：创建消息、获取会话消息列表、获取对话历史
+3. 溯源管理：创建和查询溯源记录（用于追踪知识引用和数据来源）
+
+数据模型关系：
+- Session（会话）: 包含多个 Message（消息）和 Trace（溯源）
+- Message（消息）: 属于一个 Session，包含内容、意图、引用等信息
+- Trace（溯源）: 关联到 Message，记录知识片段或数据来源
 """
 from typing import List, Optional
 from loguru import logger
@@ -13,7 +23,11 @@ from app.middlewares.exception_handler import BusinessException
 
 
 class SessionService:
-    """会话服务类"""
+    """
+    会话服务类
+    负责对话会话的生命周期管理
+    支持用户创建新会话、查询会话列表、更新会话标题、删除会话等操作
+    """
 
     @staticmethod
     async def create(
@@ -21,7 +35,15 @@ class SessionService:
         user_id: int,
         title: Optional[str] = None,
     ) -> Session:
-        """创建会话"""
+        """
+        创建新会话
+
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :param title: 会话标题（可选，默认为"新对话"）
+        :return: 创建的会话对象
+        """
+        logger.debug(f"创建会话: user_id={user_id}, title={title}")
         session = Session(
             user_id=user_id,
             title=title or "新对话",
@@ -29,12 +51,18 @@ class SessionService:
         db.add(session)
         await db.commit()
         await db.refresh(session)
-        logger.info(f"创建会话: ID={session.id}, 用户={user_id}")
+        logger.info(f"创建会话成功: ID={session.id}, 用户={user_id}")
         return session
 
     @staticmethod
     async def get_by_id(db: AsyncSession, session_id: int) -> Optional[Session]:
-        """根据ID获取会话"""
+        """
+        根据ID获取会话
+
+        :param db: 数据库会话
+        :param session_id: 会话ID
+        :return: 会话对象（不存在返回None）
+        """
         stmt = select(Session).where(Session.id == session_id)
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
@@ -46,10 +74,20 @@ class SessionService:
         skip: int = 0,
         limit: int = 50,
     ) -> List[Session]:
-        """获取用户的会话列表"""
+        """
+        获取用户的会话列表
+
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :param skip: 跳过条数（分页参数）
+        :param limit: 返回条数（分页参数，默认50）
+        :return: 会话列表（按更新时间降序排列）
+        """
         stmt = select(Session).where(Session.user_id == user_id).order_by(Session.updated_at.desc()).offset(skip).limit(limit)
         result = await db.execute(stmt)
-        return list(result.scalars().all())
+        sessions = list(result.scalars().all())
+        logger.debug(f"获取用户会话列表: user_id={user_id}, 数量={len(sessions)}")
+        return sessions
 
     @staticmethod
     async def update_title(
@@ -57,7 +95,15 @@ class SessionService:
         session_id: int,
         title: str,
     ) -> Optional[Session]:
-        """更新会话标题"""
+        """
+        更新会话标题
+
+        :param db: 数据库会话
+        :param session_id: 会话ID
+        :param title: 新标题
+        :return: 更新后的会话对象
+        :raises BusinessException: 会话不存在时抛出
+        """
         session = await SessionService.get_by_id(db, session_id)
         if not session:
             raise BusinessException(code=404, message="会话不存在")
@@ -65,26 +111,36 @@ class SessionService:
         session.title = title
         await db.commit()
         await db.refresh(session)
-        logger.info(f"更新会话标题: ID={session_id}, 标题={title}")
+        logger.info(f"更新会话标题成功: ID={session_id}, 标题={title}")
         return session
 
     @staticmethod
     async def delete(db: AsyncSession, session_id: int) -> None:
-        """删除会话"""
+        """
+        删除会话（级联删除关联的消息和溯源记录）
+
+        :param db: 数据库会话
+        :param session_id: 会话ID
+        :raises BusinessException: 会话不存在时抛出
+        """
         session = await SessionService.get_by_id(db, session_id)
         if not session:
             raise BusinessException(code=404, message="会话不存在")
 
-        # 删除关联的消息和溯源
+        # 删除关联的消息和溯源记录（级联删除）
         await db.execute(delete(Message).where(Message.session_id == session_id))
         await db.execute(delete(Trace).where(Trace.session_id == session_id))
         await db.delete(session)
         await db.commit()
-        logger.info(f"删除会话: ID={session_id}")
+        logger.info(f"删除会话成功: ID={session_id}")
 
 
 class MessageService:
-    """消息服务类"""
+    """
+    消息服务类
+    负责对话消息的管理，包括消息创建、查询和历史获取
+    消息是对话的基本单元，记录用户输入和助手回复
+    """
 
     @staticmethod
     async def create(
@@ -101,7 +157,24 @@ class MessageService:
         thinking_steps: Optional[List[dict]] = None,
         query_time: Optional[int] = None,
     ) -> Message:
-        """创建消息"""
+        """
+        创建消息
+
+        :param db: 数据库会话
+        :param session_id: 会话ID
+        :param role: 角色（user/assistant）
+        :param content: 消息内容
+        :param intent: 意图分类（knowledge/data/hybrid）
+        :param references: 知识引用列表（RAG检索结果）
+        :param sql_traces: SQL查询追踪列表（NL2SQL生成的SQL）
+        :param data_result: 数据查询结果（JSON格式）
+        :param column_meta: 字段元数据（字段名、注释等）
+        :param chart_type: 推荐图表类型（line/bar/pie/table）
+        :param thinking_steps: 思考过程步骤列表
+        :param query_time: 查询耗时（毫秒）
+        :return: 创建的消息对象
+        """
+        logger.debug(f"创建消息: session_id={session_id}, role={role}, intent={intent}")
         message = Message(
             session_id=session_id,
             role=role,
@@ -118,7 +191,7 @@ class MessageService:
         db.add(message)
         await db.commit()
         await db.refresh(message)
-        logger.info(f"创建消息: 会话={session_id}, 角色={role}")
+        logger.info(f"创建消息成功: 会话={session_id}, 角色={role}, ID={message.id}")
         return message
 
     @staticmethod
@@ -128,10 +201,20 @@ class MessageService:
         skip: int = 0,
         limit: int = 100,
     ) -> List[Message]:
-        """获取会话的消息列表"""
+        """
+        获取会话的消息列表
+
+        :param db: 数据库会话
+        :param session_id: 会话ID
+        :param skip: 跳过条数（分页参数）
+        :param limit: 返回条数（分页参数，默认100）
+        :return: 消息列表（按创建时间升序排列）
+        """
         stmt = select(Message).where(Message.session_id == session_id).order_by(Message.created_at).offset(skip).limit(limit)
         result = await db.execute(stmt)
-        return list(result.scalars().all())
+        messages = list(result.scalars().all())
+        logger.debug(f"获取会话消息列表: session_id={session_id}, 数量={len(messages)}")
+        return messages
 
     @staticmethod
     async def get_history(
@@ -139,7 +222,14 @@ class MessageService:
         session_id: int,
         window_size: int = 10,
     ) -> List[dict]:
-        """获取对话历史（用于上下文）"""
+        """
+        获取对话历史（用于LLM上下文）
+
+        :param db: 数据库会话
+        :param session_id: 会话ID
+        :param window_size: 返回最近的消息条数（默认10）
+        :return: 对话历史列表，格式为 [{"role": "user/assistant", "content": "文本"}]
+        """
         messages = await MessageService.get_by_session(db, session_id, limit=window_size)
         history = []
         for msg in messages:
@@ -147,11 +237,16 @@ class MessageService:
                 "role": msg.role,
                 "content": msg.content,
             })
+        logger.debug(f"获取对话历史: session_id={session_id}, 数量={len(history)}")
         return history
 
 
 class TraceService:
-    """溯源服务类"""
+    """
+    溯源服务类
+    负责溯源记录的管理，追踪知识引用和数据来源
+    溯源记录用于记录消息的来源信息，支持知识引用、SQL查询等场景
+    """
 
     @staticmethod
     async def create(
@@ -164,7 +259,20 @@ class TraceService:
         content: Optional[str] = None,
         score: Optional[int] = None,
     ) -> Trace:
-        """创建溯源记录"""
+        """
+        创建溯源记录
+
+        :param db: 数据库会话
+        :param session_id: 会话ID
+        :param message_id: 消息ID
+        :param trace_type: 溯源类型（knowledge/sql/data）
+        :param source_id: 来源ID（如知识文档ID、数据表ID）
+        :param source_name: 来源名称（如文档标题、表名）
+        :param content: 溯源内容片段（如知识片段摘要）
+        :param score: 匹配分数（如RAG检索相似度分数）
+        :return: 创建的溯源记录对象
+        """
+        logger.debug(f"创建溯源记录: message_id={message_id}, type={trace_type}, score={score}")
         trace = Trace(
             session_id=session_id,
             message_id=message_id,
@@ -177,17 +285,27 @@ class TraceService:
         db.add(trace)
         await db.commit()
         await db.refresh(trace)
+        logger.debug(f"创建溯源记录成功: ID={trace.id}")
         return trace
 
     @staticmethod
     async def get_by_message(db: AsyncSession, message_id: int) -> List[Trace]:
-        """获取消息的溯源记录"""
+        """
+        获取消息的溯源记录列表
+
+        :param db: 数据库会话
+        :param message_id: 消息ID
+        :return: 溯源记录列表
+        """
         stmt = select(Trace).where(Trace.message_id == message_id)
         result = await db.execute(stmt)
-        return list(result.scalars().all())
+        traces = list(result.scalars().all())
+        logger.debug(f"获取消息溯源记录: message_id={message_id}, 数量={len(traces)}")
+        return traces
 
 
 # 服务实例
 session_service = SessionService()
 message_service = MessageService()
 trace_service = TraceService()
+logger.info("会话服务实例已创建")

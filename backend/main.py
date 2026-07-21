@@ -32,19 +32,11 @@ async def lifespan(app: FastAPI):
     async with SystemAsyncSession() as db:
         await auth_service.init_default_admin(db)
 
-    # 自动初始化种子数据
     from seed_data import seed
     await seed()
 
     logger.success("系统启动成功!")
     yield
-    logger.info("系统关闭中...")
-
-    # 优雅关闭数据库连接池
-    from app.core.database import system_engine, pgvector_engine
-    await system_engine.dispose()
-    await pgvector_engine.dispose()
-    logger.info("数据库连接池已关闭")
 
 
 def create_app() -> FastAPI:
@@ -85,4 +77,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         log_level="info",
+        timeout_graceful_shutdown=3,
     )

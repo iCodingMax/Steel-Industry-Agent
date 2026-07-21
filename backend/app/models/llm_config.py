@@ -1,5 +1,20 @@
 """
-大模型配置模型
+大模型配置模型模块
+定义大模型、向量化模型和重排模型的配置数据模型
+
+支持的模型类型：
+- llm: 对话模型（用于回答生成、意图分类、SQL生成等）
+- embedding: 向量化模型（用于文档向量化）
+- rerank: 重排模型（用于检索结果重排序）
+
+支持的服务类型：
+- xinference: Xinference本地部署服务
+- newapi: 第三方API服务
+- openai: OpenAI官方API
+
+注意：
+- API密钥存储加密后的密钥
+- is_default 标记默认配置，同一模型类型只能有一个默认配置
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, Float
@@ -10,7 +25,11 @@ from app.core.base_model import Base
 
 
 class LLMConfig(Base):
-    """大模型配置表"""
+    """
+    大模型配置表
+    存储LLM、向量化模型和重排模型的配置信息
+    支持多模型配置和默认配置管理
+    """
 
     __tablename__ = "llm_configs"
 

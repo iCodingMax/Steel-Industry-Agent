@@ -56,12 +56,9 @@ class Settings(BaseSettings):
 
     XINFERENCE_BASE_URL: str = "http://172.1.2.198:9997"
     XINFERENCE_EMBED_MODEL: str = "bge-m3"
+    XINFERENCE_LLM_MODEL: str = "qwen3"
     XINFERENCE_RERANK_MODEL: str = "bge-reranker-large"
     RERANK_TOP_K: int = 5
-
-    NEWAPI_BASE_URL: str = "http://172.1.8.152:3000"
-    NEWAPI_API_KEY: str = ""
-    NEWAPI_MODEL: str = "glm-5.1-fp8"
     LLM_MAX_TOKENS: int = 20480
     LLM_TEMPERATURE: float = 0.7
 

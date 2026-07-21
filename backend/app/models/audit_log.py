@@ -1,16 +1,37 @@
 """
-审计日志模型
-记录所有用户操作，用于安全审计和问题追踪
+审计日志模型模块
+定义系统操作审计日志的数据模型
+
+记录内容：
+- 用户操作类型（create/update/delete/login/query）
+- 操作资源类型和ID
+- 请求方法、路径和IP地址
+- 操作状态和错误信息
+- 操作详情（JSON格式）
+
+使用场景：
+- 安全审计：追踪敏感操作
+- 问题排查：记录操作过程便于追溯
+- 合规检查：满足数据安全合规要求
+
+注意：
+- 通过中间件自动记录HTTP请求日志
+- 不记录敏感数据（如密码）
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.core.base_model import Base
 
 
 class AuditLog(Base):
-    """审计日志表"""
+    """
+    审计日志表
+    记录系统所有用户操作，用于安全审计和问题追踪
+    通过中间件自动记录，无需手动创建
+    """
 
     __tablename__ = "audit_logs"
 
@@ -26,7 +47,7 @@ class AuditLog(Base):
     ip_address = Column(String(50), nullable=True, comment="操作IP地址")
     status = Column(String(20), default="success", comment="操作状态: success/failed")
     error_message = Column(Text, nullable=True, comment="错误信息")
-    detail = Column(JSON, nullable=True, comment="操作详情(JSON)")
+    detail = Column(JSONB, nullable=True, comment="操作详情(JSON)")
     created_at = Column(DateTime, default=func.now(), comment="操作时间")
 
     def to_dict(self) -> dict:
