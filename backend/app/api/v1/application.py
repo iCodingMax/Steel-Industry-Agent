@@ -30,6 +30,7 @@ class ApplicationCreate(BaseModel):
     userPromptTemplate: str = Field(None, description="用户提示词模板")
     greetingMessage: str = Field(None, description="开场白消息")
     knowledgeBaseIds: List[int] = Field([], description="关联知识库ID列表")
+    datasourceIds: List[int] = Field([], description="关联数据源ID列表")
     maxTokens: int = Field(8192, description="最大生成token数")
     temperature: float = Field(0.7, description="温度参数(0.0-2.0)")
     topP: float = Field(0.9, description="top_p参数(0.0-1.0)")
@@ -48,6 +49,7 @@ class ApplicationUpdate(BaseModel):
     userPromptTemplate: str = Field(None, description="用户提示词模板")
     greetingMessage: str = Field(None, description="开场白消息")
     knowledgeBaseIds: List[int] = Field(None, description="关联知识库ID列表")
+    datasourceIds: List[int] = Field(None, description="关联数据源ID列表")
     iframeAllowedOrigins: List[str] = Field(None, description="允许的iframe嵌入源")
     iframeHeight: int = Field(None, description="iframe默认高度")
     iframeWidth: str = Field(None, description="iframe默认宽度")
@@ -154,6 +156,7 @@ async def create_application(
             user_prompt_template=data.userPromptTemplate,
             greeting_message=data.greetingMessage,
             knowledge_base_ids=data.knowledgeBaseIds,
+            datasource_ids=data.datasourceIds,
             max_tokens=data.maxTokens,
             temperature=int(data.temperature * 10),
             top_p=int(data.topP * 10),
@@ -202,6 +205,7 @@ async def update_application(
         'user_prompt_template': data.userPromptTemplate,
         'greeting_message': data.greetingMessage,
         'knowledge_base_ids': data.knowledgeBaseIds,
+        'datasource_ids': data.datasourceIds,
         'iframe_allowed_origins': data.iframeAllowedOrigins,
         'iframe_height': data.iframeHeight,
         'iframe_width': data.iframeWidth,

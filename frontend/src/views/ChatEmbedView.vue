@@ -147,6 +147,23 @@ const app = ref<Application | null>(null)
 
 const sessionId = ref<string>(`embed-${Date.now()}`)
 
+function loadFromQueryParams() {
+  const query = route.query
+  if (query.appName) {
+    appName.value = decodeURIComponent(query.appName as string) || '钢铁行业智能助手'
+  }
+  if (query.greetingMessage) {
+    greetingMessage.value = decodeURIComponent(query.greetingMessage as string) || ''
+    if (greetingMessage.value) {
+      messages.value.push({
+        id: Date.now(),
+        role: 'assistant',
+        content: greetingMessage.value,
+      })
+    }
+  }
+}
+
 function stripMarkdown(content: string) {
   return content.replace(/\*\*/g, '')
 }
@@ -165,9 +182,15 @@ function handleEnterKey(e: KeyboardEvent) {
 }
 
 async function loadAppConfig() {
+  loadFromQueryParams()
+  
+  if (route.query.appName) {
+    return
+  }
+  
   try {
     const res = await getApplication(appId.value)
-    const appData = res.data.data as Application
+    const appData = (res.data as unknown as { data: Application }).data
     app.value = appData
     appName.value = appData.name || '钢铁行业智能助手'
     greetingMessage.value = appData.greetingMessage || ''

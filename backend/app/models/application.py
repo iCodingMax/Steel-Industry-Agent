@@ -46,6 +46,7 @@ class Application(Base):
     user_prompt_template = Column(Text, nullable=True, comment="用户提示词模板")
     greeting_message = Column(Text, nullable=True, comment="开场白消息")
     knowledge_base_ids = Column(JSONB, nullable=True, comment="关联知识库ID列表")
+    datasource_ids = Column(JSONB, nullable=True, comment="关联数据源ID列表")
     iframe_allowed_origins = Column(JSONB, nullable=True, comment="允许的iframe嵌入源")
     iframe_height = Column(Integer, default=600, comment="iframe默认高度")
     iframe_width = Column(String(20), default="100%", comment="iframe默认宽度")
@@ -73,6 +74,7 @@ class Application(Base):
             "userPromptTemplate": self.user_prompt_template,
             "greetingMessage": self.greeting_message,
             "knowledgeBaseIds": self.knowledge_base_ids if self.knowledge_base_ids else [],
+            "datasourceIds": self.datasource_ids if self.datasource_ids else [],
             "iframeAllowedOrigins": self.iframe_allowed_origins if self.iframe_allowed_origins else [],
             "iframeHeight": self.iframe_height,
             "iframeWidth": self.iframe_width,

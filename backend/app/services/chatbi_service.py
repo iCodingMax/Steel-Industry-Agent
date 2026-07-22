@@ -27,6 +27,7 @@ ChatBI智能问数服务
 """
 import re
 import time
+import json
 from typing import Optional, List, Tuple
 from loguru import logger
 
@@ -252,7 +253,6 @@ class ChatBIService:
         if not results:
             return "查询结果为空。"
 
-        import json
         result_count = len(results)
         sample_data = results[:5]  # 取前5条作为示例，避免Prompt过长
         sql = sql_traces[0]['sql'] if sql_traces else ''
@@ -295,8 +295,6 @@ class ChatBIService:
         if not results:
             return "查询结果为空。"
 
-        # 构建结果摘要
-        import json
         result_count = len(results)
         sample_data = results[:5]  # 取前5条作为示例
 

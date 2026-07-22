@@ -13,6 +13,7 @@ export interface Application {
   userPromptTemplate?: string
   greetingMessage?: string
   knowledgeBaseIds: number[]
+  datasourceIds: number[]
   iframeAllowedOrigins: string[]
   iframeHeight: number
   iframeWidth: string
@@ -49,6 +50,7 @@ export interface ApplicationCreateForm {
   userPromptTemplate?: string
   greetingMessage?: string
   knowledgeBaseIds?: number[]
+  datasourceIds?: number[]
   maxTokens?: number
   temperature?: number
   topP?: number
@@ -66,6 +68,7 @@ export interface ApplicationUpdateForm {
   userPromptTemplate?: string
   greetingMessage?: string
   knowledgeBaseIds?: number[]
+  datasourceIds?: number[]
   iframeAllowedOrigins?: string[]
   iframeHeight?: number
   iframeWidth?: string
@@ -97,7 +100,7 @@ interface ApiResponse<T> {
   data: T
 }
 
-export function getApplications(params?: { page?: number; pageSize?: number; keyword?: string }) {
+export function getApplications(params?: { page?: number; page_size?: number; keyword?: string }) {
   return request.get<ApiResponse<{ data: Application[]; total: number; page: number; pageSize: number }>>('/applications', { params })
 }
 

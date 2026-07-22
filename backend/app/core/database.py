@@ -140,4 +140,15 @@ async def _auto_add_columns(conn) -> None:
                 ))
                 logger.info("已为 messages 表添加 thinking_steps 列")
 
+        if 'applications' in inspector.get_table_names():
+            existing_cols = {col['name'] for col in inspector.get_columns('applications')}
+            if 'datasource_ids' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN datasource_ids JSONB DEFAULT NULL"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.datasource_ids IS '关联数据源ID列表'"
+                ))
+                logger.info("已为 applications 表添加 datasource_ids 列")
+
     await conn.run_sync(_add_missing_columns)
