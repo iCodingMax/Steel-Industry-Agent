@@ -27,16 +27,10 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '智能对话', icon: 'ChatSquare' },
       },
       {
-        path: 'app-settings',
-        name: 'AppSettings',
-        component: () => import('@/views/AppSettingsView.vue'),
-        meta: { title: '应用设置', icon: 'AppSettings' },
-      },
-      {
-        path: 'app-integration',
-        name: 'AppIntegration',
-        component: () => import('@/views/AppIntegrationView.vue'),
-        meta: { title: '集成设置', icon: 'AppIntegration' },
+        path: 'app-management',
+        name: 'AppManagement',
+        component: () => import('@/views/AppListView.vue'),
+        meta: { title: '应用管理', icon: 'AppSettings' },
       },
       {
         path: 'knowledge',
