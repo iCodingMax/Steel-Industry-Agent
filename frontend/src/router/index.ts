@@ -64,9 +64,23 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: 'system-settings',
-        name: 'Settings',
+        name: 'SystemSettings',
         component: () => import('@/views/SystemSettingsView.vue'),
         meta: { title: '系统设置', icon: 'Setting' },
+        children: [
+          {
+            path: 'user',
+            name: 'UserSettings',
+            component: () => import('@/views/SystemSettingsView.vue'),
+            meta: { title: '用户管理', icon: 'User' },
+          },
+          {
+            path: 'oauth',
+            name: 'OAuthSettings',
+            component: () => import('@/views/SystemSettingsView.vue'),
+            meta: { title: '登录认证', icon: 'Lock' },
+          },
+        ],
       },
     ],
   },
