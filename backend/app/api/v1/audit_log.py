@@ -16,7 +16,7 @@ from app.models.user import User
 from app.models.knowledge import KnowledgeBase, Document
 from app.models.datasource import DataSource
 from app.models.session import Session as ChatSession
-from app.middlewares.exception_handler import success_response
+from app.middlewares.exception_handler import success_response, BusinessException
 from app.middlewares.auth_deps import get_current_user
 
 router = APIRouter()
@@ -264,11 +264,10 @@ async def collect_audit_logs(
             except Exception as e:
                 logger.warning(f"采集会话日志失败，ID={sess.id}, 错误={str(e)}")
 
-        await db.commit()
+        # get_db_session依赖会自动commit，不需要手动调用
         logger.info(f"审计日志采集完成，共新增 {collected} 条")
         return success_response(data={"collected": collected}, message=f"采集完成，共新增 {collected} 条审计日志")
 
     except Exception as e:
-        await db.rollback()
         logger.error(f"审计日志采集失败: {str(e)}")
-        return success_response(data={"collected": 0}, message=f"采集失败: {str(e)}", code=500)
+        raise BusinessException(code=500, message=f"采集失败: {str(e)}")

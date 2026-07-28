@@ -1,5 +1,5 @@
 """
-钢铁行业智能问答系统 - FastAPI 应用入口
+工业智能助手平台 - FastAPI 应用入口
 """
 from contextlib import asynccontextmanager
 
@@ -21,7 +21,7 @@ from app.middlewares.exception_handler import (
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     logger.info("=" * 60)
-    logger.info("钢铁行业智能问答系统启动中...")
+    logger.info("工业智能助手平台启动中...")
     logger.info(f"运行环境: {settings.ENV}")
     logger.info("=" * 60)
 
@@ -42,8 +42,8 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """创建FastAPI应用实例"""
     app = FastAPI(
-        title="Steel Industry AI Assistant API",
-        description="钢铁行业智能问答系统 - RAG + ChatBI 融合推理",
+        title="Industrial Intelligent Assistant Platform API",
+        description="工业智能助手平台 - RAG + ChatBI 融合推理",
         version="0.1.0",
         lifespan=lifespan,
     )

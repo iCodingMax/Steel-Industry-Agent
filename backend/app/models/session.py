@@ -32,6 +32,7 @@ class Session(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="用户ID")
     title = Column(String(200), nullable=True, comment="会话标题")
     intent_type = Column(String(20), nullable=True, comment="会话意图类型: knowledge/data/hybrid")
+    llm_config_id = Column(Integer, nullable=True, comment="LLM配置ID")
     status = Column(String(20), default="active", comment="状态: active/archived")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
@@ -43,6 +44,7 @@ class Session(Base):
             "userId": self.user_id,
             "title": self.title,
             "intentType": self.intent_type,
+            "llmConfigId": self.llm_config_id,
             "status": self.status,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,

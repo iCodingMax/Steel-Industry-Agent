@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from app.core.database import get_db_session
-from app.models.application import Application, AppPrompt
+from app.models.application import Application, AppPrompt, decode_access_hash
 from app.models.user import User
 from app.middlewares.auth_deps import get_current_user
 from app.middlewares.exception_handler import BusinessException, success_response
@@ -387,6 +387,53 @@ async def get_iframe_url(
         raise BusinessException(status_code=400, detail="应用未启用")
     
     return success_response({
-        "url": f"/chat/embed/{app_id}",
-        "embedCode": f'<iframe src="/chat/embed/{app_id}" width="{app.iframe_width}" height="{app.iframe_height}px" frameborder="0"></iframe>',
+        "url": f"/chat/{app.access_hash}",
+        "embedCode": f'<iframe src="/chat/{app.access_hash}" width="{app.iframe_width}" height="{app.iframe_height}px" frameborder="0"></iframe>',
     })
+
+
+@router.get("/by-hash/{access_hash}", summary="通过hash获取应用（公开接口）")
+async def get_application_by_hash(
+    access_hash: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """通过access_hash获取应用信息，公开接口无需认证"""
+    try:
+        app_id = decode_access_hash(access_hash)
+    except Exception:
+        raise BusinessException(status_code=404, detail="无效的访问链接")
+    
+    result = await db.execute(select(Application).where(Application.id == app_id))
+    app = result.scalar_one_or_none()
+    
+    if not app:
+        raise BusinessException(status_code=404, detail="应用不存在")
+    
+    if app.status != "active":
+        raise BusinessException(status_code=400, detail="应用未启用")
+    
+    prompts_result = await db.execute(
+        select(AppPrompt).where(AppPrompt.application_id == app.id).order_by(AppPrompt.sort_order)
+    )
+    prompts = prompts_result.scalars().all()
+    
+    app_dict = app.to_dict()
+    app_dict["prompts"] = [p.to_dict() for p in prompts]
+    
+    return success_response(app_dict)
+
+
+@router.post("/{app_id}/regenerate-access-hash", summary="重新生成公开访问hash")
+async def regenerate_access_hash(
+    app_id: int,
+    db: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+):
+    """重新生成应用的公开访问hash（由于hash基于ID生成，此接口仅用于返回新的访问URL信息）"""
+    result = await db.execute(select(Application).where(Application.id == app_id))
+    app = result.scalar_one_or_none()
+    
+    if not app:
+        raise BusinessException(status_code=404, detail="应用不存在")
+    
+    return success_response({"accessHash": app.access_hash})

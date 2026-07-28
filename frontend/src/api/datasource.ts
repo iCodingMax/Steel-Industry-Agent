@@ -14,8 +14,13 @@ export interface DatasourceForm {
   description?: string
 }
 
-export function getDatasources(params?: { page?: number; pageSize?: number }) {
-  return request.get<{ list: any[]; total: number }>('/datasources', { params })
+export interface DatasourceListResponse {
+  total: number
+  list: any[]
+}
+
+export function getDatasources(params?: { page?: number; pageSize?: number; keyword?: string }) {
+  return request.get<{ data: DatasourceListResponse }>('/datasources', { params })
 }
 
 export function getDatasource(id: number) {

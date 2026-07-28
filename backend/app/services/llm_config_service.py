@@ -38,8 +38,8 @@ class LLMConfigService:
         logger.debug(f"创建LLM配置: name={data.name}, modelType={data.modelType}")
 
         if data.isDefault:
-            await LLMConfigService.clear_default(db)
-            logger.debug("已清除其他默认配置")
+            await LLMConfigService.clear_default(db, data.modelType)
+            logger.debug(f"已清除{data.modelType}类型的其他默认配置")
 
         config = LLMConfig(
             name=data.name,
@@ -132,9 +132,10 @@ class LLMConfigService:
         if not config:
             raise BusinessException(code=404, message="配置不存在")
 
-        # 如果设置为默认配置，先清除其他默认配置
+        # 如果设置为默认配置，先清除同类型的其他默认配置
         if data.isDefault:
-            await LLMConfigService.clear_default(db)
+            model_type = data.modelType if data.modelType else config.model_type
+            await LLMConfigService.clear_default(db, model_type)
 
         update_data = data.model_dump(exclude_unset=True)
         
@@ -180,16 +181,23 @@ class LLMConfigService:
         logger.info(f"删除LLM配置成功: {config.name} (ID: {config_id})")
 
     @staticmethod
-    async def clear_default(db) -> None:
+    async def clear_default(db, model_type: str = None) -> None:
         """
-        清除所有默认配置
-        将所有is_default=True的配置设置为False
+        清除默认配置
+        将指定类型的is_default=True的配置设置为False
 
         :param db: 数据库会话
+        :param model_type: 模型类型（llm/embedding/rerank），为空时清除所有类型的默认配置
         """
-        stmt = update(LLMConfig).where(LLMConfig.is_default == True).values(is_default=False)
+        if model_type:
+            stmt = update(LLMConfig).where(
+                (LLMConfig.is_default == True) & (LLMConfig.model_type == model_type)
+            ).values(is_default=False)
+            logger.debug(f"已清除{model_type}类型的默认配置")
+        else:
+            stmt = update(LLMConfig).where(LLMConfig.is_default == True).values(is_default=False)
+            logger.debug("已清除所有默认配置")
         await db.execute(stmt)
-        logger.debug("已清除所有默认配置")
 
     @staticmethod
     async def test_connection(config_data: dict) -> dict:
@@ -204,10 +212,10 @@ class LLMConfigService:
         import httpx
         import json
         
-        base_url = config_data.get('baseUrl', '')
-        api_key = config_data.get('apiKey', '')
-        model_name = config_data.get('modelName', '')
-        model_type = config_data.get('modelType', 'llm')
+        base_url = config_data.get('baseUrl', '') or config_data.get('base_url', '')
+        api_key = config_data.get('apiKey', '') or config_data.get('api_key', '')
+        model_name = config_data.get('modelName', '') or config_data.get('model_name', '')
+        model_type = config_data.get('modelType', 'llm') or config_data.get('model_type', 'llm')
         
         # 参数校验
         if not base_url:

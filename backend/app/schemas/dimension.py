@@ -10,7 +10,7 @@ class DimensionCreate(BaseModel):
     name: str = Field(..., description="维度名称")
     code: str = Field(..., description="维度代码")
     description: Optional[str] = Field(None, description="维度描述")
-    datasourceId: int = Field(..., description="数据源ID")
+    datasourceId: Optional[int] = Field(None, description="数据源ID，未绑定则不参与智能问数")
     tableName: str = Field(..., description="关联表名")
     columnName: str = Field(..., description="关联列名")
     dataType: Optional[str] = Field(None, description="数据类型")

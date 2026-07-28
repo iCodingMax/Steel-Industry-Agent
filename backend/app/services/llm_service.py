@@ -117,6 +117,7 @@ class LLMService:
         prompt: str,
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict]] = None,
+        config: Optional[Dict] = None,
     ):
         """
         流式对话
@@ -142,21 +143,28 @@ class LLMService:
 
             messages.append({"role": "user", "content": prompt})
 
+            # 使用配置参数或默认值
+            base_url = config.get('base_url', self.base_url) if config else self.base_url
+            api_key = config.get('api_key', self.api_key) if config else self.api_key
+            model = config.get('model', self.model) if config else self.model
+            max_tokens = config.get('max_tokens', self.max_tokens) if config else self.max_tokens
+            temperature = config.get('temperature', self.temperature) if config else self.temperature
+
             # 2. 发起流式HTTP请求
             async with httpx.AsyncClient(timeout=300.0) as client:
-                logger.debug(f"发起LLM流式调用: model={self.model}, prompt长度={len(prompt)}")
+                logger.debug(f"发起LLM流式调用: model={model}, prompt长度={len(prompt)}")
                 async with client.stream(
                     "POST",
-                    f"{self.base_url}/chat/completions",
+                    f"{base_url}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.api_key}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": self.model,
+                        "model": model,
                         "messages": messages,
-                        "max_tokens": self.max_tokens,
-                        "temperature": self.temperature,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
                         "stream": True,
                     },
                 ) as response:

@@ -116,7 +116,7 @@
 - [x] 路由配置与权限守卫正常（智能对话、知识管理、数据管理、系统设置）
 - [x] Pinia状态管理正常（auth、chat、config、knowledge）
 - [x] 设计规范符合要求（配色方案、组件样式统一）
-- [x] 品牌标识正常显示（左上角「Steel Industry AI Assistant」）
+- [x] 品牌标识正常显示（左上角「Industrial Intelligent Assistant Platform」）
 - [x] 侧边栏样式正常（深色渐变背景、激活项高亮）
 - [x] 智能对话页面正常（左侧会话栏 + 中间对话区 + 输入框）
 - [x] 消息列表组件正常（用户消息、AI回答、流式渲染）

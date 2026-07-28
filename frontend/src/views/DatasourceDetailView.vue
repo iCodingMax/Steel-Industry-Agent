@@ -139,8 +139,7 @@ const tableSearch = ref('')
 const dbTypeColor: Record<string, string> = {
   mysql: 'primary',
   postgresql: 'success',
-  clickhouse: 'warning',
-  oracle: 'info',
+  sqlserver: 'warning',
 }
 
 const filteredTables = computed(() => {

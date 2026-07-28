@@ -14,6 +14,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '智能助手', requiresAuth: false },
   },
   {
+    path: '/chat/:accessHash',
+    name: 'ChatEmbedByHash',
+    component: () => import('@/views/ChatEmbedView.vue'),
+    meta: { title: '智能助手', requiresAuth: false },
+  },
+  {
     path: '/',
     name: 'MainLayout',
     component: () => import('@/components/layout/MainLayout.vue'),
@@ -91,11 +97,26 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const token = localStorage.getItem('token')
   if (to.meta.requiresAuth && !token) {
     next({ name: 'Login', query: { redirect: to.fullPath } })
-  } else {
+    return
+  }
+  
+  try {
+    // 只在首次加载时获取用户信息，避免每次路由切换都请求
+    if (token) {
+      const { useAuthStore } = await import('@/stores/auth')
+      const authStore = useAuthStore()
+      if (!authStore.userInfo) {
+        await authStore.fetchUserInfo()
+      }
+    }
+    next()
+  } catch (error) {
+    console.error('路由守卫执行失败:', error)
+    // 即使获取用户信息失败，也继续路由，避免阻塞页面显示
     next()
   }
 })

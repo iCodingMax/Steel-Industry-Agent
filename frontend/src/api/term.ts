@@ -10,8 +10,13 @@ export interface TermForm {
   relatedTerms?: string[]
 }
 
-export function getTerms(params?: { page?: number; pageSize?: number; keyword?: string }) {
-  return request.get<{ list: any[]; total: number }>('/terms', { params })
+export interface TermListResponse {
+  total: number
+  list: any[]
+}
+
+export function getTerms(params?: { page?: number; pageSize?: number; keyword?: string; datasourceId?: number }) {
+  return request.get<{ data: TermListResponse }>('/terms', { params })
 }
 
 export function getTerm(id: number) {

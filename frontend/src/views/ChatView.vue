@@ -80,16 +80,34 @@
             >
               <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
             </el-select>
+            <el-select
+              v-model="chatStore.selectedLLMConfigId"
+              placeholder="选择模型"
+              size="small"
+              @change="(val: any) => chatStore.setLLMConfigId(val ?? null)"
+            >
+              <el-option 
+                v-for="llm in chatStore.llmConfigs" 
+                :key="llm.id" 
+                :label="llm.name + (llm.isDefault ? ' (默认)' : '')" 
+                :value="llm.id" 
+              />
+            </el-select>
           </div>
-          <el-button size="small" @click="handleRefresh" class="refresh-btn">
-            <el-icon><Refresh /></el-icon>
-            刷新
-          </el-button>
         </div>
       </div>
 
-      <div ref="messagesRef" class="chat-messages">
-        <div class="welcome-banner" v-if="messages.length === 0">
+      <div ref="messagesRef" class="chat-messages" @scroll="handleScroll">
+        <!-- 加载状态 -->
+        <div class="welcome-banner" v-if="chatStore.isLoadingMessages">
+          <div class="loading-wrapper">
+            <el-spinner class="loading-spinner" size="60" />
+            <p class="loading-text">加载中...</p>
+          </div>
+        </div>
+
+        <!-- 空状态 -->
+        <div class="welcome-banner" v-else-if="messages.length === 0">
           <div class="welcome-icon">
             <svg class="robot-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
               <!-- 天线 -->
@@ -121,7 +139,7 @@
               <circle cx="56" cy="50" r="0.8" fill="#fb923c"/>
             </svg>
           </div>
-          <h3 class="welcome-title">你好，我是贾维斯</h3>
+          <h3 class="welcome-title">你好，我是钢铁行业智能助手</h3>
           <p class="welcome-desc">基于大语言模型的智能助手，支持知识问答与数据查询</p>
           <div class="welcome-tips">
             <div class="tip-item">
@@ -145,43 +163,46 @@
           class="message-item"
           :class="[msg.role, msg.type || '']"
         >
-          <div v-if="msg.role === 'user'" class="message-content user">
+          <div v-if="msg.role === 'user'" class="message-content user" :class="{ editing: editingMessageId[msg.id] }">
             <div class="avatar-group">
-              <div class="avatar-label">钢铁侠</div>
-              <el-avatar :size="40" class="user-avatar">
-                <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:24px;height:24px">
-                  <path d="M20 4C12 4 8 10 8 16c0 4 1 6 2 8l2 4c1 2 2 4 4 4h8c2 0 3-2 4-4l2-4c1-2 2-4 2-8 0-6-4-12-12-12z" fill="#dc2626"/>
-                  <path d="M20 6C14 6 10 11 10 16c0 3 1 5 2 7l2 4c1 1 2 3 3 3h6c1 0 2-2 3-3l2-4c1-2 2-4 2-7 0-5-4-10-10-10z" fill="#d97706"/>
-                  <line x1="20" y1="6" x2="20" y2="30" stroke="#991b1b" stroke-width="1.5"/>
-                  <path d="M12 15l4-2 4 2" fill="#60a5fa" stroke="#2563eb" stroke-width="0.5"/>
-                  <path d="M20 15l4-2 4 2" fill="#60a5fa" stroke="#2563eb" stroke-width="0.5"/>
-                  <rect x="15" y="24" width="10" height="2" rx="1" fill="#991b1b"/>
-                  <circle cx="20" cy="10" r="2" fill="#93c5fd" stroke="#3b82f6" stroke-width="0.5"/>
-                </svg>
-              </el-avatar>
+              <AvatarImage type="user" />
             </div>
-            <div class="message-bubble-wrap">
-              <div class="message-bubble">
+            <div class="message-bubble-wrap" :class="{ editing: editingMessageId[msg.id] }">
+              <div class="message-bubble" v-if="!editingMessageId[msg.id]">
                 <div class="bubble-arrow"></div>
                 <div class="bubble-content">{{ msg.content }}</div>
+              </div>
+              <!-- 编辑模式 -->
+              <div v-else class="message-bubble edit-mode">
+                <div class="edit-input-wrap">
+                  <el-input
+                    v-model="editMessageContent[msg.id]"
+                    class="edit-input"
+                    placeholder="输入您的问题..."
+                  />
+                  <div class="edit-actions">
+                    <el-button size="small" @click="cancelEdit(msg.id)">取消</el-button>
+                    <el-button size="small" type="primary" class="edit-send-btn" @click="submitEdit(msg)">发送</el-button>
+                  </div>
+                </div>
+              </div>
+              <!-- 用户消息操作：复制、编辑 -->
+              <div class="user-message-actions">
+                <el-icon class="meta-action-icon" @click="copyMessageContent(msg.content)" title="复制">
+                  <CopyDocument />
+                </el-icon>
+                <el-icon class="meta-action-icon" @click="startEdit(msg)" title="编辑">
+                  <Edit />
+                </el-icon>
               </div>
             </div>
           </div>
           <div v-else class="message-content assistant">
             <div class="avatar-group">
-              <div class="avatar-label">贾维斯</div>
-              <el-avatar :size="40" class="assistant-avatar">
-                <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:24px;height:24px">
-                  <circle cx="20" cy="20" r="16" stroke="#3b82f6" stroke-width="1.5" fill="none" opacity="0.5"/>
-                  <circle cx="20" cy="20" r="12" stroke="#60a5fa" stroke-width="1.5" fill="none" stroke-dasharray="18 57" opacity="0.7"/>
-                  <circle cx="20" cy="20" r="8" stroke="#93c5fd" stroke-width="1.5" fill="none" stroke-dasharray="12 38" stroke-dashoffset="-6" opacity="0.9"/>
-                  <circle cx="20" cy="20" r="4" fill="#3b82f6"/>
-                  <circle cx="20" cy="20" r="2" fill="#bfdbfe"/>
-              </svg>
-            </el-avatar>
+              <AvatarImage type="assistant" />
             </div>
             <div class="message-bubble-wrap">
-              <div class="thinking-process" v-if="(msg.thinkingSteps && msg.thinkingSteps.length > 0) || (msg.references && msg.references.length > 0) || (msg.sqlTraces && msg.sqlTraces.length > 0)">
+              <div class="thinking-process" v-if="(msg.thinkingSteps && msg.thinkingSteps.length > 0) || (msg.sqlTraces && msg.sqlTraces.length > 0)">
                 <div class="thinking-header" @click="toggleThinking(msg.id)">
                   <el-icon :class="{ 'rotated': thinkingExpanded[msg.id] }"><ArrowRight /></el-icon>
                   <span class="thinking-title">思考过程</span>
@@ -211,61 +232,76 @@
                       </div>
                     </div>
                   </div>
-                  <div v-if="msg.references && msg.references.length > 0" class="thinking-refs">
-                    <div class="section-title">
-                      <el-icon><Collection /></el-icon>
-                      <span>知识引用</span>
-                    </div>
-                    <div class="ref-cards">
-                      <div v-for="(ref, idx) in msg.references" :key="idx" class="ref-card">
-                        <div class="ref-header">
-                          <span class="ref-name">{{ ref.documentName }}</span>
-                          <span class="ref-score">{{ (ref.score * 100).toFixed(1) }}%</span>
-                        </div>
-                        <div class="ref-content">{{ ref.content.slice(0, 200) }}...</div>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               </div>
 
-              <div class="message-bubble" v-if="msg.content || !msg.isStreaming">
+              <!-- 消息气泡：始终显示，确保流式内容能实时展示 -->
+              <div class="message-bubble">
                 <div class="bubble-arrow"></div>
+                <!-- 打字指示器：仅在流式中且内容为空时显示 -->
                 <div v-if="msg.isStreaming && !msg.content" class="typing-indicator">
                   <span></span>
                   <span></span>
                   <span></span>
                 </div>
+                <!-- 消息内容：始终渲染，确保流式内容实时更新 -->
                 <template v-else>
                   <span class="message-text">{{ stripMarkdown(msg.content) }}</span>
                   <span v-if="msg.isStreaming" class="streaming-cursor">|</span>
                 </template>
-              </div>
 
-              <div v-if="msg.sqlTraces && msg.sqlTraces.length > 0" class="sql-section">
-                <div class="section-header">
-                  <span>SQL查询</span>
-                  <el-button text size="small" class="sql-copy-btn" @click="copySql(msg.sqlTraces[0].sql)">
-                    <el-icon><CopyDocument /></el-icon>
-                    复制
-                  </el-button>
-                </div>
-                <div class="sql-content">
-                  <pre class="sql-code">{{ msg.sqlTraces[0].sql }}</pre>
-                  <div class="sql-meta">返回 {{ msg.sqlTraces[0].rows || 0 }} 行数据</div>
+                <!-- 知识引用 - 放入AI回答框的底部 -->
+                <div v-if="msg.references && msg.references.length > 0" class="references-section">
+                  <div class="references-header">
+                    <el-icon><Document /></el-icon>
+                    <span class="references-title">引用</span>
+                  </div>
+                  <div class="references-files">
+                    <div
+                      v-for="(ref, idx) in msg.references"
+                      :key="idx"
+                      class="ref-file"
+                      @click="showReferenceDetail(ref)"
+                    >
+                      <el-icon><Document /></el-icon>
+                      <span class="ref-file-name">{{ ref.documentName }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               <div v-if="msg.dataResult && msg.dataResult.length > 0" class="chart-section">
                 <div class="section-header">
-                  <el-icon><TrendCharts /></el-icon>
-                  <span>数据可视化</span>
-                  <div class="table-name-badge">表名：{{ getTableName(msg.sqlTraces || []) }}</div>
-                  <div class="chart-view-toggle">
-                    <el-radio-group v-model="dataViewMode[msg.id]" size="small">
-                      <el-radio-button value="table">表格</el-radio-button>
-                      <el-radio-button value="chart">图表</el-radio-button>
-                    </el-radio-group>
+                  <div class="header-left">
+                    <el-icon><TrendCharts /></el-icon>
+                    <span>数据可视化</span>
+                    <div class="table-name-badge">表名：{{ getTableName(msg.sqlTraces || []) }}</div>
+                    <div class="chart-view-toggle">
+                      <el-radio-group v-model="dataViewMode[msg.id]" size="small">
+                        <el-radio-button value="table">表格</el-radio-button>
+                        <el-radio-button value="chart">图表</el-radio-button>
+                      </el-radio-group>
+                    </div>
+                  </div>
+                  <div class="header-right">
+                    <!-- 查看SQL按钮 -->
+                    <el-button v-if="msg.sqlTraces && msg.sqlTraces.length > 0" type="text" size="small" class="sql-view-btn" @click="showSqlDialog(msg.sqlTraces[0].sql)">
+                      <el-icon><Document /></el-icon>
+                      <span>查看SQL</span>
+                    </el-button>
+                    <!-- 导出按钮 -->
+                    <el-dropdown trigger="click" @command="(cmd: string) => handleExport(cmd, msg)">
+                      <el-button type="text" size="small" class="export-btn">
+                        <el-icon><Download /></el-icon>
+                        <span>导出</span>
+                      </el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="excel">Excel</el-dropdown-item>
+                          <el-dropdown-item v-if="dataViewMode[msg.id] === 'chart'" command="image">图片</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
                   </div>
                 </div>
                 <div class="chart-body">
@@ -316,9 +352,18 @@
                 </div>
               </div>
 
-              <div v-if="msg.queryTime" class="message-meta">
+              <!-- 消息元数据：复制、重新生成、耗时 -->
+              <div v-if="msg.role === 'assistant' && !msg.isStreaming" class="message-meta">
+                <span class="meta-actions">
+                  <el-icon class="meta-action-icon" @click="copyMessageContent(msg.content)" title="复制">
+                    <CopyDocument />
+                  </el-icon>
+                  <el-icon class="meta-action-icon" @click="regenerateMessage(msg)" title="重新生成">
+                    <Refresh />
+                  </el-icon>
+                </span>
                 <el-icon class="meta-icon"><Clock /></el-icon>
-                <span>耗时: {{ (msg.queryTime / 1000).toFixed(2) }}s</span>
+                <span>耗时: {{ msg.queryTime ? (msg.queryTime / 1000).toFixed(2) : '--' }}s</span>
               </div>
             </div>
           </div>
@@ -326,22 +371,12 @@
       </div>
 
       <div class="chat-input-area">
-        <div class="input-toolbar">
-          <div class="toolbar-left">
-            <el-button size="small" type="text" icon="Paperclip" @click="handleUpload">
-              附件
-            </el-button>
-            <el-button size="small" type="text" icon="Picture" @click="handleImage">
-              图片
-            </el-button>
-          </div>
-        </div>
         <div class="input-wrapper">
           <el-input
             v-model="inputText"
             type="textarea"
             :rows="2"
-            placeholder="输入您的问题，如：展示转炉炼钢数据..."
+            placeholder="输入您的问题..."
             resize="none"
             @keydown.enter.exact="handleEnterKey"
             class="chat-input"
@@ -353,17 +388,44 @@
             </el-button>
           </div>
         </div>
-        <div class="input-tips">
-          <span>Enter 发送 · Ctrl+Enter 换行</span>
-        </div>
       </div>
     </div>
   </div>
+
+  <!-- SQL查看弹窗 -->
+  <el-dialog v-model="sqlDialogVisible" title="SQL查询语句" width="70%" top="10vh">
+    <div class="sql-dialog-content">
+      <pre class="sql-dialog-code">{{ currentSql }}</pre>
+    </div>
+    <template #footer>
+      <el-button @click="sqlDialogVisible = false">关闭</el-button>
+      <el-button type="primary" @click="copySql(currentSql)">复制SQL</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 知识引用详情弹窗 -->
+  <el-dialog v-model="referenceDetailVisible" title="知识引用详情" width="60%" max-width="90%" top="10vh">
+    <div class="reference-detail-content">
+      <div class="reference-detail-header">
+        <el-icon :size="24" color="#6366f1"><Document /></el-icon>
+        <span class="reference-detail-title">{{ currentReference?.documentName }}</span>
+        <span v-if="currentReference?.score" class="reference-detail-score">{{ (currentReference.score * 100).toFixed(1) }}%</span>
+      </div>
+      <div class="reference-detail-body">
+        <div class="reference-detail-content-text">{{ currentReference?.content }}</div>
+      </div>
+    </div>
+    <template #footer>
+      <el-button @click="referenceDetailVisible = false">关闭</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, reactive, watch } from 'vue'
 import * as echarts from 'echarts'
+import * as XLSX from 'xlsx'
+import { saveAs } from 'file-saver'
 import { useChatStore } from '@/stores/chat'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -372,7 +434,6 @@ import {
   ChatDotRound,
   User,
   Cpu,
-  Refresh,
   TrendCharts,
   Document,
   ArrowRight,
@@ -389,10 +450,14 @@ import {
   Reading,
   Collection,
   CopyDocument,
+  Download,
+  Monitor,
+  Refresh,
 } from '@element-plus/icons-vue'
 import { getKnowledgeBases } from '@/api/knowledge'
 import { getDatasources } from '@/api/datasource'
 import ChartCard from '@/components/chart/ChartCard.vue'
+import AvatarImage from '@/components/AvatarImage.vue'
 
 const chatStore = useChatStore()
 const messagesRef = ref<HTMLElement>()
@@ -402,6 +467,9 @@ const inputText = ref('')
 const isSending = ref(false)
 const knowledgeBases = ref<any[]>([])
 const datasources = ref<any[]>([])
+
+// 滚动状态：用于判断是否需要自动滚动到底部
+const isUserScrolling = ref(false)
 
 const dataViewMode = reactive<Record<string, string>>({})
 const chartConfig = reactive<Record<string, {
@@ -415,6 +483,18 @@ const thinkingExpanded = reactive<Record<string, boolean>>({})
 // 会话重命名状态
 const editingSessionId = ref<string | null>(null)
 const renameValue = ref('')
+
+// SQL弹窗状态
+const sqlDialogVisible = ref(false)
+const currentSql = ref('')
+
+// 知识引用详情弹窗状态
+const referenceDetailVisible = ref(false)
+const currentReference = ref<any>(null)
+
+// 消息编辑状态
+const editingMessageId = ref<Record<string, boolean>>({})
+const editMessageContent = ref<Record<string, string>>({})
 
 const sessions = computed(() => chatStore.sessions)
 const currentSessionId = computed(() => chatStore.currentSessionId)
@@ -503,6 +583,156 @@ function getNumericColumns(data: any[], columnMeta?: any[]) {
       label: getFieldAlias(key, columnMeta) || key,
       minWidth: 120,
     }))
+}
+
+// 导出Excel
+function exportToExcel(data: any[], columnMeta?: any[], fileName?: string) {
+  if (!data || data.length === 0) {
+    ElMessage.warning('没有数据可导出')
+    return
+  }
+
+  const cols = getDataColumns(data, columnMeta)
+  const headers = cols.map((c) => c.label)
+  const rows = data.map((row) => cols.map((col) => String(row[col.prop] ?? '')))
+
+  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows])
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, worksheet, '数据')
+
+  const name = fileName || `数据导出_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}`
+  XLSX.writeFile(workbook, `${name}.xlsx`)
+}
+
+// 导出图表为图片
+function exportChartToImage(msgId: string) {
+  const config = chartConfig[msgId]
+  if (!config?.option) {
+    ElMessage.warning('没有图表可导出')
+    return
+  }
+
+  try {
+    // 创建隐藏的canvas元素
+    const canvas = document.createElement('canvas')
+    canvas.width = 800
+    canvas.height = 400
+    canvas.style.display = 'none'
+    document.body.appendChild(canvas)
+
+    // 创建图表实例
+    const chart = echarts.init(canvas, undefined, {
+      renderer: 'canvas',
+    })
+    chart.setOption(config.option)
+
+    // 等待图表渲染完成
+    setTimeout(() => {
+      const url = chart.getDataURL({
+        type: 'png',
+        pixelRatio: 2,
+        backgroundColor: '#fff',
+      })
+
+      chart.dispose()
+      document.body.removeChild(canvas)
+
+      // 将base64转换为Blob并下载
+      const link = document.createElement('a')
+      link.download = `图表导出_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.png`
+      link.href = url
+      link.click()
+    }, 500)
+  } catch (error) {
+    console.error('图表导出失败:', error)
+    ElMessage.error('图表导出失败，请重试')
+  }
+}
+
+// 处理导出命令
+function handleExport(cmd: string, msg: any) {
+  if (cmd === 'excel') {
+    exportToExcel(msg.dataResult, msg.columnMeta)
+  } else if (cmd === 'image') {
+    exportChartToImage(msg.id)
+  }
+}
+
+// 显示SQL弹窗
+function showSqlDialog(sql: string) {
+  currentSql.value = sql
+  sqlDialogVisible.value = true
+}
+
+// 显示知识引用详情弹窗
+function showReferenceDetail(ref: any) {
+  currentReference.value = ref
+  referenceDetailVisible.value = true
+}
+
+// 复制SQL
+function copySql(sql: string) {
+  navigator.clipboard.writeText(sql).then(() => {
+    ElMessage.success('SQL已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
+
+// 复制消息内容
+function copyMessageContent(content: string) {
+  navigator.clipboard.writeText(content).then(() => {
+    ElMessage.success('内容已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
+
+// 开始编辑消息
+function startEdit(msg: any) {
+  editingMessageId.value[msg.id] = true
+  editMessageContent.value[msg.id] = msg.content
+}
+
+// 取消编辑
+function cancelEdit(msgId: string) {
+  editingMessageId.value[msgId] = false
+  editMessageContent.value[msgId] = ''
+}
+
+// 提交编辑（作为新消息发送）
+function submitEdit(msg: any) {
+  const content = editMessageContent.value[msg.id]
+  if (!content || !content.trim()) {
+    ElMessage.warning('内容不能为空')
+    return
+  }
+  // 关闭编辑模式
+  editingMessageId.value[msg.id] = false
+  editMessageContent.value[msg.id] = ''
+  // 发送新消息
+  chatStore.sendUserMessage(content.trim())
+}
+
+// 重新生成消息
+function regenerateMessage(msg: any) {
+  // 优先使用消息自带的问题
+  if (msg.question) {
+    chatStore.sendUserMessage(msg.question)
+    return
+  }
+  
+  // 尝试通过消息ID查找父消息（用户消息）
+  const msgIndex = messages.value.findIndex((m) => m.id === msg.id)
+  if (msgIndex > 0) {
+    const prevMsg = messages.value[msgIndex - 1]
+    if (prevMsg && prevMsg.role === 'user') {
+      chatStore.sendUserMessage(prevMsg.content)
+      return
+    }
+  }
+  
+  ElMessage.error('无法重新生成此消息')
 }
 
 function autoSuggestChart(data: any[], msgId: string, suggestedChartType?: string, columnMeta?: any[]) {
@@ -615,12 +845,6 @@ async function handleNewChat() {
   await chatStore.createNewSession()
 }
 
-async function handleRefresh() {
-  if (currentSessionId.value) {
-    await chatStore.fetchMessages(currentSessionId.value)
-  }
-}
-
 function handleEnterKey(e: KeyboardEvent) {
   if (!e.ctrlKey && !e.shiftKey && !e.altKey) {
     e.preventDefault()
@@ -628,18 +852,38 @@ function handleEnterKey(e: KeyboardEvent) {
   }
 }
 
-function scrollToBottom() {
+function scrollToBottom(force = false) {
   if (messagesRef.value) {
-    messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+    // 获取最后一条消息
+    const lastMessage = messages.value[messages.value.length - 1]
+    
+    // 如果最后一条消息正在流式输出，或强制滚动，则强制滚动到底部
+    if (force || lastMessage?.isStreaming) {
+      messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+      return
+    }
+    
+    // 否则，只有在用户在底部附近时才自动滚动
+    if (shouldAutoScroll()) {
+      messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+    }
   }
 }
 
-function copySql(sql: string) {
-  navigator.clipboard.writeText(sql).then(() => {
-    ElMessage.success('SQL已复制到剪贴板')
-  }).catch(() => {
-    ElMessage.error('复制失败，请手动复制')
-  })
+// 检查是否需要自动滚动（用户是否在底部附近）
+function shouldAutoScroll() {
+  if (!messagesRef.value) return true
+  const container = messagesRef.value
+  const scrollTop = container.scrollTop
+  const scrollHeight = container.scrollHeight
+  const clientHeight = container.clientHeight
+  // 如果用户滚动位置在底部50px范围内，则视为在底部
+  return scrollTop >= scrollHeight - clientHeight - 50
+}
+
+// 处理滚动事件
+function handleScroll() {
+  // 滚动事件处理，用于更新shouldAutoScroll的判断
 }
 
 async function loadKnowledgeBases() {
@@ -657,10 +901,18 @@ async function loadDatasources() {
   try {
     const res = await getDatasources() as any
     if (res.code === 0) {
-      datasources.value = res.data
+      // 兼容分页格式：新接口返回 {total, list}，旧接口直接返回数组
+      if (res.data && Array.isArray(res.data.list)) {
+        datasources.value = res.data.list
+      } else if (Array.isArray(res.data)) {
+        datasources.value = res.data
+      } else {
+        datasources.value = []
+      }
     }
   } catch (e) {
     console.error('加载数据源失败', e)
+    datasources.value = []
   }
 }
 
@@ -727,14 +979,24 @@ async function handleDeleteSession(session: any) {
 }
 
 onMounted(async () => {
+  // 立即设置loading状态，防止旧消息闪烁
+  chatStore.isLoadingMessages = true
+  chatStore.messages = []
+  
   await chatStore.fetchSessions()
+  await loadKnowledgeBases()
+  await loadDatasources()
+  await chatStore.fetchLLMConfigs()
+  await chatStore.fetchDefaultLLMConfig()
+  
   if (sessions.value.length === 0) {
     await chatStore.createNewSession()
   } else {
-    chatStore.selectSession(sessions.value[0].id)
+    await chatStore.selectSession(sessions.value[0].id)
   }
-  await loadKnowledgeBases()
-  await loadDatasources()
+  
+  // 加载完成后强制滚动到最新消息
+  nextTick(() => scrollToBottom(true))
 })
 
 watch(
@@ -749,12 +1011,21 @@ watch(
   },
   { deep: true }
 )
+
+// 监听消息内容变化，在流式输出时自动滚动到底部
+watch(
+  () => messages.value.map((m) => m.content),
+  () => {
+    nextTick(() => scrollToBottom())
+  },
+  { deep: true }
+)
 </script>
 
 <style lang="scss" scoped>
 .chat-view {
   display: flex;
-  height: 100vh;
+  height: 100%;
   background-color: #f1f5f9;
 }
 
@@ -976,22 +1247,6 @@ watch(
       }
     }
 
-    .refresh-btn {
-      border-radius: 8px;
-      padding: 6px 14px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      border: 1px solid #e2e8f0;
-      color: #475569;
-      transition: all 0.2s;
-
-      &:hover {
-        color: #3b82f6;
-        border-color: #3b82f6;
-        background-color: #eff6ff;
-      }
-    }
   }
 
   .chat-messages {
@@ -1008,6 +1263,24 @@ watch(
       justify-content: center;
       padding: 60px 40px;
       text-align: center;
+
+      .loading-wrapper {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+      }
+
+      .loading-spinner {
+        color: #3b82f6;
+      }
+
+      .loading-text {
+        font-size: 16px;
+        color: #64748b;
+        margin: 0;
+      }
     }
 
     .welcome-icon {
@@ -1087,6 +1360,12 @@ watch(
       &.user {
         flex-direction: row-reverse;
 
+        // 编辑模式下，消息区域宽度占满，保持头像在右边
+        &.editing {
+          max-width: 100%;
+          width: 100%;
+        }
+
         .avatar-group {
           display: flex;
           flex-direction: column;
@@ -1104,6 +1383,14 @@ watch(
           max-width: 100%;
           overflow: hidden;
           align-items: flex-end;
+
+          // 编辑模式下占满可用宽度，与AI回复框对齐
+          &.editing {
+            flex: 1;
+            align-items: stretch;
+            width: 100%;
+            max-width: calc(85% - 50px); // 减去头像宽度，与AI回复框对齐
+          }
         }
 
         .message-bubble {
@@ -1192,8 +1479,8 @@ watch(
       }
 
       .assistant-avatar {
-        background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);
-        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        background: white;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
       }
 
       .message-text {
@@ -1203,6 +1490,40 @@ watch(
       .streaming-cursor {
         animation: blink 1s infinite;
         font-weight: bold;
+      }
+
+      .typing-indicator {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 0;
+        
+        span {
+          width: 6px;
+          height: 6px;
+          background-color: rgba(255, 255, 255, 0.8);
+          border-radius: 50%;
+          animation: typing 1.4s infinite ease-in-out both;
+          
+          &:nth-child(1) {
+            animation-delay: -0.32s;
+          }
+          
+          &:nth-child(2) {
+            animation-delay: -0.16s;
+          }
+        }
+      }
+
+      @keyframes typing {
+        0%, 80%, 100% {
+          transform: scale(0);
+          opacity: 0.5;
+        }
+        40% {
+          transform: scale(1);
+          opacity: 1;
+        }
       }
 
       .thinking-process {
@@ -1429,55 +1750,23 @@ watch(
       }
 
       .sql-section {
-        background-color: #0f172a;
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-        width: 100%;
+        margin-top: 8px;
 
-        .section-header {
-          display: flex;
+        .sql-view-btn {
+          display: inline-flex;
           align-items: center;
-          gap: 10px;
-          padding: 10px 16px;
-          background-color: #1e293b;
-          border-bottom: 1px solid #334155;
+          gap: 4px;
+          color: #64748b;
+          font-size: 12px;
+          padding: 4px 12px;
+          border-radius: 4px;
+          background-color: #f1f5f9;
+          border: 1px solid #e2e8f0;
 
-          span {
-            font-size: 13px;
-            font-weight: 600;
-            color: #f1f5f9;
-          }
-
-          .sql-copy-btn {
-            margin-left: auto;
-            color: #94a3b8;
-            font-size: 12px;
-            gap: 4px;
-
-            &:hover {
-              color: #e2e8f0;
-            }
-          }
-        }
-
-        .sql-content {
-          padding: 16px;
-
-          .sql-code {
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 12px;
-            color: #e2e8f0;
-            line-height: 1.8;
-            margin: 0;
-            overflow-x: auto;
-          }
-
-          .sql-meta {
-            margin-top: 10px;
-            font-size: 11px;
-            color: #64748b;
-            text-align: right;
+          &:hover {
+            color: #3b82f6;
+            background-color: #e0f2fe;
+            border-color: #bae6fd;
           }
         }
       }
@@ -1493,33 +1782,66 @@ watch(
         .section-header {
           display: flex;
           align-items: center;
-          gap: 10px;
+          justify-content: space-between;
           padding: 14px 16px;
           background: linear-gradient(90deg, #ecfdf5 0%, #ffffff 100%);
           border-bottom: 1px solid #d1fae5;
 
-          .el-icon {
-            font-size: 16px;
-            color: #10b981;
+          .header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+
+            .el-icon {
+              font-size: 16px;
+              color: #10b981;
+            }
+
+            span {
+              font-size: 14px;
+              font-weight: 600;
+              color: #065f46;
+            }
+
+            .table-name-badge {
+              font-size: 12px;
+              padding: 4px 10px;
+              background-color: #e0e7ff;
+              color: #6366f1;
+              border-radius: 6px;
+            }
+
+            .chart-view-toggle {
+              margin-left: 10px;
+            }
           }
 
-          span {
-            font-size: 14px;
-            font-weight: 600;
-            color: #065f46;
-          }
+          .header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
 
-          .table-name-badge {
-            font-size: 12px;
-            padding: 4px 10px;
-            background-color: #e0e7ff;
-            color: #6366f1;
-            border-radius: 6px;
-            margin-left: auto;
-          }
+            .sql-view-btn {
+              color: #64748b;
+              font-size: 13px;
+              padding: 4px 10px;
 
-          .chart-view-toggle {
-            margin-left: 10px;
+              &:hover {
+                color: #f59e0b;
+                background-color: #fffbeb;
+              }
+            }
+
+            .export-btn {
+              color: #64748b;
+              font-size: 13px;
+              padding: 4px 10px;
+
+              &:hover {
+                color: #3b82f6;
+                background-color: #eff6ff;
+              }
+            }
           }
         }
 
@@ -1581,8 +1903,25 @@ watch(
         display: flex;
         align-items: center;
         justify-content: flex-end;
-        gap: 6px;
+        gap: 12px;
         margin-top: 8px;
+
+        .meta-actions {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .meta-action-icon {
+          font-size: 14px;
+          color: #94a3b8;
+          cursor: pointer;
+          transition: color 0.2s;
+
+          &:hover {
+            color: #3b82f6;
+          }
+        }
 
         .meta-icon {
           font-size: 12px;
@@ -1594,6 +1933,160 @@ watch(
           color: #94a3b8;
         }
       }
+
+      .references-section {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+
+        .references-header {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+
+          .el-icon {
+            font-size: 14px;
+            color: #64748b;
+          }
+
+          .references-title {
+            font-size: 12px;
+            color: #64748b;
+          }
+        }
+
+        .references-files {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .ref-file {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 4px 10px;
+          background-color: #f1f5f9;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.2s;
+
+          .el-icon {
+            font-size: 14px;
+            color: #6366f1;
+          }
+
+          .ref-file-name {
+            font-size: 12px;
+            color: #475569;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+
+          &:hover {
+            background-color: #e0e7ff;
+
+            .ref-file-name {
+              color: #6366f1;
+            }
+          }
+        }
+      }
+
+      // 用户消息操作按钮
+      .user-message-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 4px;
+
+        .meta-action-icon {
+          font-size: 14px;
+          color: #94a3b8;
+          cursor: pointer;
+          transition: color 0.2s;
+
+          &:hover {
+            color: #3b82f6;
+          }
+        }
+      }
+
+      // 编辑模式样式
+      .message-bubble.edit-mode {
+        background: #ffffff !important;
+        background-image: none !important;
+        color: #1e293b !important;
+        border-radius: 12px !important;
+        position: relative;
+        padding: 4px !important;
+        font-size: 14px;
+        line-height: 1.7;
+        word-break: break-word;
+        overflow-wrap: break-word;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        border: 1px solid #e2e8f0;
+        flex: 1;
+
+        .edit-input-wrap {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 0;
+          width: 100%;
+        }
+
+        .edit-input {
+          flex: 1;
+
+          :deep(.el-input__wrapper) {
+            border-radius: 10px;
+            padding: 8px 12px;
+            font-size: 14px;
+            border: none;
+            background-color: transparent;
+            box-shadow: none;
+
+            &:focus {
+              box-shadow: none;
+            }
+          }
+
+          :deep(.el-input__inner) {
+            padding: 0;
+            font-size: 14px;
+          }
+        }
+
+        .edit-actions {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .edit-actions .el-button {
+          border-radius: 8px;
+          padding: 6px 14px;
+          height: auto;
+          font-size: 13px;
+        }
+
+        .edit-send-btn {
+          background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%) !important;
+          border: none !important;
+          border-radius: 10px;
+          padding: 6px 18px !important;
+          font-weight: 500;
+          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        }
+      }
     }
   }
 
@@ -1601,20 +2094,7 @@ watch(
     background-color: #ffffff;
     border-top: 1px solid #e2e8f0;
     box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.04);
-
-    .input-toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 20px;
-      border-bottom: 1px solid #f1f5f9;
-
-      .toolbar-left,
-      .toolbar-right {
-        display: flex;
-        gap: 8px;
-      }
-    }
+    flex-shrink: 0;
 
     .input-wrapper {
       display: flex;
@@ -1631,6 +2111,9 @@ watch(
           font-size: 14px;
           border: 1px solid #e2e8f0;
           transition: all 0.2s;
+          resize: vertical;
+          min-height: 44px;
+          max-height: 180px;
 
           &:focus {
             border-color: #3b82f6;
@@ -1661,22 +2144,74 @@ watch(
         }
       }
     }
-
-    .input-tips {
-      padding: 6px 20px 12px;
-      text-align: center;
-
-      span {
-        font-size: 11px;
-        color: #94a3b8;
-      }
-    }
   }
 }
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
+}
+
+/* SQL弹窗样式 */
+.sql-dialog-content {
+  max-height: 60vh;
+  overflow-y: auto;
+
+  .sql-dialog-code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    color: #e2e8f0;
+    background-color: #0f172a;
+    padding: 16px;
+    border-radius: 8px;
+    line-height: 1.8;
+    margin: 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+}
+
+/* 知识引用详情弹窗样式 */
+.reference-detail-content {
+  .reference-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px;
+    background-color: #f8fafc;
+    border-radius: 8px;
+    margin-bottom: 16px;
+
+    .reference-detail-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1e293b;
+      flex: 1;
+    }
+
+    .reference-detail-score {
+      font-size: 12px;
+      padding: 4px 10px;
+      background-color: #dcfce7;
+      color: #16a34a;
+      border-radius: 6px;
+      font-weight: 500;
+    }
+  }
+
+  .reference-detail-body {
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+
+  .reference-detail-content-text {
+    font-size: 13px;
+    color: #334155;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
 }
 
 @keyframes pulse {

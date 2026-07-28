@@ -8,23 +8,26 @@
       <el-tab-pane label="数据源管理" name="datasource">
         <div class="tab-content">
           <div class="tab-toolbar">
-            <el-input
-              v-model="datasourceSearch"
-              placeholder="搜索数据源..."
-              style="width: 240px"
-              clearable
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
+            <div class="toolbar-left">
+              <el-input
+                v-model="datasourceSearch"
+                placeholder="搜索数据源..."
+                style="width: 240px"
+                clearable
+                @keyup.enter="handleDatasourceSearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+            </div>
             <el-button type="primary" @click="handleAddDatasource">
               <el-icon><Plus /></el-icon>
               新增数据源
             </el-button>
           </div>
 
-          <el-table :data="filteredDatasources" style="width: 100%" v-loading="datasourceLoading">
+          <el-table :data="datasources" style="width: 100%" v-loading="datasourceLoading">
             <el-table-column prop="name" label="数据源名称" min-width="160" />
             <el-table-column prop="type" label="类型" width="120">
               <template #default="{ row }">
@@ -48,51 +51,90 @@
                 {{ formatDate(row.createdAt) }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="handleSyncSchema(row)">同步</el-button>
-                <el-button link type="primary" @click="handleEditDatasource(row)">编辑</el-button>
-                <el-button link type="danger" @click="handleDeleteDatasource(row)">删除</el-button>
-                <el-dropdown trigger="click">
-                  <el-button link type="primary">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item @click="handleTestConn(row)">测试连接</el-dropdown-item>
-                      <el-dropdown-item @click="handleViewSchema(row)">查看Schema</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
+                <div class="action-btns">
+                  <el-button link type="primary" @click="handleSyncSchema(row)">同步</el-button>
+                  <el-button link type="primary" @click="handleEditDatasource(row)">编辑</el-button>
+                  <el-button link type="danger" @click="handleDeleteDatasource(row)">删除</el-button>
+                  <el-dropdown trigger="click">
+                    <el-button link type="primary">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item @click="handleTestConn(row)">测试连接</el-dropdown-item>
+                        <el-dropdown-item @click="handleViewSchema(row)">查看Schema</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
               </template>
             </el-table-column>
           </el-table>
+          <div class="pagination-container">
+            <el-pagination
+              v-model:current-page="datasourcePage"
+              v-model:page-size="datasourcePageSize"
+              :page-sizes="[10, 20, 50, 100]"
+              :total="datasourceTotal"
+              layout="total, sizes, prev, pager, next, jumper"
+              background
+              @size-change="loadDatasources"
+              @current-change="loadDatasources"
+            />
+          </div>
         </div>
       </el-tab-pane>
 
       <el-tab-pane label="指标管理" name="metric">
         <div class="tab-content">
           <div class="tab-toolbar">
-            <el-input
-              v-model="metricSearch"
-              placeholder="搜索指标..."
-              style="width: 240px"
-              clearable
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
+            <div class="toolbar-left">
+              <el-input
+                v-model="metricSearch"
+                placeholder="搜索指标..."
+                style="width: 200px"
+                clearable
+                @keyup.enter="handleMetricSearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-select
+                v-model="metricDatasourceFilter"
+                placeholder="筛选数据源"
+                style="width: 160px"
+                clearable
+                @change="loadMetrics"
+              >
+                <el-option
+                  v-for="ds in datasources"
+                  :key="ds.id"
+                  :label="ds.name"
+                  :value="ds.id"
+                />
+              </el-select>
+            </div>
             <el-button type="primary" @click="handleAddMetric">
               <el-icon><Plus /></el-icon>
               新增指标
             </el-button>
           </div>
 
-          <el-table :data="filteredMetrics" style="width: 100%" v-loading="metricLoading">
-            <el-table-column prop="name" label="指标名称" min-width="160" />
-            <el-table-column prop="code" label="编码" width="140" />
-            <el-table-column prop="description" label="描述" min-width="200" />
-            <el-table-column prop="groupName" label="分组" width="120" />
-            <el-table-column prop="unit" label="单位" width="100" />
+          <el-table :data="metrics" style="width: 100%" v-loading="metricLoading">
+            <el-table-column prop="name" label="指标名称" min-width="140" />
+            <el-table-column prop="code" label="编码" width="120" />
+            <el-table-column label="数据源" width="140">
+              <template #default="{ row }">
+                <el-tag v-if="row.datasourceName" type="info" effect="plain" size="small">
+                  {{ row.datasourceName }}
+                </el-tag>
+                <span v-else style="color: #c0c4cc">未绑定</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="groupName" label="分组" width="100" />
+            <el-table-column prop="unit" label="单位" width="80" />
             <el-table-column label="操作" width="160" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditMetric(row)">编辑</el-button>
@@ -100,35 +142,72 @@
               </template>
             </el-table-column>
           </el-table>
+          <div class="pagination-container">
+            <el-pagination
+              v-model:current-page="metricPage"
+              v-model:page-size="metricPageSize"
+              :page-sizes="[10, 20, 50, 100]"
+              :total="metricTotal"
+              layout="total, sizes, prev, pager, next, jumper"
+              background
+              @size-change="loadMetrics"
+              @current-change="loadMetrics"
+            />
+          </div>
         </div>
       </el-tab-pane>
 
       <el-tab-pane label="维度管理" name="dimension">
         <div class="tab-content">
           <div class="tab-toolbar">
-            <el-input
-              v-model="dimensionSearch"
-              placeholder="搜索维度..."
-              style="width: 240px"
-              clearable
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
+            <div class="toolbar-left">
+              <el-input
+                v-model="dimensionSearch"
+                placeholder="搜索维度..."
+                style="width: 200px"
+                clearable
+                @keyup.enter="handleDimensionSearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-select
+                v-model="dimensionDatasourceFilter"
+                placeholder="筛选数据源"
+                style="width: 160px"
+                clearable
+                @change="loadDimensions"
+              >
+                <el-option
+                  v-for="ds in datasources"
+                  :key="ds.id"
+                  :label="ds.name"
+                  :value="ds.id"
+                />
+              </el-select>
+            </div>
             <el-button type="primary" @click="handleAddDimension">
               <el-icon><Plus /></el-icon>
               新增维度
             </el-button>
           </div>
 
-          <el-table :data="filteredDimensions" style="width: 100%" v-loading="dimensionLoading">
-            <el-table-column prop="name" label="维度名称" min-width="160" />
-            <el-table-column prop="code" label="编码" width="140" />
-            <el-table-column prop="tableName" label="表名" width="160" />
-            <el-table-column prop="columnName" label="字段名" width="140" />
-            <el-table-column prop="dataType" label="数据类型" width="120" />
-            <el-table-column prop="description" label="描述" min-width="160" />
+          <el-table :data="dimensions" style="width: 100%" v-loading="dimensionLoading">
+            <el-table-column prop="name" label="维度名称" min-width="140" />
+            <el-table-column prop="code" label="编码" width="120" />
+            <el-table-column label="数据源" width="140">
+              <template #default="{ row }">
+                <el-tag v-if="row.datasourceName" type="info" effect="plain" size="small">
+                  {{ row.datasourceName }}
+                </el-tag>
+                <span v-else style="color: #c0c4cc">未绑定</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="tableName" label="表名" width="140" />
+            <el-table-column prop="columnName" label="字段名" width="120" />
+            <el-table-column prop="dataType" label="数据类型" width="100" />
+            <el-table-column prop="description" label="描述" min-width="140" show-overflow-tooltip />
             <el-table-column label="操作" width="160" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="handleEditDimension(row)">编辑</el-button>
@@ -136,34 +215,71 @@
               </template>
             </el-table-column>
           </el-table>
+          <div class="pagination-container">
+            <el-pagination
+              v-model:current-page="dimensionPage"
+              v-model:page-size="dimensionPageSize"
+              :page-sizes="[10, 20, 50, 100]"
+              :total="dimensionTotal"
+              layout="total, sizes, prev, pager, next, jumper"
+              background
+              @size-change="loadDimensions"
+              @current-change="loadDimensions"
+            />
+          </div>
         </div>
       </el-tab-pane>
 
       <el-tab-pane label="术语管理" name="term">
         <div class="tab-content">
           <div class="tab-toolbar">
-            <el-input
-              v-model="termSearch"
-              placeholder="搜索术语..."
-              style="width: 240px"
-              clearable
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-            </el-input>
+            <div class="toolbar-left">
+              <el-input
+                v-model="termSearch"
+                placeholder="搜索术语..."
+                style="width: 200px"
+                clearable
+                @keyup.enter="handleTermSearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-select
+                v-model="termDatasourceFilter"
+                placeholder="筛选数据源"
+                style="width: 160px"
+                clearable
+                @change="loadTerms"
+              >
+                <el-option
+                  v-for="ds in datasources"
+                  :key="ds.id"
+                  :label="ds.name"
+                  :value="ds.id"
+                />
+              </el-select>
+            </div>
             <el-button type="primary" @click="handleAddTerm">
               <el-icon><Plus /></el-icon>
               新增术语
             </el-button>
           </div>
 
-          <el-table :data="filteredTerms" style="width: 100%" v-loading="termLoading">
-            <el-table-column prop="term" label="术语" min-width="140" />
-            <el-table-column prop="code" label="编码" width="140" />
-            <el-table-column prop="definition" label="定义" min-width="240" />
-            <el-table-column prop="category" label="分类" width="120" />
-            <el-table-column label="同义词" min-width="200">
+          <el-table :data="terms" style="width: 100%" v-loading="termLoading">
+            <el-table-column prop="term" label="术语" min-width="120" />
+            <el-table-column prop="code" label="编码" width="120" />
+            <el-table-column label="数据源" width="140">
+              <template #default="{ row }">
+                <el-tag v-if="row.datasourceName" type="info" effect="plain" size="small">
+                  {{ row.datasourceName }}
+                </el-tag>
+                <span v-else style="color: #c0c4cc">未绑定</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="definition" label="定义" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="category" label="分类" width="100" />
+            <el-table-column label="同义词" min-width="180">
               <template #default="{ row }">
                 <el-tag
                   v-for="(syn, idx) in row.synonyms?.slice(0, 3)"
@@ -186,6 +302,18 @@
               </template>
             </el-table-column>
           </el-table>
+          <div class="pagination-container">
+            <el-pagination
+              v-model:current-page="termPage"
+              v-model:page-size="termPageSize"
+              :page-sizes="[10, 20, 50, 100]"
+              :total="termTotal"
+              layout="total, sizes, prev, pager, next, jumper"
+              background
+              @size-change="loadTerms"
+              @current-change="loadTerms"
+            />
+          </div>
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -204,8 +332,7 @@
           <el-select v-model="datasourceForm.type" placeholder="请选择数据库类型" style="width: 100%">
             <el-option label="MySQL" value="mysql" />
             <el-option label="PostgreSQL" value="postgresql" />
-            <el-option label="ClickHouse" value="clickhouse" />
-            <el-option label="Oracle" value="oracle" />
+            <el-option label="SQL Server" value="sqlserver" />
           </el-select>
         </el-form-item>
         <el-form-item label="主机地址" prop="host">
@@ -254,7 +381,7 @@
           <el-input v-model="metricForm.code" placeholder="请输入指标编码" />
         </el-form-item>
         <el-form-item label="数据源" prop="datasourceId">
-          <el-select v-model="metricForm.datasourceId" placeholder="请选择数据源" style="width: 100%">
+          <el-select v-model="metricForm.datasourceId" placeholder="选择关联数据源（不选择则不参与智能问数）" style="width: 100%" clearable>
             <el-option
               v-for="ds in datasources"
               :key="ds.id"
@@ -308,7 +435,7 @@
           <el-input v-model="dimensionForm.code" placeholder="请输入维度编码" />
         </el-form-item>
         <el-form-item label="数据源" prop="datasourceId">
-          <el-select v-model="dimensionForm.datasourceId" placeholder="请选择数据源" style="width: 100%">
+          <el-select v-model="dimensionForm.datasourceId" placeholder="选择关联数据源（不选择则不参与智能问数）" style="width: 100%" clearable>
             <el-option
               v-for="ds in datasources"
               :key="ds.id"
@@ -380,7 +507,7 @@
           />
         </el-form-item>
         <el-form-item label="数据源">
-          <el-select v-model="termForm.datasourceId" placeholder="选择关联数据源" style="width: 100%" clearable>
+          <el-select v-model="termForm.datasourceId" placeholder="选择关联数据源（不选择则不参与智能问数）" style="width: 100%" clearable>
             <el-option
               v-for="ds in datasources"
               :key="ds.id"
@@ -444,11 +571,29 @@ const metricSearch = ref('')
 const dimensionSearch = ref('')
 const termSearch = ref('')
 
+// 分页状态
+const datasourcePage = ref(1)
+const datasourcePageSize = ref(10)
+const datasourceTotal = ref(0)
+const metricPage = ref(1)
+const metricPageSize = ref(10)
+const metricTotal = ref(0)
+const dimensionPage = ref(1)
+const dimensionPageSize = ref(10)
+const dimensionTotal = ref(0)
+const termPage = ref(1)
+const termPageSize = ref(10)
+const termTotal = ref(0)
+
+// 数据源筛选
+const metricDatasourceFilter = ref<number | undefined>(undefined)
+const dimensionDatasourceFilter = ref<number | undefined>(undefined)
+const termDatasourceFilter = ref<number | undefined>(undefined)
+
 const dbTypeColor: Record<string, string> = {
   mysql: 'primary',
   postgresql: 'success',
-  clickhouse: 'warning',
-  oracle: 'info',
+  sqlserver: 'warning',
 }
 
 const datasources = ref<any[]>([])
@@ -504,7 +649,7 @@ const metricForm = reactive<MetricForm>({
   name: '',
   code: '',
   description: '',
-  datasourceId: 0,
+  datasourceId: undefined,
   sqlExpression: '',
   resultType: 'number',
   unit: '',
@@ -516,7 +661,7 @@ const dimensionForm = reactive<DimensionForm>({
   name: '',
   code: '',
   description: '',
-  datasourceId: 0,
+  datasourceId: undefined,
   tableName: '',
   columnName: '',
   dataType: '',
@@ -546,14 +691,12 @@ const datasourceRules: FormRules = {
 const metricRules: FormRules = {
   name: [{ required: true, message: '请输入指标名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入指标编码', trigger: 'blur' }],
-  datasourceId: [{ required: true, message: '请选择数据源', trigger: 'change' }],
   sqlExpression: [{ required: true, message: '请输入SQL表达式', trigger: 'blur' }],
 }
 
 const dimensionRules: FormRules = {
   name: [{ required: true, message: '请输入维度名称', trigger: 'blur' }],
   code: [{ required: true, message: '请输入维度编码', trigger: 'blur' }],
-  datasourceId: [{ required: true, message: '请选择数据源', trigger: 'change' }],
   tableName: [{ required: true, message: '请输入表名', trigger: 'blur' }],
   columnName: [{ required: true, message: '请输入字段名', trigger: 'blur' }],
 }
@@ -571,33 +714,25 @@ const filteredDatasources = computed(() => {
   )
 })
 
-const filteredMetrics = computed(() => {
-  if (!metricSearch.value) return metrics.value
-  return metrics.value.filter((m) =>
-    m.name.toLowerCase().includes(metricSearch.value.toLowerCase())
-  )
-})
-
-const filteredDimensions = computed(() => {
-  if (!dimensionSearch.value) return dimensions.value
-  return dimensions.value.filter((d) =>
-    d.name.toLowerCase().includes(dimensionSearch.value.toLowerCase())
-  )
-})
-
-const filteredTerms = computed(() => {
-  if (!termSearch.value) return terms.value
-  return terms.value.filter((t) =>
-    t.term.toLowerCase().includes(termSearch.value.toLowerCase())
-  )
-})
+function handleDatasourceSearch() {
+  datasourcePage.value = 1
+  loadDatasources()
+}
 
 async function loadDatasources() {
   datasourceLoading.value = true
   try {
-    const res: any = await getDatasources()
+    const params: any = {
+      page: datasourcePage.value,
+      pageSize: datasourcePageSize.value,
+    }
+    if (datasourceSearch.value) {
+      params.keyword = datasourceSearch.value
+    }
+    const res: any = await getDatasources(params)
     if (res.code === 0 && res.data) {
-      datasources.value = res.data
+      datasources.value = res.data.list || []
+      datasourceTotal.value = res.data.total || 0
     }
   } catch (e) {
     console.error('加载数据源列表失败', e)
@@ -609,9 +744,20 @@ async function loadDatasources() {
 async function loadMetrics() {
   metricLoading.value = true
   try {
-    const res: any = await getMetrics()
+    const params: any = {
+      page: metricPage.value,
+      pageSize: metricPageSize.value,
+    }
+    if (metricSearch.value) {
+      params.keyword = metricSearch.value
+    }
+    if (metricDatasourceFilter.value) {
+      params.datasourceId = metricDatasourceFilter.value
+    }
+    const res: any = await getMetrics(params)
     if (res.code === 0 && res.data) {
-      metrics.value = res.data
+      metrics.value = res.data.list || []
+      metricTotal.value = res.data.total || 0
     }
   } catch (e) {
     console.error('加载指标列表失败', e)
@@ -620,12 +766,28 @@ async function loadMetrics() {
   }
 }
 
+function handleMetricSearch() {
+  metricPage.value = 1
+  loadMetrics()
+}
+
 async function loadDimensions() {
   dimensionLoading.value = true
   try {
-    const res: any = await getDimensions()
+    const params: any = {
+      page: dimensionPage.value,
+      pageSize: dimensionPageSize.value,
+    }
+    if (dimensionSearch.value) {
+      params.keyword = dimensionSearch.value
+    }
+    if (dimensionDatasourceFilter.value) {
+      params.datasourceId = dimensionDatasourceFilter.value
+    }
+    const res: any = await getDimensions(params)
     if (res.code === 0 && res.data) {
-      dimensions.value = res.data
+      dimensions.value = res.data.list || []
+      dimensionTotal.value = res.data.total || 0
     }
   } catch (e) {
     console.error('加载维度列表失败', e)
@@ -634,18 +796,39 @@ async function loadDimensions() {
   }
 }
 
+function handleDimensionSearch() {
+  dimensionPage.value = 1
+  loadDimensions()
+}
+
 async function loadTerms() {
   termLoading.value = true
   try {
-    const res: any = await getTerms()
+    const params: any = {
+      page: termPage.value,
+      pageSize: termPageSize.value,
+    }
+    if (termSearch.value) {
+      params.keyword = termSearch.value
+    }
+    if (termDatasourceFilter.value) {
+      params.datasourceId = termDatasourceFilter.value
+    }
+    const res: any = await getTerms(params)
     if (res.code === 0 && res.data) {
-      terms.value = res.data
+      terms.value = res.data.list || []
+      termTotal.value = res.data.total || 0
     }
   } catch (e) {
     console.error('加载术语列表失败', e)
   } finally {
     termLoading.value = false
   }
+}
+
+function handleTermSearch() {
+  termPage.value = 1
+  loadTerms()
 }
 
 function handleAddDatasource() {
@@ -793,7 +976,7 @@ function handleAddMetric() {
     name: '',
     code: '',
     description: '',
-    datasourceId: datasources.value[0]?.id || 0,
+    datasourceId: undefined,
     sqlExpression: '',
     resultType: 'number',
     unit: '',
@@ -871,7 +1054,7 @@ function handleAddDimension() {
     name: '',
     code: '',
     description: '',
-    datasourceId: datasources.value[0]?.id || 0,
+    datasourceId: undefined,
     tableName: '',
     columnName: '',
     dataType: '',
@@ -1049,6 +1232,14 @@ onMounted(() => {
   height: 100%;
 }
 
+.action-btns {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+  gap: 0;
+}
+
 .page-header {
   margin-bottom: 20px;
 }
@@ -1073,6 +1264,17 @@ onMounted(() => {
     display: flex;
     justify-content: space-between;
     margin-bottom: 16px;
+  }
+
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+  }
+
+  .pagination-container {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 16px;
   }
 }
 

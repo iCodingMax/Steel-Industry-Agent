@@ -16,6 +16,7 @@ request.interceptors.request.use(
     if (token && config.headers) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    console.log('发送请求:', config.method?.toUpperCase(), config.url, config.params || config.data)
     return config
   },
   (error) => {

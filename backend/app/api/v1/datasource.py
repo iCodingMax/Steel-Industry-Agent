@@ -1,9 +1,10 @@
-﻿"""
+"""
 数据源API
 """
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 
 from app.core.database import get_db_session
 from app.schemas.datasource import (
@@ -17,20 +18,41 @@ from app.services.datasource_service import datasource_service
 from app.middlewares.exception_handler import success_response
 from app.middlewares.auth_deps import get_current_user
 from app.models.user import User
+from app.models.datasource import DataSource
 
 router = APIRouter()
 
 
 @router.get("", summary="获取数据源列表")
 async def list_datasources(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    page: int = Query(1, ge=1, description="页码"),
+    pageSize: int = Query(10, ge=1, le=100, description="每页条数"),
+    keyword: Optional[str] = Query(None, description="搜索关键词"),
     db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
-    """获取所有数据源"""
-    datasources = await datasource_service.get_all(db, skip, limit)
-    return success_response(data=[ds.to_dict() for ds in datasources])
+    """获取数据源列表，支持分页和搜索"""
+    skip = (page - 1) * pageSize
+    
+    query = select(DataSource)
+    count_query = select(func.count(DataSource.id))
+    
+    if keyword:
+        keyword_like = f"%{keyword}%"
+        query = query.where(DataSource.name.like(keyword_like) | DataSource.type.like(keyword_like))
+        count_query = count_query.where(DataSource.name.like(keyword_like) | DataSource.type.like(keyword_like))
+    
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+    
+    query = query.order_by(DataSource.id.desc()).offset(skip).limit(pageSize)
+    result = await db.execute(query)
+    datasources = list(result.scalars().all())
+    
+    return success_response(data={
+        "total": total,
+        "list": [ds.to_dict() for ds in datasources]
+    })
 
 
 @router.get("/{ds_id}", summary="获取数据源详情")

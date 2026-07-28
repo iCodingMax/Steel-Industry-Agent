@@ -17,7 +17,7 @@ class Metric(Base):
     name = Column(String(100), nullable=False, comment="指标名称")
     code = Column(String(50), unique=True, nullable=False, index=True, comment="指标代码")
     description = Column(Text, nullable=True, comment="指标描述")
-    datasource_id = Column(Integer, nullable=False, index=True, comment="数据源ID")
+    datasource_id = Column(Integer, nullable=True, index=True, comment="数据源ID，未绑定则不参与智能问数")
     sql_expression = Column(Text, nullable=False, comment="SQL表达式")
     result_type = Column(String(20), default="number", comment="结果类型: number/percent/string")
     unit = Column(String(20), nullable=True, comment="单位")

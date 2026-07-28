@@ -208,8 +208,15 @@
             <el-form-item label="描述">
               <el-input v-model="kbSettings.description" type="textarea" :rows="3" />
             </el-form-item>
-            <el-form-item label="嵌入模型">
-              <el-input v-model="kbSettings.embeddingModel" />
+            <el-form-item label="向量模型">
+              <el-select v-model="kbSettings.embeddingModel" placeholder="请选择向量模型" :loading="loadingEmbeddingModels">
+                <el-option
+                  v-for="model in embeddingModels"
+                  :key="model.id"
+                  :label="model.name"
+                  :value="String(model.id)"
+                />
+              </el-select>
             </el-form-item>
             <el-form-item label="切片大小">
               <el-input-number v-model="kbSettings.chunkSize" :min="100" :max="2000" :step="50" />
@@ -238,8 +245,15 @@
             placeholder="请输入知识库描述"
           />
         </el-form-item>
-        <el-form-item label="嵌入模型">
-          <el-input v-model="formData.embeddingModel" />
+        <el-form-item label="向量模型">
+          <el-select v-model="formData.embeddingModel" placeholder="请选择向量模型" :loading="loadingEmbeddingModels">
+            <el-option
+              v-for="model in embeddingModels"
+              :key="model.id"
+              :label="model.name"
+              :value="String(model.id)"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="切片大小">
           <el-input-number v-model="formData.chunkSize" :min="100" :max="2000" :step="50" />
@@ -272,6 +286,30 @@ import {
   RefreshRight,
 } from '@element-plus/icons-vue'
 import { getKnowledgeBases, createKnowledgeBase, getDocuments, uploadDocument, deleteDocument, buildIndex, updateKnowledgeBase, getDocumentDetail, getDocumentSegments, type KnowledgeBase, type DocumentDetail, type DocumentSegment } from '@/api/knowledge'
+import { getLLMConfigs } from '@/api/llmConfig'
+
+const embeddingModels = ref<Array<{ id: number; name: string }>>([])
+const loadingEmbeddingModels = ref(false)
+
+async function loadEmbeddingModels() {
+  loadingEmbeddingModels.value = true
+  try {
+    const res = await getLLMConfigs({ type: 'embedding' }) as any
+    const configs = res.data || []
+    embeddingModels.value = configs.map((c: any) => ({ id: c.id, name: c.name }))
+    if (embeddingModels.value.length > 0 && !kbSettings.embeddingModel) {
+      kbSettings.embeddingModel = String(embeddingModels.value[0].id)
+    }
+    if (embeddingModels.value.length > 0 && !formData.embeddingModel) {
+      formData.embeddingModel = String(embeddingModels.value[0].id)
+    }
+  } catch (e) {
+    console.error('加载向量模型失败', e)
+    embeddingModels.value = []
+  } finally {
+    loadingEmbeddingModels.value = false
+  }
+}
 
 const dialogVisible = ref(false)
 const loadingDocs = ref(false)
@@ -285,7 +323,7 @@ const documents = ref<any[]>([])
 const formData = reactive({
   name: '',
   description: '',
-  embeddingModel: 'bge-m3',
+  embeddingModel: '',
   chunkSize: 500,
   chunkOverlap: 100,
 })
@@ -293,7 +331,7 @@ const formData = reactive({
 const kbSettings = reactive({
   name: '',
   description: '',
-  embeddingModel: 'bge-m3',
+  embeddingModel: '',
   chunkSize: 500,
   chunkOverlap: 100,
 })
@@ -543,6 +581,7 @@ function formatDate(dateStr?: string) {
 
 onMounted(() => {
   loadKnowledgeBases()
+  loadEmbeddingModels()
 })
 </script>
 

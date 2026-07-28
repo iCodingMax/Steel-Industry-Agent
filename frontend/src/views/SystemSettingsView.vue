@@ -175,14 +175,10 @@ watch(() => route.path, (newPath) => {
   } else {
     activeTab.value = 'user'
   }
-})
+}, { immediate: true })
 
 watch(activeTab, (newTab) => {
-  if (newTab === 'oauth') {
-    router.push('/system-settings/oauth')
-  } else {
-    router.push('/system-settings/user')
-  }
+  // 不再自动导航到子路由，保持在当前页面
 })
 
 async function loadUserInfo() {
@@ -236,9 +232,12 @@ async function handleSaveOAuth() {
       const data = await res.json()
       if (data.code === 0) {
         ElMessage.success('OAuth2配置保存成功')
+      } else {
+        ElMessage.error(data.message || '保存失败')
       }
     } catch (e) {
       console.error('保存OAuth2配置失败', e)
+      ElMessage.error('保存OAuth2配置失败，请重试')
     } finally {
       oauthSaving.value = false
     }

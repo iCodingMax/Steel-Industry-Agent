@@ -17,13 +17,31 @@
 - iframe嵌入配置
 - 自定义域名
 - API密钥管理
+- 公开访问链接（通过access_hash生成）
 """
+import uuid
+import base64
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.core.base_model import Base
+
+
+def generate_access_hash(app_id: int) -> str:
+    """根据应用ID生成公开访问用的hash（使用base64编码，可逆）"""
+    return base64.urlsafe_b64encode(str(app_id).encode()).decode().rstrip('=')
+
+
+def decode_access_hash(hash_str: str) -> int:
+    """从公开访问hash解析出应用ID"""
+    # 添加padding
+    padding = 4 - len(hash_str) % 4
+    if padding != 4:
+        hash_str = hash_str + '=' * padding
+    decoded = base64.urlsafe_b64decode(hash_str)
+    return int(decoded.decode())
 
 
 class Application(Base):
@@ -59,10 +77,16 @@ class Application(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True, comment="创建人ID")
 
+    @property
+    def access_hash(self) -> str:
+        """获取公开访问hash，使用base64编码的app_id"""
+        return generate_access_hash(self.id) if self.id else str(uuid.uuid4())
+
     def to_dict(self) -> dict:
         """转换为字典"""
         return {
             "id": self.id,
+            "accessHash": self.access_hash,
             "name": self.name,
             "description": self.description,
             "icon": self.icon,

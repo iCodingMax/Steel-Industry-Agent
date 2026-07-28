@@ -4,7 +4,7 @@ export interface MetricForm {
   name: string
   code: string
   description?: string
-  datasourceId: number
+  datasourceId?: number
   sqlExpression: string
   resultType?: string
   unit?: string
@@ -12,8 +12,13 @@ export interface MetricForm {
   tags?: string[]
 }
 
-export function getMetrics(params?: { page?: number; pageSize?: number }) {
-  return request.get<{ list: any[]; total: number }>('/metrics', { params })
+export interface MetricListResponse {
+  total: number
+  list: any[]
+}
+
+export function getMetrics(params?: { page?: number; pageSize?: number; datasourceId?: number; keyword?: string }) {
+  return request.get<{ data: MetricListResponse }>('/metrics', { params })
 }
 
 export function getMetric(id: number) {
