@@ -4,174 +4,124 @@
       <h2 class="page-title">模型配置</h2>
     </div>
 
-    <div class="config-section">
-      <div class="section-header">
-        <h3 class="section-title">
-          <el-icon><Cpu /></el-icon>
-          向量模型配置
-        </h3>
-        <div class="section-actions">
-          <el-button v-if="!xinferenceConfig" type="primary" @click="handleEditXinference">
-            <el-icon><Plus /></el-icon>
-            添加配置
-          </el-button>
-          <el-button v-else @click="handleEditXinference">
-            <el-icon><Edit /></el-icon>
-            编辑配置
-          </el-button>
-          <el-button type="primary" @click="handleTestXinferenceConnection" :disabled="!xinferenceConfig">
-            <el-icon><Link /></el-icon>
-            测试连接
-          </el-button>
-        </div>
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <span class="toolbar-title">全部模型</span>
       </div>
-      <el-descriptions :column="2" border class="config-desc" v-if="xinferenceConfig">
-        <el-descriptions-item label="配置名称">
-          <span class="config-value">{{ xinferenceConfig.name }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="状态">
-          <el-tag :type="xinferenceConfig.status === 'active' ? 'success' : 'danger'" effect="plain">
-            {{ xinferenceConfig.status === 'active' ? '启用' : '停用' }}
-          </el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="服务地址">
-          <span class="config-value">{{ xinferenceConfig.baseUrl }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="模型类型">
-          <el-tag type="primary" effect="plain">{{ xinferenceConfig.modelType }}</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="嵌入模型" :span="2">
-          <el-tag type="primary" effect="plain">{{ xinferenceConfig.modelName }}</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="最大输出Token">
-          <span class="config-value">{{ xinferenceConfig.maxTokens }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="温度参数">
-          <span class="config-value">{{ xinferenceConfig.temperature }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="描述" :span="2">
-          <span class="config-value">{{ xinferenceConfig.description || '-' }}</span>
-        </el-descriptions-item>
-      </el-descriptions>
-      <el-empty v-else description="暂无向量模型配置，请点击右上角添加" />
+      <div class="toolbar-right">
+        <el-select v-model="searchType" placeholder="分类" class="sort-select">
+          <el-option label="模型名称" value="name" />
+          <el-option label="模型类型" value="modelType" />
+        </el-select>
+        <!-- 按名称搜索时显示输入框 -->
+        <el-input 
+          v-if="searchType === 'name'"
+          v-model="searchQuery" 
+          placeholder="按名称搜索" 
+          class="search-input" 
+          @keyup.enter="loadModels" 
+        />
+        <!-- 按类型搜索时显示下拉框 -->
+        <el-select 
+          v-else
+          v-model="searchQuery" 
+          placeholder="请选择模型类型" 
+          class="search-input"
+          clearable
+          @change="loadModels"
+        >
+          <el-option label="大语言模型" value="llm" />
+          <el-option label="向量模型" value="embedding" />
+          <el-option label="重排模型" value="rerank" />
+        </el-select>
+        <el-button type="primary" @click="handleAddModel">
+          <el-icon><Plus /></el-icon>
+          添加模型
+        </el-button>
+      </div>
     </div>
 
-    <div class="config-section">
-      <div class="section-header">
-        <h3 class="section-title">
-          <el-icon><Link /></el-icon>
-          LLM模型配置
-        </h3>
-        <div class="section-actions">
-          <el-button v-if="!llmConfig" type="primary" @click="handleEditLLM">
-            <el-icon><Plus /></el-icon>
-            添加配置
-          </el-button>
-          <el-button v-else @click="handleEditLLM">
-            <el-icon><Edit /></el-icon>
-            编辑配置
-          </el-button>
-          <el-button type="primary" @click="handleTestLLMConnection" :disabled="!llmConfig">
-            <el-icon><Link /></el-icon>
-            测试连接
-          </el-button>
+    <div class="model-grid">
+      <div
+        v-for="model in modelList"
+        :key="model.id"
+        class="model-card"
+      >
+        <div class="card-header">
+          <div class="provider-info">
+            <div class="provider-icon" :class="getProviderClass(model.type)">
+              {{ getProviderIcon(model.type) }}
+            </div>
+            <div class="model-title">
+              <div class="model-name">
+                {{ model.name }}
+                <el-tag v-if="model.isDefault" type="primary" size="small" class="default-tag">默认</el-tag>
+              </div>
+              <div class="model-meta">{{ model.createdBy || '系统管理员' }} 创建于 {{ formatDate(model.createdAt) }}</div>
+            </div>
+          </div>
+          <el-dropdown @command="(cmd: string) => handleCardAction(cmd, model)" trigger="click">
+            <span class="card-menu">
+              <el-icon><MoreFilled /></el-icon>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="edit">编辑配置</el-dropdown-item>
+                <el-dropdown-item command="test">连接测试</el-dropdown-item>
+                <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+        <div class="card-body">
+          <div class="model-info">
+            <span class="info-label">模型类型</span>
+            <el-tag :type="getModelTypeTagType(model.modelType)" effect="plain">{{ getModelTypeName(model.modelType) }}</el-tag>
+          </div>
+          <div class="model-info">
+            <span class="info-label">基础模型</span>
+            <span class="info-value">{{ model.modelName }}</span>
+          </div>
         </div>
       </div>
-      <el-descriptions :column="2" border class="config-desc" v-if="llmConfig">
-        <el-descriptions-item label="配置名称">
-          <span class="config-value">{{ llmConfig.name }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="状态">
-          <el-tag :type="llmConfig.status === 'active' ? 'success' : 'danger'" effect="plain">
-            {{ llmConfig.status === 'active' ? '启用' : '停用' }}
-          </el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="服务地址">
-          <span class="config-value">{{ llmConfig.baseUrl }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="模型类型">
-          <el-tag type="warning" effect="plain">{{ llmConfig.modelType }}</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="对话模型" :span="2">
-          <el-tag type="warning" effect="plain">{{ llmConfig.modelName }}</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="最大输出Token">
-          <span class="config-value">{{ llmConfig.maxTokens }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="温度参数">
-          <span class="config-value">{{ llmConfig.temperature }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="描述" :span="2">
-          <span class="config-value">{{ llmConfig.description || '-' }}</span>
-        </el-descriptions-item>
-      </el-descriptions>
-      <el-empty v-else description="暂无LLM模型配置，请点击右上角添加" />
     </div>
 
-    <div class="config-section">
-      <div class="section-header">
-        <h3 class="section-title">
-          <el-icon><Refresh /></el-icon>
-          重排模型配置
-        </h3>
-        <div class="section-actions">
-          <el-button v-if="!rerankConfig" type="primary" @click="handleEditRerank">
-            <el-icon><Plus /></el-icon>
-            添加配置
-          </el-button>
-          <el-button v-else @click="handleEditRerank">
-            <el-icon><Edit /></el-icon>
-            编辑配置
-          </el-button>
-          <el-button type="primary" @click="handleTestRerankConnection" :disabled="!rerankConfig">
-            <el-icon><Link /></el-icon>
-            测试连接
-          </el-button>
-        </div>
-      </div>
-      <el-descriptions :column="2" border class="config-desc" v-if="rerankConfig">
-        <el-descriptions-item label="配置名称">
-          <span class="config-value">{{ rerankConfig.name }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="状态">
-          <el-tag :type="rerankConfig.status === 'active' ? 'success' : 'danger'" effect="plain">
-            {{ rerankConfig.status === 'active' ? '启用' : '停用' }}
-          </el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="服务地址">
-          <span class="config-value">{{ rerankConfig.baseUrl }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="模型类型">
-          <el-tag type="success" effect="plain">{{ rerankConfig.modelType }}</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="重排模型" :span="2">
-          <el-tag type="success" effect="plain">{{ rerankConfig.modelName }}</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="描述" :span="2">
-          <span class="config-value">{{ rerankConfig.description || '-' }}</span>
-        </el-descriptions-item>
-      </el-descriptions>
-      <el-empty v-else description="暂无重排模型配置，请点击右上角添加" />
-    </div>
+    <el-empty v-if="modelList.length === 0" description="暂无模型配置，请点击右上角添加" />
 
     <el-dialog
       v-model="configDialogVisible"
       :title="configDialogTitle"
-      width="550px"
+      width="600px"
       destroy-on-close
     >
-      <el-form :model="configForm" label-width="100px" :rules="configRules" ref="configFormRef">
-        <el-form-item label="配置名称" prop="name">
-          <el-input v-model="configForm.name" placeholder="请输入配置名称" />
+      <el-form :model="configForm" label-width="120px" :rules="configRules" ref="configFormRef">
+        <el-form-item label="模型类型*" prop="modelType">
+          <el-select v-model="configForm.modelType" placeholder="请选择模型类型">
+            <el-option label="大语言模型" value="llm" />
+            <el-option label="向量模型" value="embedding" />
+            <el-option label="重排模型" value="rerank" />
+          </el-select>
         </el-form-item>
-        <el-form-item label="服务地址" prop="baseUrl">
+        <el-form-item label="供应商类型*" prop="type">
+          <el-select v-model="configForm.type" placeholder="请选择供应商类型">
+            <el-option label="Ollama" value="ollama" />
+            <el-option label="Xorbits Inference" value="xinference" />
+            <el-option label="vLLM" value="vllm" />
+            <el-option label="NewAPI" value="newapi" />
+            <el-option label="OpenAI" value="openai" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="模型名称*" prop="name">
+          <el-input v-model="configForm.name" placeholder="请输入模型名称" />
+        </el-form-item>
+        <el-form-item label="基础模型*" prop="modelName">
+          <el-input v-model="configForm.modelName" placeholder="请输入基础模型名称" />
+        </el-form-item>
+        <el-form-item label="服务地址*" prop="baseUrl">
           <el-input v-model="configForm.baseUrl" placeholder="请输入服务地址" />
         </el-form-item>
-        <el-form-item label="API密钥" v-if="currentConfigType !== 'xinference' || currentConfigModelType !== 'embedding'">
+        <el-form-item label="API密钥" v-if="configForm.type !== 'ollama'">
           <el-input v-model="configForm.apiKey" type="password" show-password placeholder="请输入API密钥" />
-        </el-form-item>
-        <el-form-item label="模型名称" prop="modelName">
-          <el-input v-model="configForm.modelName" placeholder="请输入模型名称" />
         </el-form-item>
         <el-form-item label="最大输出Token">
           <el-input-number v-model="configForm.maxTokens" :min="1024" :max="100000" style="width: 100%" />
@@ -191,6 +141,7 @@
       </el-form>
       <template #footer>
         <el-button @click="configDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleTestConnection" :loading="testingConnection">测试连接</el-button>
         <el-button type="primary" @click="handleSaveConfig" :loading="configSaving">保存</el-button>
       </template>
     </el-dialog>
@@ -199,31 +150,36 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { Cpu, Link, Edit, Refresh, Plus } from '@element-plus/icons-vue'
-import { getLLMConfigs, createLLMConfig, updateLLMConfig, testLLMConnection, type LLMConfigForm } from '@/api/llmConfig'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { Plus, MoreFilled } from '@element-plus/icons-vue'
+import { getLLMConfigs, createLLMConfig, updateLLMConfig, deleteLLMConfig, testLLMConnection, type LLMConfigForm } from '@/api/llmConfig'
 
 const loading = ref(false)
 const configSaving = ref(false)
+const testingConnection = ref(false)
 const configDialogVisible = ref(false)
 const configFormRef = ref<FormInstance>()
 
-const xinferenceConfig = ref<any>(null)
-const llmConfig = ref<any>(null)
-const rerankConfig = ref<any>(null)
+const modelList = ref<any[]>([])
+const searchQuery = ref('')
+const searchType = ref('name')
 
-const currentConfigType = ref('')
-const currentConfigModelType = ref('')
+const searchPlaceholder = computed(() => {
+  if (searchType.value === 'name') {
+    return '按名称搜索'
+  } else {
+    return '按类型搜索（大语言模型/向量模型/重排模型）'
+  }
+})
+
 const editingConfigId = ref<number | null>(null)
 
 const configDialogTitle = computed(() => {
   if (!editingConfigId.value) {
-    return '新增配置'
+    return '新增模型'
   }
-  return '编辑配置'
+  return '编辑模型'
 })
-
-
 
 const configForm = reactive<LLMConfigForm>({
   name: '',
@@ -231,7 +187,7 @@ const configForm = reactive<LLMConfigForm>({
   baseUrl: '',
   apiKey: '',
   modelName: '',
-  modelType: 'embedding',
+  modelType: 'llm',
   maxTokens: 2048,
   temperature: 0.7,
   topP: undefined,
@@ -242,20 +198,85 @@ const configForm = reactive<LLMConfigForm>({
 })
 
 const configRules: FormRules = {
-  name: [{ required: true, message: '请输入配置名称', trigger: 'blur' }],
+  modelType: [{ required: true, message: '请选择模型类型', trigger: 'change' }],
+  type: [{ required: true, message: '请选择供应商类型', trigger: 'change' }],
+  name: [{ required: true, message: '请输入模型名称', trigger: 'blur' }],
+  modelName: [{ required: true, message: '请输入基础模型名称', trigger: 'blur' }],
   baseUrl: [{ required: true, message: '请输入服务地址', trigger: 'blur' }],
-  modelName: [{ required: true, message: '请输入模型名称', trigger: 'blur' }],
 }
 
-async function loadLLMConfigs() {
+function getProviderClass(type: string) {
+  const classMap: Record<string, string> = {
+    vllm: 'provider-vllm',
+    xinference: 'provider-xinference',
+    ollama: 'provider-ollama',
+    openai: 'provider-openai',
+    newapi: 'provider-newapi',
+  }
+  return classMap[type] || 'provider-default'
+}
+
+function getProviderIcon(type: string) {
+  const iconMap: Record<string, string> = {
+    vllm: 'vLLM',
+    xinference: 'XI',
+    ollama: 'O',
+    openai: 'OA',
+    newapi: 'NA',
+  }
+  return iconMap[type] || 'AI'
+}
+
+function getModelTypeTagType(modelType: string) {
+  const typeMap: Record<string, string> = {
+    llm: 'warning',
+    embedding: 'primary',
+    rerank: 'success',
+  }
+  return typeMap[modelType] || 'info'
+}
+
+function getModelTypeName(modelType: string) {
+  const nameMap: Record<string, string> = {
+    llm: '大语言模型',
+    embedding: '向量模型',
+    rerank: '重排模型',
+  }
+  return nameMap[modelType] || modelType
+}
+
+function formatDate(dateStr?: string) {
+  if (!dateStr) return '-'
+  return new Date(dateStr).toLocaleDateString('zh-CN')
+}
+
+async function loadModels() {
   loading.value = true
   try {
     const res: any = await getLLMConfigs()
     if (res.code === 0 && res.data) {
-      const configs = Array.isArray(res.data) ? res.data : (res.data.list || [])
-      xinferenceConfig.value = configs.find((c: any) => c.type === 'xinference' && c.modelType === 'embedding') || null
-      llmConfig.value = configs.find((c: any) => c.type === 'xinference' && c.modelType === 'llm') || null
-      rerankConfig.value = configs.find((c: any) => c.type === 'xinference' && c.modelType === 'rerank') || null
+      let configs = Array.isArray(res.data) ? res.data : (res.data.list || [])
+      
+      if (searchQuery.value) {
+        const query = searchQuery.value.toLowerCase()
+        if (searchType.value === 'name') {
+          // 按名称搜索
+          configs = configs.filter((c: any) => 
+            c.name.toLowerCase().includes(query) ||
+            c.modelName.toLowerCase().includes(query)
+          )
+        } else {
+          // 按模型类型搜索（下拉框已返回英文值）
+          configs = configs.filter((c: any) => 
+            c.modelType === searchQuery.value
+          )
+        }
+      }
+      
+      // 默认按名称排序
+      configs.sort((a: any, b: any) => a.name.localeCompare(b.name))
+      
+      modelList.value = configs
     }
   } catch (e) {
     console.error('加载模型配置失败', e)
@@ -264,127 +285,50 @@ async function loadLLMConfigs() {
   }
 }
 
-function handleEditXinference() {
-  currentConfigType.value = 'xinference'
-  currentConfigModelType.value = 'embedding'
-  if (xinferenceConfig.value) {
-    editingConfigId.value = xinferenceConfig.value.id
-    Object.assign(configForm, {
-      name: xinferenceConfig.value.name,
-      type: 'xinference',
-      baseUrl: xinferenceConfig.value.baseUrl,
-      apiKey: xinferenceConfig.value.apiKey || '',
-      modelName: xinferenceConfig.value.modelName,
-      modelType: 'embedding',
-      maxTokens: xinferenceConfig.value.maxTokens || 2048,
-      temperature: xinferenceConfig.value.temperature || 0.7,
-      topP: xinferenceConfig.value.topP,
-      extraParams: xinferenceConfig.value.extraParams || {},
-      isDefault: xinferenceConfig.value.isDefault,
-      description: xinferenceConfig.value.description || '',
-      status: xinferenceConfig.value.status || 'active',
-    })
-  } else {
-    editingConfigId.value = null
-    Object.assign(configForm, {
-      name: '向量模型',
-      type: 'xinference',
-      baseUrl: '',
-      apiKey: '',
-      modelName: 'bge-m3',
-      modelType: 'embedding',
-      maxTokens: 2048,
-      temperature: 0.7,
-      topP: undefined,
-      extraParams: {},
-      isDefault: true,
-      description: '',
-      status: 'active',
-    })
-  }
+function handleAddModel() {
+  editingConfigId.value = null
+  Object.assign(configForm, {
+    name: '',
+    type: 'xinference',
+    baseUrl: '',
+    apiKey: '',
+    modelName: '',
+    modelType: 'llm',
+    maxTokens: 2048,
+    temperature: 0.7,
+    topP: undefined,
+    extraParams: {},
+    isDefault: false,
+    description: '',
+    status: 'active',
+  })
   configDialogVisible.value = true
 }
 
-function handleEditLLM() {
-  currentConfigType.value = 'xinference'
-  currentConfigModelType.value = 'llm'
-  if (llmConfig.value) {
-    editingConfigId.value = llmConfig.value.id
+function handleCardAction(command: string, model: any) {
+  if (command === 'edit') {
+    editingConfigId.value = model.id
     Object.assign(configForm, {
-      name: llmConfig.value.name,
-      type: 'xinference',
-      baseUrl: llmConfig.value.baseUrl,
-      apiKey: llmConfig.value.apiKey || '',
-      modelName: llmConfig.value.modelName,
-      modelType: 'llm',
-      maxTokens: llmConfig.value.maxTokens || 20480,
-      temperature: llmConfig.value.temperature || 0.7,
-      topP: llmConfig.value.topP,
-      extraParams: llmConfig.value.extraParams || {},
-      isDefault: llmConfig.value.isDefault,
-      description: llmConfig.value.description || '',
-      status: llmConfig.value.status || 'active',
+      name: model.name,
+      type: model.type,
+      baseUrl: model.baseUrl,
+      apiKey: model.apiKey || '',
+      modelName: model.modelName,
+      modelType: model.modelType,
+      maxTokens: model.maxTokens || 2048,
+      temperature: model.temperature || 0.7,
+      topP: model.topP,
+      extraParams: model.extraParams || {},
+      isDefault: model.isDefault,
+      description: model.description || '',
+      status: model.status || 'active',
     })
-  } else {
-    editingConfigId.value = null
-    Object.assign(configForm, {
-      name: 'LLM模型',
-      type: 'xinference',
-      baseUrl: '',
-      apiKey: '',
-      modelName: 'qwen3',
-      modelType: 'llm',
-      maxTokens: 20480,
-      temperature: 0.7,
-      topP: undefined,
-      extraParams: {},
-      isDefault: true,
-      description: '',
-      status: 'active',
-    })
+    configDialogVisible.value = true
+  } else if (command === 'test') {
+    handleTestConnection(model)
+  } else if (command === 'delete') {
+    handleDeleteModel(model)
   }
-  configDialogVisible.value = true
-}
-
-function handleEditRerank() {
-  currentConfigType.value = 'xinference'
-  currentConfigModelType.value = 'rerank'
-  if (rerankConfig.value) {
-    editingConfigId.value = rerankConfig.value.id
-    Object.assign(configForm, {
-      name: rerankConfig.value.name,
-      type: 'xinference',
-      baseUrl: rerankConfig.value.baseUrl,
-      apiKey: rerankConfig.value.apiKey || '',
-      modelName: rerankConfig.value.modelName,
-      modelType: 'rerank',
-      maxTokens: rerankConfig.value.maxTokens || 2048,
-      temperature: rerankConfig.value.temperature || 0.7,
-      topP: rerankConfig.value.topP,
-      extraParams: rerankConfig.value.extraParams || {},
-      isDefault: rerankConfig.value.isDefault,
-      description: rerankConfig.value.description || '',
-      status: rerankConfig.value.status || 'active',
-    })
-  } else {
-    editingConfigId.value = null
-    Object.assign(configForm, {
-      name: 'Xinference重排模型',
-      type: 'xinference',
-      baseUrl: '',
-      apiKey: '',
-      modelName: 'bge-reranker-large',
-      modelType: 'rerank',
-      maxTokens: 2048,
-      temperature: 0.7,
-      topP: undefined,
-      extraParams: {},
-      isDefault: true,
-      description: '',
-      status: 'active',
-    })
-  }
-  configDialogVisible.value = true
 }
 
 async function handleSaveConfig() {
@@ -403,83 +347,108 @@ async function handleSaveConfig() {
         if (res.code === 0) {
           ElMessage.success('更新成功')
           configDialogVisible.value = false
-          await loadLLMConfigs()
+          await loadModels()
+        } else {
+          ElMessage.error(res.message || '更新失败')
         }
       } else {
         const res: any = await createLLMConfig(saveData)
         if (res.code === 0) {
           ElMessage.success('创建成功')
           configDialogVisible.value = false
-          await loadLLMConfigs()
+          await loadModels()
+        } else {
+          ElMessage.error(res.message || '创建失败')
         }
       }
     } catch (e) {
       console.error('保存配置失败', e)
+      ElMessage.error('保存配置失败，请重试')
     } finally {
       configSaving.value = false
     }
   })
 }
 
-async function handleTestXinferenceConnection() {
-  if (!xinferenceConfig.value) return
+async function handleDeleteModel(model: any) {
   try {
-    const res: any = await testLLMConnection({
-      baseUrl: xinferenceConfig.value.baseUrl,
-      apiKey: xinferenceConfig.value.apiKey,
-      modelName: xinferenceConfig.value.modelName,
-      modelType: xinferenceConfig.value.modelType,
+    await ElMessageBox.confirm(`确定要删除模型「${model.name}」吗？`, '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
     })
+    const res: any = await deleteLLMConfig(model.id)
     if (res.code === 0) {
-      ElMessage.success('连接测试成功')
+      ElMessage.success('删除成功')
+      await loadModels()
     } else {
-      ElMessage.error(res.message || '连接测试失败')
+      ElMessage.error(res.message || '删除失败')
     }
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.message || e.message || '连接测试失败')
+  } catch (e) {
+    if (e !== 'cancel') {
+      console.error('删除模型失败', e)
+      ElMessage.error('删除失败，请重试')
+    }
   }
 }
 
-async function handleTestLLMConnection() {
-  if (!llmConfig.value) return
-  try {
-    const res: any = await testLLMConnection({
-      baseUrl: llmConfig.value.baseUrl,
-      apiKey: llmConfig.value.apiKey,
-      modelName: llmConfig.value.modelName,
-      modelType: llmConfig.value.modelType,
-    })
-    if (res.code === 0) {
-      ElMessage.success('连接测试成功')
-    } else {
-      ElMessage.error(res.message || '连接测试失败')
+async function handleTestConnection(model?: any) {
+  // 确定使用哪个数据源
+  const useForm = !model || configDialogVisible.value
+  const dataSource = useForm ? configForm : model
+  
+  // 如果使用表单数据，先验证必填字段
+  if (useForm) {
+    if (!configFormRef.value) return
+    
+    // 使用 validate 方法验证所有必填字段
+    const valid = await configFormRef.value.validate()
+    
+    if (!valid) {
+      ElMessage.warning('请填写完整的必填信息')
+      return
     }
-  } catch (e: any) {
-    ElMessage.error(e.response?.data?.message || e.message || '连接测试失败')
   }
-}
-
-async function handleTestRerankConnection() {
-  if (!rerankConfig.value) return
+  
+  testingConnection.value = true
   try {
-    const res: any = await testLLMConnection({
-      baseUrl: rerankConfig.value.baseUrl,
-      apiKey: rerankConfig.value.apiKey,
-      modelName: rerankConfig.value.modelName,
-      modelType: rerankConfig.value.modelType,
-    })
+    const sendData = {
+      baseUrl: (dataSource.baseUrl || '').trim(),
+      apiKey: dataSource.apiKey || '',
+      modelName: (dataSource.modelName || '').trim(),
+      modelType: dataSource.modelType || 'llm',
+      type: dataSource.type || 'xinference',
+    }
+    console.log('发送到后端的数据:', sendData)
+    
+    // 验证发送的数据
+    if (!sendData.baseUrl) {
+      ElMessage.warning('服务地址不能为空')
+      testingConnection.value = false
+      return
+    }
+    if (!sendData.modelName) {
+      ElMessage.warning('模型名称不能为空')
+      testingConnection.value = false
+      return
+    }
+    
+    const res: any = await testLLMConnection(sendData)
     if (res.code === 0) {
       ElMessage.success('连接测试成功')
     } else {
       ElMessage.error(res.message || '连接测试失败')
     }
   } catch (e: any) {
+    console.error('连接测试失败', e)
     ElMessage.error(e.response?.data?.message || e.message || '连接测试失败')
+  } finally {
+    testingConnection.value = false
   }
 }
 
 onMounted(() => {
-  loadLLMConfigs()
+  loadModels()
 })
 </script>
 
@@ -498,47 +467,174 @@ onMounted(() => {
   color: $text-primary;
 }
 
-.config-section {
-  background: #fff;
-  border: 1px solid $card-border;
-  border-radius: $card-radius;
-  padding: 24px;
-  margin-bottom: 20px;
-}
-
-.section-header {
+.toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
 }
 
-.section-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
-  color: $text-primary;
-  margin-bottom: 0;
-
-  .el-icon {
-    color: $primary-color;
-    font-size: 18px;
+.toolbar-left {
+  .toolbar-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: $text-primary;
   }
 }
 
-.config-desc {
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sort-select {
+  width: 120px;
+}
+
+.search-input {
+  width: 200px;
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.model-card {
+  background: #fff;
+  border: 1px solid $card-border;
+  border-radius: $card-radius;
+  padding: 20px;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: $primary-color;
+    box-shadow: 0 2px 12px rgba(64, 128, 255, 0.1);
+  }
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
   margin-bottom: 16px;
 }
 
-.config-value {
-  font-family: 'Courier New', monospace;
-  color: $text-primary;
+.provider-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-.section-actions {
+.provider-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
   display: flex;
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+
+  &.provider-vllm {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  }
+
+  &.provider-xinference {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  }
+
+  &.provider-ollama {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  }
+
+  &.provider-openai {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+  }
+
+  &.provider-newapi {
+    background: linear-gradient(135deg, #fc4a1a 0%, #f7b733 100%);
+  }
+
+  &.provider-default {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  }
+}
+
+.model-title {
+  flex: 1;
+}
+
+.model-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: $text-primary;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .default-tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    line-height: 1;
+  }
+}
+
+.model-meta {
+  font-size: 12px;
+  color: $text-secondary;
+  margin-top: 4px;
+}
+
+.card-menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+
+  &:hover {
+    background-color: #f5f7fa;
+  }
+
+  .el-icon {
+    font-size: 16px;
+    color: $text-secondary;
+  }
+}
+
+.card-body {
+  padding-top: 12px;
+  border-top: 1px solid $card-border;
+}
+
+.model-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.info-label {
+  font-size: 12px;
+  color: $text-secondary;
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.info-value {
+  font-size: 13px;
+  color: $text-primary;
+  font-family: 'Courier New', monospace;
 }
 </style>

@@ -9,7 +9,7 @@
 支持的数据库类型：
 - MySQL
 - PostgreSQL
-- Oracle
+- SQL Server
 
 注意：
 - 密码字段存储加密后的密码
@@ -34,7 +34,7 @@ class DataSource(Base):
 
     id = Column(Integer, primary_key=True, index=True, comment="数据源ID")
     name = Column(String(100), nullable=False, comment="数据源名称")
-    type = Column(String(20), nullable=False, comment="数据库类型: mysql/postgresql/clickhouse/oracle")
+    type = Column(String(20), nullable=False, comment="数据库类型: mysql/postgresql/sqlserver")
     host = Column(String(255), nullable=False, comment="主机地址")
     port = Column(Integer, nullable=False, comment="端口")
     database = Column(String(100), nullable=False, comment="数据库名")

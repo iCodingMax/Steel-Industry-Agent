@@ -1,4 +1,4 @@
-# Steel-Industry-Agent 钢铁行业智能助手
+# Industrial Intelligent Assistant Platform 工业智能助手平台
 
 钢铁行业工序级融合智能问答系统，集成 **RAG 工艺知识问答** 与 **ChatBI 智能问数**，提供统一对话入口，支持纯知识查询、纯数据查询、知识+数据融合分析三种模式。
 

@@ -114,7 +114,7 @@
   - [x] SubTask 17.1: 实现主布局组件（左侧导航栏 + 顶部导航 + 主内容区）
   - [x] SubTask 17.2: 实现路由配置与权限守卫（智能对话、知识管理、数据管理、系统设置）
   - [x] SubTask 17.3: 实现Pinia状态管理（auth、chat、config、knowledge）
-  - [x] SubTask 17.4: 实现设计规范（配色方案、组件样式、品牌标识「Steel Industry AI Assistant」）
+  - [x] SubTask 17.4: 实现设计规范（配色方案、组件样式、品牌标识「Industrial Intelligent Assistant Platform」）
 
 - [x] Task 18: 智能对话页面
   - [x] SubTask 18.1: 实现左侧历史会话栏（新建按钮、会话列表、搜索）

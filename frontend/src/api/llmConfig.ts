@@ -40,3 +40,13 @@ export function deleteLLMConfig(id: number) {
 export function testLLMConnection(data: Partial<LLMConfigForm>) {
   return request.post<any>('/llm-configs/test-connection', data)
 }
+
+export function getDefaultLLMConfig(modelType?: string) {
+  const params = { model_type: modelType || 'llm' }
+  const url = `/llm-configs/default`
+  console.log('获取默认LLM配置请求:', 'GET', url, 'params:', params)
+  // 手动构建URL，查看实际发送的请求
+  const fullUrl = `${url}?${new URLSearchParams(params)}`
+  console.log('实际请求URL:', fullUrl)
+  return request.get<any>(url, { params })
+}

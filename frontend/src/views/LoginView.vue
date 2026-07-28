@@ -4,11 +4,11 @@
       <div class="login-left">
         <div class="brand-info">
           <div class="brand-logo">
-            <el-icon :size="48"><Cpu /></el-icon>
+            <img src="@/assets/company-logo-dark.png" alt="工业智能助手平台" class="logo-image" />
           </div>
-          <h1 class="brand-title">Steel Industry AI Assistant</h1>
-          <p class="brand-desc">钢铁行业智能问答系统</p>
-          <p class="brand-sub">RAG知识问答 · ChatBI智能问数 · 融合推理</p>
+          <h1 class="brand-title">工业智能助手平台</h1>
+          <p class="brand-desc">Industrial Intelligent Assistant Platform</p>
+          <!-- <p class="brand-sub">RAG知识问答 · ChatBI智能问数 · 融合推理</p> -->
         </div>
         <div class="features">
           <div class="feature-item">
@@ -52,7 +52,6 @@
                 size="large"
                 show-password
                 :prefix-icon="Lock"
-                @keyup.enter="handleLogin"
               />
             </el-form-item>
             <el-button
@@ -65,10 +64,6 @@
               登 录
             </el-button>
           </el-form>
-          <div class="login-tip">
-            <el-icon><InfoFilled /></el-icon>
-            默认账号：admin / admin
-          </div>
         </div>
       </div>
     </div>
@@ -87,7 +82,6 @@ import {
   Document,
   DataAnalysis,
   MagicStick,
-  InfoFilled,
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -168,29 +162,40 @@ onMounted(() => {
 }
 
 .brand-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+
   .brand-logo {
-    width: 72px;
-    height: 72px;
-    background: rgba(59, 130, 246, 0.2);
-    border-radius: 16px;
+    width: 160px;
+    height: 100px;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 24px;
-    color: $primary-color;
+    margin-bottom: 28px;
+    overflow: hidden;
+
+    .logo-image {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
   }
 
   .brand-title {
-    font-size: 24px;
+    font-size: 42px;
     font-weight: 700;
-    margin-bottom: 8px;
-    line-height: 1.3;
+    margin-bottom: 12px;
+    line-height: 1.2;
+    white-space: nowrap;
   }
 
   .brand-desc {
-    font-size: 18px;
+    font-size: 22px;
     color: rgba(255, 255, 255, 0.85);
-    margin-bottom: 12px;
+    margin-bottom: 16px;
+    white-space: nowrap;
   }
 
   .brand-sub {
@@ -202,6 +207,7 @@ onMounted(() => {
 .features {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 16px;
 }
 
@@ -223,6 +229,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   padding: 50px;
+  border-radius: 0 16px 16px 0;
 }
 
 .login-card {

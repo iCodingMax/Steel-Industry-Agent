@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class DataSourceCreate(BaseModel):
     """创建数据源请求"""
     name: str = Field(..., description="数据源名称")
-    type: str = Field(..., description="数据库类型: mysql/postgresql/clickhouse/oracle")
+    type: str = Field(..., description="数据库类型: mysql/postgresql/sqlserver")
     host: str = Field(..., description="主机地址")
     port: int = Field(..., description="端口")
     database: str = Field(..., description="数据库名")

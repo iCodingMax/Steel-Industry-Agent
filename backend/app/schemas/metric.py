@@ -10,7 +10,7 @@ class MetricCreate(BaseModel):
     name: str = Field(..., description="指标名称")
     code: str = Field(..., description="指标代码")
     description: Optional[str] = Field(None, description="指标描述")
-    datasourceId: int = Field(..., description="数据源ID")
+    datasourceId: Optional[int] = Field(None, description="数据源ID，未绑定则不参与智能问数")
     sqlExpression: str = Field(..., description="SQL表达式")
     resultType: str = Field(default="number", description="结果类型: number/percent/string")
     unit: Optional[str] = Field(None, description="单位")

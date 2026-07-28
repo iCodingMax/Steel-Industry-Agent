@@ -2,14 +2,7 @@
   <div class="sidebar">
     <div class="sidebar-header">
       <div class="logo">
-        <svg class="jarvis-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="20" cy="20" r="18" stroke="#3b82f6" stroke-width="2" fill="none" opacity="0.6"/>
-          <circle cx="20" cy="20" r="14" stroke="#3b82f6" stroke-width="1.5" fill="none" stroke-dasharray="22 66" stroke-dashoffset="0" opacity="0.8"/>
-          <circle cx="20" cy="20" r="10" stroke="#60a5fa" stroke-width="1.5" fill="none" stroke-dasharray="16 47" stroke-dashoffset="-8" opacity="0.9"/>
-          <circle cx="20" cy="20" r="4" fill="#3b82f6"/>
-          <circle cx="20" cy="20" r="2" fill="#93c5fd"/>
-        </svg>
-        <span class="logo-text">钢铁行业智能助手</span>
+        <span class="logo-text">工业智能助手平台</span>
       </div>
     </div>
     <div class="sidebar-menu">
@@ -109,18 +102,6 @@ const menuItems: MenuItem[] = [
     path: '/system-settings',
     title: '系统设置',
     svgPath: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-    children: [
-      {
-        path: '/system-settings/user',
-        title: '用户管理',
-        svgPath: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
-      },
-      {
-        path: '/system-settings/oauth',
-        title: '登录认证',
-        svgPath: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
-      },
-    ],
   },
 ]
 
@@ -176,18 +157,11 @@ onMounted(() => {
 .logo {
   display: flex;
   align-items: center;
-  gap: 10px;
-
-  .jarvis-icon {
-    width: 32px;
-    height: 32px;
-    flex-shrink: 0;
-  }
 }
 
 .logo-text {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
   color: #fff;
   line-height: 1.2;
   white-space: nowrap;

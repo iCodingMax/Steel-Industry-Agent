@@ -1,7 +1,7 @@
 """
 数据源服务模块
 管理数据源的CRUD操作和表结构同步
-支持多种数据库类型：MySQL、PostgreSQL、Oracle
+支持多种数据库类型：MySQL、PostgreSQL、SQL Server
 
 主要功能：
 1. 数据源管理：创建、查询、更新、删除
@@ -24,7 +24,7 @@ class DataSourceService:
     """
     数据源服务类
     负责数据源的生命周期管理和表结构同步
-    支持MySQL、PostgreSQL、Oracle三种数据库类型
+    支持MySQL、PostgreSQL、SQL Server三种数据库类型
     """
 
     @staticmethod
@@ -163,21 +163,17 @@ class DataSourceService:
                 )
                 await conn.close()
                 logger.debug("PostgreSQL连接测试成功")
-            elif data.type == "oracle":
-                import oracledb
-                oracledb.init_oracle_client()
-                conn = await oracledb.create_pool_async(
-                    user=data.username,
-                    password=data.password or "",
-                    dsn=f"{data.host}:{data.port}/{data.database}",
-                    min=1,
-                    max=1,
-                )
-                async with conn.acquire() as connection:
-                    async with connection.cursor() as cursor:
-                        await cursor.execute("SELECT 1 FROM DUAL")
-                await conn.close()
-                logger.debug("Oracle连接测试成功")
+            elif data.type == "sqlserver":
+                import asyncio
+                import pyodbc
+                connection_string = f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={data.host},{data.port};DATABASE={data.database};UID={data.username};PWD={data.password or ''}"
+                loop = asyncio.get_event_loop()
+                conn = await loop.run_in_executor(None, pyodbc.connect, connection_string)
+                cursor = conn.cursor()
+                await loop.run_in_executor(None, cursor.execute, "SELECT 1")
+                cursor.close()
+                conn.close()
+                logger.debug("SQL Server连接测试成功")
             else:
                 raise BusinessException(code=400, message=f"不支持的数据库类型: {data.type}")
 
@@ -331,59 +327,64 @@ class DataSourceService:
                     tables.append(table_schema)
                 await conn.close()
 
-            elif ds.type == "oracle":
-                logger.debug("开始读取Oracle表结构")
-                import oracledb
-                oracledb.init_oracle_client()
-                pool = await oracledb.create_pool_async(
-                    user=ds.username,
-                    password=ds.password or "",
-                    dsn=f"{ds.host}:{ds.port}/{ds.database}",
-                    min=1,
-                    max=5,
-                )
-                async with pool.acquire() as connection:
-                    async with connection.cursor() as cursor:
-                        await cursor.execute("""
-                            SELECT table_name
-                            FROM all_tables
-                            WHERE owner = UPPER(:owner)
-                        """, [ds.username.upper()])
-                        table_rows = await cursor.fetchall()
-                        logger.debug(f"Oracle数据库共有 {len(table_rows)} 张表")
+            elif ds.type == "sqlserver":
+                logger.debug("开始读取SQL Server表结构")
+                import asyncio
+                import pyodbc
+                connection_string = f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={ds.host},{ds.port};DATABASE={ds.database};UID={ds.username};PWD={ds.password or ''}"
+                loop = asyncio.get_event_loop()
+                
+                def get_connection():
+                    return pyodbc.connect(connection_string)
+                
+                conn = await loop.run_in_executor(None, get_connection)
+                
+                def get_tables():
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT TABLE_NAME, TABLE_COMMENT
+                        FROM INFORMATION_SCHEMA.TABLES
+                        WHERE TABLE_TYPE = 'BASE TABLE'
+                    """)
+                    return cursor.fetchall()
+                
+                table_rows = await loop.run_in_executor(None, get_tables)
+                logger.debug(f"SQL Server数据库共有 {len(table_rows)} 张表")
 
-                        for (table_name,) in table_rows:
-                            await cursor.execute("""
-                                SELECT comments
-                                FROM all_tab_comments
-                                WHERE owner = UPPER(:owner) AND table_name = :table_name
-                            """, [ds.username.upper(), table_name])
-                            comment_row = await cursor.fetchone()
-                            table_comment = comment_row[0] if comment_row else None
+                for row in table_rows:
+                    table_name = row[0]
+                    table_comment = row[1] if len(row) > 1 else None
 
-                            await cursor.execute("""
-                                SELECT column_name, data_type, nullable, data_default
-                                FROM all_tab_columns
-                                WHERE owner = UPPER(:owner) AND table_name = :table_name
-                            """, [ds.username.upper(), table_name])
-                            cols = await cursor.fetchall()
-                            columns = []
-                            for col in cols:
-                                columns.append({
-                                    "name": col[0],
-                                    "type": col[1],
-                                    "nullable": col[2] == 'Y',
-                                    "default": col[3],
-                                })
-                            table_schema = TableSchema(
-                                datasource_id=ds_id,
-                                table_name=table_name,
-                                table_comment=table_comment,
-                                columns=json.dumps(columns, ensure_ascii=False),
-                            )
-                            db.add(table_schema)
-                            tables.append(table_schema)
-                await pool.close()
+                    def get_columns():
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMNPROPERTY(OBJECT_ID(TABLE_SCHEMA + '.' + TABLE_NAME), COLUMN_NAME, 'IsIdentity') AS IS_IDENTITY
+                            FROM INFORMATION_SCHEMA.COLUMNS
+                            WHERE TABLE_NAME = ?
+                            ORDER BY ORDINAL_POSITION
+                        """, (table_name,))
+                        return cursor.fetchall()
+
+                    col_rows = await loop.run_in_executor(None, get_columns)
+                    columns = []
+                    for col in col_rows:
+                        columns.append({
+                            "name": col[0],
+                            "type": col[1],
+                            "nullable": col[2] == 'YES',
+                            "primaryKey": col[4] == 1 if len(col) > 4 else False,
+                            "default": col[3],
+                            "comment": "",
+                        })
+                    table_schema = TableSchema(
+                        datasource_id=ds_id,
+                        table_name=table_name,
+                        table_comment=table_comment,
+                        columns=json.dumps(columns, ensure_ascii=False),
+                    )
+                    db.add(table_schema)
+                    tables.append(table_schema)
+                conn.close()
 
             # 步骤4：提交表结构数据
             await db.commit()

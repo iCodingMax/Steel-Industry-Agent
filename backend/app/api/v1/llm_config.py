@@ -4,6 +4,7 @@
 from typing import List
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 from app.core.database import get_db_session
 from app.schemas.llm_config import LLMConfigCreate, LLMConfigUpdate, LLMConfigResponse
@@ -29,6 +30,23 @@ async def list_llm_configs(
     else:
         configs = await llm_config_service.get_all(db, skip, limit)
     return success_response(data=[c.to_dict() for c in configs])
+
+
+@router.get("/default", summary="获取默认LLM配置")
+async def get_default_llm_config(
+    model_type: str = Query('llm', description="模型类型: llm/embedding/rerank"),
+    db: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+):
+    """获取指定类型的默认LLM配置"""
+    logger.debug(f"收到获取默认配置请求: model_type={model_type}, type={type(model_type)}")
+    # 确保model_type是有效的值
+    if model_type not in ['llm', 'embedding', 'rerank']:
+        model_type = 'llm'
+    config = await llm_config_service.get_by_model_type(db, model_type)
+    if not config:
+        return success_response(data=None, message="未设置默认配置")
+    return success_response(data=config.to_dict())
 
 
 @router.get("/{config_id}", summary="获取LLM配置详情")
@@ -80,11 +98,29 @@ async def delete_llm_config(
     return success_response(message="删除成功")
 
 
+@router.get("/default", summary="获取默认LLM配置")
+async def get_default_llm_config(
+    model_type: str = Query('llm', description="模型类型: llm/embedding/rerank"),
+    db: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+):
+    """获取指定类型的默认LLM配置"""
+    logger.debug(f"收到获取默认配置请求: model_type={model_type}, type={type(model_type)}")
+    # 确保model_type是有效的值
+    if model_type not in ['llm', 'embedding', 'rerank']:
+        model_type = 'llm'
+    config = await llm_config_service.get_by_model_type(db, model_type)
+    if not config:
+        return success_response(data=None, message="未设置默认配置")
+    return success_response(data=config.to_dict())
+
+
 @router.post("/test-connection", summary="测试LLM配置连接")
 async def test_llm_connection(
     data: dict,
     user: User = Depends(get_current_user),
 ):
     """测试LLM配置连接"""
+    logger.debug(f"测试连接请求体: {data}")
     result = await llm_config_service.test_connection(data)
     return success_response(data=result)

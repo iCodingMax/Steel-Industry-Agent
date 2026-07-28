@@ -4,7 +4,7 @@ export interface DimensionForm {
   name: string
   code: string
   description?: string
-  datasourceId: number
+  datasourceId?: number
   tableName: string
   columnName: string
   dataType?: string
@@ -12,8 +12,13 @@ export interface DimensionForm {
   parentId?: number
 }
 
-export function getDimensions(params?: { page?: number; pageSize?: number }) {
-  return request.get<{ list: any[]; total: number }>('/dimensions', { params })
+export interface DimensionListResponse {
+  total: number
+  list: any[]
+}
+
+export function getDimensions(params?: { page?: number; pageSize?: number; datasourceId?: number; keyword?: string }) {
+  return request.get<{ data: DimensionListResponse }>('/dimensions', { params })
 }
 
 export function getDimension(id: number) {

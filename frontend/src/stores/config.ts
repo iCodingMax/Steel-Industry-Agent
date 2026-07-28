@@ -4,7 +4,7 @@ import { ref } from 'vue'
 export interface Datasource {
   id: number
   name: string
-  type: 'mysql' | 'postgresql' | 'clickhouse' | 'oracle'
+  type: 'mysql' | 'postgresql' | 'sqlserver'
   host: string
   port: number
   database: string

@@ -28,6 +28,7 @@ export interface ChatRequest {
   question: string
   knowledgeBaseId?: number
   datasourceId?: number
+  llmConfigId?: number
 }
 
 export function getSessions(params?: { skip?: number; limit?: number }) {
@@ -82,7 +83,14 @@ export async function streamChat(
     })
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      try {
+        const errorData = await response.json()
+        const detail = errorData.detail || errorData.message || 'Unknown error'
+        console.error('聊天请求失败:', errorData)
+        throw new Error(`HTTP error! status: ${response.status}, detail: ${JSON.stringify(detail)}`)
+      } catch {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
     }
 
     const reader = response.body?.getReader()

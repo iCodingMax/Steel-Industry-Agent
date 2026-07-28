@@ -2,6 +2,7 @@ import request from './index'
 
 export interface Application {
   id: number
+  accessHash?: string
   name: string
   description?: string
   icon?: string
@@ -142,4 +143,8 @@ export function deleteAppPrompt(appId: number, promptId: number) {
 
 export function getIframeUrl(appId: number) {
   return request.get<ApiResponse<{ url: string; embedCode: string }>>(`/applications/${appId}/iframe-url`)
+}
+
+export function getApplicationByHash(accessHash: string) {
+  return request.get<ApiResponse<Application>>(`/applications/by-hash/${accessHash}`)
 }

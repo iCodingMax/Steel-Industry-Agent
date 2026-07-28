@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { getSessions, createSession, getSession, getMessages, streamChat, updateSession, deleteSession, type Session, type Message, type ChatRequest } from '@/api/session'
+import { getDefaultLLMConfig, getLLMConfigs } from '@/api/llmConfig'
 
 export interface ThinkingStep {
   step: number
@@ -49,9 +50,51 @@ export const useChatStore = defineStore('chat', () => {
     localStorage.getItem('chat_selectedDS') ? Number(localStorage.getItem('chat_selectedDS')) : null
   )
 
+  const isLoadingMessages = ref(false)
+
+  // LLM模型配置
+  const selectedLLMConfigId = ref<number | null>(null)
+  const defaultLLMConfig = ref<any>(null)
+  const llmConfigs = ref<any[]>([])
+
   const currentSession = computed(() =>
     sessions.value.find((s) => s.id === currentSessionId.value)
   )
+
+  // 获取默认LLM配置
+  async function fetchDefaultLLMConfig() {
+    try {
+      const res: any = await getDefaultLLMConfig('llm')
+      if (res.code === 0 && res.data) {
+        defaultLLMConfig.value = res.data
+        selectedLLMConfigId.value = res.data.id
+      }
+    } catch (e: any) {
+      console.error('获取默认LLM配置失败', e)
+      // 获取完整的错误信息
+      if (e.response) {
+        console.error('错误响应:', e.response.status, e.response.data)
+      }
+    }
+  }
+
+  // 获取所有LLM配置
+  async function fetchLLMConfigs() {
+    try {
+      const res: any = await getLLMConfigs()
+      if (res.code === 0 && res.data) {
+        const configs = Array.isArray(res.data) ? res.data : (res.data.list || [])
+        llmConfigs.value = configs.filter((c: any) => c.modelType === 'llm')
+      }
+    } catch (e) {
+      console.error('获取LLM配置列表失败', e)
+    }
+  }
+
+  // 设置LLM配置
+  function setLLMConfigId(id: number | null) {
+    selectedLLMConfigId.value = id
+  }
 
   async function fetchSessions() {
     try {
@@ -64,7 +107,9 @@ export const useChatStore = defineStore('chat', () => {
           updatedAt: new Date(s.updatedAt),
           messageCount: 0,
           intentType: s.intentType,
-        }))
+        })).sort((a: ChatSession, b: ChatSession) => 
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        )
       }
     } catch (e) {
       console.error('获取会话列表失败', e)
@@ -74,7 +119,7 @@ export const useChatStore = defineStore('chat', () => {
   async function createNewSession() {
     try {
       const res = await createSession({ title: '新对话' }) as any
-      if (res.code === 0 && res.data) {
+      if (res.code === 0 && res.data && res.data.id) {
         const session: ChatSession = {
           id: String(res.data.id),
           title: res.data.title,
@@ -95,8 +140,20 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function selectSession(id: string) {
+    // 如果选择的是当前会话，不做任何操作
+    if (currentSessionId.value === id) {
+      return
+    }
+    // 立即显示加载状态，避免旧消息闪烁
+    isLoadingMessages.value = true
     currentSessionId.value = id
-    await fetchMessages(id)
+    // 清空消息，但保持加载状态直到新消息加载完成
+    messages.value = []
+    try {
+      await fetchMessages(id)
+    } finally {
+      isLoadingMessages.value = false
+    }
   }
 
   async function fetchMessages(sessionId: string) {
@@ -148,7 +205,10 @@ export const useChatStore = defineStore('chat', () => {
 
   async function sendUserMessage(content: string) {
     if (!currentSessionId.value) {
-      await createNewSession()
+      const session = await createNewSession()
+      if (!session) {
+        throw new Error('创建会话失败，请重试')
+      }
     }
 
     const userMsgId = Date.now().toString()
@@ -173,15 +233,23 @@ export const useChatStore = defineStore('chat', () => {
     isLoading.value = true
 
     try {
+      const sessionId = Number(currentSessionId.value)
+      if (isNaN(sessionId) || sessionId <= 0) {
+        throw new Error('无效的会话ID')
+      }
       const chatRequest: ChatRequest = {
-        sessionId: Number(currentSessionId.value),
+        sessionId: sessionId,
         question: content,
       }
-      if (selectedKnowledgeBaseId.value) {
+      console.log('发送聊天请求:', chatRequest)
+      if (selectedKnowledgeBaseId.value !== null && selectedKnowledgeBaseId.value !== undefined) {
         chatRequest.knowledgeBaseId = selectedKnowledgeBaseId.value
       }
-      if (selectedDatasourceId.value) {
+      if (selectedDatasourceId.value !== null && selectedDatasourceId.value !== undefined) {
         chatRequest.datasourceId = selectedDatasourceId.value
+      }
+      if (selectedLLMConfigId.value !== null && selectedLLMConfigId.value !== undefined) {
+        chatRequest.llmConfigId = selectedLLMConfigId.value
       }
 
       // 使用SSE流式接口
@@ -230,6 +298,11 @@ export const useChatStore = defineStore('chat', () => {
             case 'content':
               // 流式内容，逐字追加
               msg.content += event.content
+              break
+            case 'done':
+              // 流式完成，包含耗时
+              msg.queryTime = Math.round(event.elapsed_time * 1000)
+              msg.isStreaming = false
               break
             case 'error':
               // 错误事件
@@ -322,8 +395,15 @@ export const useChatStore = defineStore('chat', () => {
     currentSession,
     messages,
     isLoading,
+    isLoadingMessages,
     selectedKnowledgeBaseId,
     selectedDatasourceId,
+    selectedLLMConfigId,
+    defaultLLMConfig,
+    llmConfigs,
+    fetchDefaultLLMConfig,
+    fetchLLMConfigs,
+    setLLMConfigId,
     fetchSessions,
     createNewSession,
     selectSession,

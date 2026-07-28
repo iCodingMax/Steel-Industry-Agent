@@ -68,18 +68,9 @@
                   <template #header>
                     <span class="card-title">基本信息</span>
                   </template>
-                  <el-row :gutter="20">
-                    <el-col :span="12">
-                      <el-form-item label="应用名称" prop="name">
-                        <el-input v-model="appForm.name" placeholder="请输入应用名称" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="12">
-                      <el-form-item label="应用状态">
-                        <el-switch v-model="appForm.status" active-value="active" inactive-value="inactive" active-text="启用" inactive-text="停用" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
+                  <el-form-item label="应用名称" prop="name">
+                    <el-input v-model="appForm.name" placeholder="请输入应用名称" />
+                  </el-form-item>
                   <el-form-item label="应用描述">
                     <el-input v-model="appForm.description" type="textarea" :rows="2" placeholder="请输入应用描述" />
                   </el-form-item>
@@ -124,7 +115,19 @@
                     <span class="card-title">提示词设置</span>
                   </template>
                   <el-form-item label="系统提示词">
-                    <el-input v-model="appForm.systemPrompt" type="textarea" :rows="5" placeholder="请输入系统提示词，定义AI助手的角色和行为准则" />
+                    <div class="textarea-wrapper">
+                      <el-input 
+                        ref="systemPromptRef"
+                        v-model="appForm.systemPrompt" 
+                        type="textarea" 
+                        :rows="5" 
+                        placeholder="请输入系统提示词，定义AI助手的角色和行为准则"
+                        @focus="systemPromptFocused = true"
+                        @blur="systemPromptFocused = false"
+                        @input="checkPromptOverflow"
+                      />
+                      <div class="textarea-ellipsis" v-if="appForm.systemPrompt && !systemPromptFocused && isPromptOverflow">...</div>
+                    </div>
                   </el-form-item>
                   <el-form-item label="用户提示词模板">
                     <el-input v-model="appForm.userPromptTemplate" type="textarea" :rows="3" placeholder="用户输入会被填充到这个模板中，例如：请基于以下知识回答问题：{{question}}" />
@@ -155,6 +158,45 @@
                   </template>
                   <el-form-item label="开场白消息">
                     <el-input v-model="appForm.greetingMessage" type="textarea" :rows="3" placeholder="用户首次进入对话时显示的欢迎消息" />
+                  </el-form-item>
+                </el-card>
+
+                <el-card shadow="never" class="form-card">
+                  <template #header>
+                    <span class="card-title">集成设置</span>
+                  </template>
+                  <el-form-item label="公开访问">
+                    <div class="integration-content">
+                      <div class="public-link-section">
+                        <div class="link-row">
+                          <span class="link-label">公开访问链接</span>
+                          <el-switch v-model="publicAccessEnabled" active-text="开启" inactive-text="关闭" />
+                        </div>
+                        <div class="link-display" v-if="publicAccessEnabled">
+                          <input type="text" :value="publicAccessUrl" readonly class="link-input" />
+                          <el-button type="text" @click="copyPublicLink" class="copy-btn">
+                            <el-icon><CopyDocument /></el-icon>
+                          </el-button>
+                          <el-button type="text" @click="openPublicLink" class="open-btn">
+                            <el-icon><View /></el-icon>
+                          </el-button>
+                        </div>
+                      </div>
+                      <div class="action-buttons">
+                        <el-button class="action-btn" @click="openChat">
+                          <el-icon><Message /></el-icon>
+                          <span>去对话</span>
+                        </el-button>
+                        <el-button class="action-btn" @click="showEmbedModal = true">
+                          <el-icon><Monitor /></el-icon>
+                          <span>嵌入第三方</span>
+                        </el-button>
+                        <el-button class="action-btn" @click="showAccessModal = true">
+                          <el-icon><Setting /></el-icon>
+                          <span>访问限制</span>
+                        </el-button>
+                      </div>
+                    </div>
                   </el-form-item>
                 </el-card>
               </el-form>
@@ -211,103 +253,204 @@
                       v-for="msg in debugMessages"
                       :key="msg.id"
                       class="message-item"
-                      :class="msg.role"
+                      :class="[msg.role, msg.type || '']"
                     >
-                      <div class="message-content" :class="msg.role">
+                      <div v-if="msg.role === 'user'" class="message-content user">
                         <div class="avatar-group">
-                          <div class="avatar" :class="msg.role === 'user' ? 'user-avatar' : 'assistant-avatar'">
-                            <template v-if="msg.role === 'user'">
-                              <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px">
-                                <path d="M20 4C12 4 8 10 8 16c0 4 1 6 2 8l2 4c1 2 2 4 4 4h8c2 0 3-2 4-4l2-4c1-2 2-4 2-8 0-6-4-12-12-12z" fill="#dc2626"/>
-                              </svg>
-                            </template>
-                            <template v-else>
-                              <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:20px;height:20px">
-                                <circle cx="20" cy="20" r="16" stroke="#60a5fa" stroke-width="1.5" fill="none"/>
-                                <circle cx="20" cy="20" r="8" fill="#60a5fa"/>
-                              </svg>
-                            </template>
-                          </div>
-                          <span class="avatar-label">{{ msg.role === 'user' ? '我' : '助手' }}</span>
+                          <AvatarImage type="user" />
                         </div>
                         <div class="message-bubble-wrap">
                           <div class="message-bubble">
-                            <template v-if="msg.isStreaming">
-                              <span>{{ stripMarkdown(msg.content) }}</span>
-                              <span class="typing-cursor">|</span>
+                            <div class="bubble-arrow"></div>
+                            <div class="bubble-content">{{ msg.content }}</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-else class="message-content assistant">
+                        <div class="avatar-group">
+                          <AvatarImage type="assistant" />
+                        </div>
+                        <div class="message-bubble-wrap">
+                          <div class="thinking-process" v-if="(msg.thinkingSteps && msg.thinkingSteps.length > 0) || (msg.sqlTraces && msg.sqlTraces.length > 0)">
+                            <div class="thinking-header" @click="toggleThinking(String(msg.id))">
+                              <el-icon :class="{ 'rotated': thinkingExpanded[String(msg.id)] }"><ArrowRight /></el-icon>
+                              <span class="thinking-title">思考过程</span>
+                              <span class="thinking-count">{{ msg.thinkingSteps?.length || 0 }} 步</span>
+                              <span class="thinking-action">{{ thinkingExpanded[String(msg.id)] ? '收起' : '展开' }}</span>
+                            </div>
+                            <div v-show="thinkingExpanded[String(msg.id)]" class="thinking-content">
+                              <div v-if="msg.thinkingSteps && msg.thinkingSteps.length > 0" class="thinking-steps">
+                                <div class="section-title">
+                                  <el-icon><List /></el-icon>
+                                  <span>执行步骤</span>
+                                </div>
+                                <div class="steps-timeline">
+                                  <div v-for="(step, idx) in msg.thinkingSteps" :key="idx" class="step-item">
+                                    <div class="step-connector">
+                                      <div class="connector-line" :class="{ last: idx === msg.thinkingSteps!.length - 1 }"></div>
+                                      <div class="step-dot" :class="{ active: idx === msg.thinkingSteps!.length - 1 && msg.isStreaming, completed: idx < msg.thinkingSteps!.length - 1 || !msg.isStreaming }">
+                                        <el-icon v-if="idx === msg.thinkingSteps!.length - 1 && msg.isStreaming"><Loading class="step-loading" /></el-icon>
+                                        <el-icon v-else-if="idx < msg.thinkingSteps!.length - 1 || !msg.isStreaming"><CircleCheck class="step-check" /></el-icon>
+                                        <span v-else class="step-number-text">{{ step.step }}</span>
+                                      </div>
+                                    </div>
+                                    <div class="step-content">
+                                      <div class="step-title">{{ step.title }}</div>
+                                      <div class="step-desc">{{ step.description }}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- 消息气泡：始终显示，确保流式内容能实时展示 -->
+                          <div class="message-bubble">
+                            <div class="bubble-arrow"></div>
+                            <!-- 打字指示器：仅在流式中且内容为空时显示 -->
+                            <div v-if="msg.isStreaming && !msg.content" class="typing-indicator">
+                              <span></span>
+                              <span></span>
+                              <span></span>
+                            </div>
+                            <!-- 消息内容：始终渲染，确保流式内容实时更新 -->
+                            <template v-else>
+                              <span class="message-text">{{ stripMarkdown(msg.content) }}</span>
+                              <span v-if="msg.isStreaming" class="streaming-cursor">|</span>
                             </template>
-                            <template v-else>{{ stripMarkdown(msg.content) }}</template>
+                          </div>
+
+                          <div v-if="msg.sqlTraces && msg.sqlTraces.length > 0" class="sql-section">
+                            <div class="section-header">
+                              <span>SQL查询</span>
+                              <el-button text size="small" class="sql-copy-btn" @click="copySql(msg.sqlTraces[0].sql)">
+                                <el-icon><CopyDocument /></el-icon>
+                                复制
+                              </el-button>
+                            </div>
+                            <div class="sql-content">
+                              <pre class="sql-code">{{ msg.sqlTraces[0].sql }}</pre>
+                              <div class="sql-meta">返回 {{ msg.sqlTraces[0].rows || 0 }} 行数据</div>
+                            </div>
+                          </div>
+
+                          <div v-if="msg.dataResult && msg.dataResult.length > 0" class="chart-section">
+                            <div class="section-header">
+                              <el-icon><TrendCharts /></el-icon>
+                              <span>数据可视化</span>
+                              <div class="table-name-badge">表名：{{ getTableName(msg.sqlTraces || []) }}</div>
+                              <div class="chart-view-toggle">
+                                <el-radio-group v-model="dataViewMode[msg.id]" size="small">
+                                  <el-radio-button value="table">表格</el-radio-button>
+                                  <el-radio-button value="chart">图表</el-radio-button>
+                                </el-radio-group>
+                              </div>
+                              <!-- 导出按钮 -->
+                              <el-dropdown trigger="click" @command="(cmd: string) => handleDebugExport(cmd, msg)">
+                                <el-button type="text" size="small" class="export-btn">
+                                  <el-icon><Download /></el-icon>
+                                  <span>导出</span>
+                                </el-button>
+                                <template #dropdown>
+                                  <el-dropdown-menu>
+                                    <el-dropdown-item command="excel">Excel</el-dropdown-item>
+                                    <el-dropdown-item v-if="dataViewMode[msg.id] === 'chart'" command="image">图片</el-dropdown-item>
+                                  </el-dropdown-menu>
+                                </template>
+                              </el-dropdown>
+                            </div>
+                            <div class="chart-body">
+                              <div v-if="dataViewMode[msg.id] !== 'chart'" class="table-wrapper">
+                                <el-table
+                                  :data="msg.dataResult.slice(0, 100)"
+                                  size="small"
+                                  border
+                                  max-height="400"
+                                  stripe
+                                  class="data-table"
+                                >
+                                  <el-table-column
+                                    v-for="col in getDataColumns(msg.dataResult, msg.columnMeta)"
+                                    :key="col.prop"
+                                    :prop="col.prop"
+                                    :label="col.label"
+                                    :min-width="col.minWidth"
+                                    show-overflow-tooltip
+                                  />
+                                </el-table>
+                                <div v-if="msg.dataResult.length > 100" class="table-footer">
+                                  仅展示前 100 行，共 {{ msg.dataResult.length }} 行
+                                </div>
+                              </div>
+                              <div v-else class="chart-wrapper">
+                                <div class="chart-controls">
+                                  <el-select :model-value="getChartConfigValue(String(msg.id), 'chartType')" placeholder="图表类型" size="small" @change="(val: string) => { setChartConfigValue(String(msg.id), 'chartType', val); updateChartOption(String(msg.id), msg.columnMeta); }">
+                                    <el-option label="柱状图" value="bar" />
+                                    <el-option label="折线图" value="line" />
+                                    <el-option label="饼图" value="pie" />
+                                  </el-select>
+                                  <el-select :model-value="getChartConfigValue(String(msg.id), 'xField')" placeholder="X轴" size="small" @change="(val: string) => { setChartConfigValue(String(msg.id), 'xField', val); updateChartOption(String(msg.id), msg.columnMeta); }">
+                                    <el-option v-for="col in getDataColumns(msg.dataResult, msg.columnMeta)" :key="col.prop" :label="col.label" :value="col.prop" />
+                                  </el-select>
+                                  <el-select :model-value="getChartConfigValue(String(msg.id), 'yField')" placeholder="Y轴" size="small" @change="(val: string) => { setChartConfigValue(String(msg.id), 'yField', val); updateChartOption(String(msg.id), msg.columnMeta); }">
+                                    <el-option v-for="col in getNumericColumns(msg.dataResult, msg.columnMeta)" :key="col.prop" :label="col.label" :value="col.prop" />
+                                  </el-select>
+                                </div>
+                                <div v-if="chartConfig[String(msg.id)]?.option" class="chart-container">
+                                  <ChartCard :option="chartConfig[String(msg.id)].option" />
+                                </div>
+                                <div v-else class="chart-placeholder">
+                                  <el-icon :size="36" color="#cbd5e1">BarChart</el-icon>
+                                  <p>请选择 X 轴和 Y 轴字段以生成图表</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div v-if="msg.references && msg.references.length > 0" class="references-section">
+                            <div class="references-header" @click="toggleReferences(String(msg.id))">
+                              <el-icon :class="{ 'rotated': refsExpanded[String(msg.id)] }"><ArrowRight /></el-icon>
+                              <span class="references-title">知识引用</span>
+                              <span class="references-count">{{ msg.references.length }} 条</span>
+                              <span class="references-action">{{ refsExpanded[String(msg.id)] ? '收起' : '展开' }}</span>
+                            </div>
+                            <div v-show="refsExpanded[String(msg.id)]" class="references-content">
+                              <div class="ref-cards">
+                                <div v-for="(ref, idx) in msg.references" :key="idx" class="ref-card">
+                                  <div class="ref-header">
+                                    <span class="ref-name">{{ ref.documentName }}</span>
+                                    <span class="ref-score">{{ (ref.score * 100).toFixed(1) }}%</span>
+                                  </div>
+                                  <div class="ref-content">{{ ref.content.slice(0, 200) }}...</div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div v-if="msg.elapsedTime !== undefined" class="message-meta">
+                            <span class="meta-time">耗时 {{ (msg.elapsedTime / 1000).toFixed(2) }}s</span>
                           </div>
                         </div>
                       </div>
                     </div>
                   </div>
                   <div class="chat-input-area">
-                    <el-input
-                      v-model="debugInput"
-                      placeholder="请输入问题"
-                      @keydown.enter.exact="handleDebugSend"
-                      class="debug-input"
-                    >
-                      <template #append>
-                        <el-button type="primary" :loading="debugSending" @click="handleDebugSend">
-                          <el-icon><Message /></el-icon>
-                        </el-button>
-                      </template>
-                    </el-input>
+                    <div class="debug-input-wrapper">
+                      <el-input
+                        v-model="debugInput"
+                        placeholder="请输入问题"
+                        @keydown.enter.exact="handleDebugSend"
+                        class="debug-input"
+                      />
+                      <el-button type="primary" :loading="debugSending" @click="handleDebugSend" class="send-btn">
+                        <el-icon><Message /></el-icon>
+                      </el-button>
+                    </div>
                   </div>
                 </div>
               </el-card>
             </div>
           </div>
-        </el-tab-pane>
-
-        <el-tab-pane label="集成设置" name="integration">
-          <el-card shadow="never" class="integration-card">
-            <div class="integration-header">
-              <div class="app-info">
-                <div class="app-icon">
-                  <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="6" y="10" width="36" height="30" rx="4" fill="#3b82f6"/>
-                    <rect x="12" y="16" width="8" height="16" rx="2" fill="#fff"/>
-                    <rect x="28" y="16" width="8" height="16" rx="2" fill="rgba(255,255,255,0.6)"/>
-                  </svg>
-                </div>
-                <div class="app-name">{{ currentApp?.name }}</div>
-              </div>
-            </div>
-
-            <div class="public-link-section">
-              <div class="link-row">
-                <span class="link-label">公开访问链接</span>
-                <el-switch v-model="publicAccessEnabled" active-text="开启" inactive-text="关闭" />
-              </div>
-              <div class="link-display" v-if="publicAccessEnabled">
-                <input type="text" :value="publicAccessUrl" readonly class="link-input" />
-                <el-button type="text" @click="copyPublicLink" class="copy-btn">
-                  <el-icon><CopyDocument /></el-icon>
-                </el-button>
-                <el-button type="text" @click="openPublicLink" class="open-btn">
-                  <el-icon><View /></el-icon>
-                </el-button>
-              </div>
-            </div>
-
-            <div class="action-buttons">
-              <el-button class="action-btn" @click="openChat">
-                <el-icon><Message /></el-icon>
-                <span>去对话</span>
-              </el-button>
-              <el-button class="action-btn" @click="showEmbedModal = true">
-                <el-icon><Monitor /></el-icon>
-                <span>嵌入第三方</span>
-              </el-button>
-              <el-button class="action-btn" @click="showAccessModal = true">
-                <el-icon><Setting /></el-icon>
-                <span>访问限制</span>
-              </el-button>
-            </div>
-          </el-card>
         </el-tab-pane>
       </el-tabs>
     </div>
@@ -382,18 +525,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import * as echarts from 'echarts'
+import * as XLSX from 'xlsx'
+import { saveAs } from 'file-saver'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import ChartCard from '@/components/chart/ChartCard.vue'
+import AvatarImage from '@/components/AvatarImage.vue'
 import {
   Plus,
   Setting,
   Monitor,
-  View,
-  ArrowLeft,
   CopyDocument,
-  InfoFilled,
+  Link,
   RefreshLeft,
-  Message,
+  TrendCharts,
+  Download,
 } from '@element-plus/icons-vue'
 import {
   getApplications,
@@ -445,6 +592,24 @@ const appRules: FormRules = {
   name: [{ required: true, message: '请输入应用名称', trigger: 'blur' }],
 }
 
+const systemPromptFocused = ref(false)
+const systemPromptRef = ref<any>()
+const isPromptOverflow = ref(false)
+
+function checkPromptOverflow() {
+  nextTick(() => {
+    // 优先通过 ref 获取
+    let textarea = systemPromptRef.value?.$el?.querySelector('textarea') as HTMLTextAreaElement
+    // 如果 ref 方式失败，使用 document.querySelector 兜底
+    if (!textarea) {
+      textarea = document.querySelector('.textarea-wrapper textarea') as HTMLTextAreaElement
+    }
+    if (textarea) {
+      isPromptOverflow.value = textarea.scrollHeight > textarea.clientHeight + 10
+    }
+  })
+}
+
 const createDialogVisible = ref(false)
 const createFormRef = ref<FormInstance>()
 const createForm = reactive<ApplicationCreateForm>({
@@ -478,13 +643,13 @@ const showAccessModal = ref(false)
 
 const publicAccessUrl = computed(() => {
   if (!currentApp.value) return ''
-  return `${window.location.origin}/chat/embed/${currentApp.value.id}`
+  return `${window.location.origin}/chat/${currentApp.value.accessHash}`
 })
 
 const currentEmbedCode = computed(() => {
   if (!currentApp.value) return ''
   const origin = window.location.origin
-  const baseUrl = `${origin}/chat/embed/${currentApp.value.id}`
+  const baseUrl = `${origin}/chat/${currentApp.value.accessHash}`
   return '<iframe src="' + baseUrl + '" style="width: 100%; height: 100%;" frameborder="0" allow="microphone"></iframe>'
 })
 
@@ -496,13 +661,283 @@ interface DebugMessage {
   id: number
   role: 'user' | 'assistant'
   content: string
+  type?: 'text' | 'data'
   isStreaming?: boolean
+  thinkingSteps?: Array<{
+    step: number
+    title: string
+    description: string
+  }>
+  sqlTraces?: Array<{
+    sql: string
+    rows: number
+  }>
+  dataResult?: any[]
+  columnMeta?: any[]
+  chartType?: string
+  references?: Array<{
+    documentName: string
+    content: string
+    score: number
+  }>
+  elapsedTime?: number
+}
+
+interface ChartConfig {
+  chartType: string
+  xField: string
+  yField: string
+  option?: any
 }
 
 const debugInput = ref('')
 const debugSending = ref(false)
 const debugMessages = ref<DebugMessage[]>([])
 const chatMessagesRef = ref<HTMLElement>()
+const thinkingExpanded = reactive<Record<string, boolean>>({})
+const refsExpanded = reactive<Record<string, boolean>>({})
+const dataViewMode = reactive<Record<string, string>>({})
+const chartConfig = reactive<Record<string, ChartConfig>>({})
+
+function toggleThinking(msgId: string) {
+  thinkingExpanded[msgId] = !thinkingExpanded[msgId]
+}
+
+function toggleReferences(msgId: string) {
+  refsExpanded[msgId] = !refsExpanded[msgId]
+}
+
+function getFieldAlias(fieldName: string, columnMeta?: any[]): string | null {
+  if (!columnMeta || columnMeta.length === 0) return null
+  const meta = columnMeta.find((m) => m.columnName === fieldName)
+  return meta?.columnAlias || null
+}
+
+function getTableName(sqlTraces: any[]) {
+  if (!sqlTraces || sqlTraces.length === 0) return ''
+  const sql = sqlTraces[0].sql
+  const match = sql.match(/FROM\s+(\w+)/i)
+  return match ? match[1] : ''
+}
+
+function getDataColumns(data: any[], columnMeta?: any[]) {
+  if (!data || data.length === 0) return []
+  const keys = Object.keys(data[0])
+  return keys.map((key) => ({
+    prop: key,
+    label: getFieldAlias(key, columnMeta) || key,
+    minWidth: 120,
+  }))
+}
+
+function getNumericColumns(data: any[], columnMeta?: any[]) {
+  if (!data || data.length === 0) return []
+  const keys = Object.keys(data[0])
+  return keys
+    .filter((key) => {
+      const val = data[0][key]
+      return typeof val === 'number' || (!isNaN(Number(val)) && val !== null && val !== '')
+    })
+    .map((key) => ({
+      prop: key,
+      label: getFieldAlias(key, columnMeta) || key,
+      minWidth: 120,
+    }))
+}
+
+function copySql(sql: string) {
+  navigator.clipboard.writeText(sql).then(() => {
+    ElMessage.success('SQL已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败，请手动复制')
+  })
+}
+
+function getChartConfigValue(msgId: string, key: 'chartType' | 'xField' | 'yField') {
+  return chartConfig[msgId]?.[key] || ''
+}
+
+function setChartConfigValue(msgId: string, key: 'chartType' | 'xField' | 'yField', value: string) {
+  if (!chartConfig[msgId]) {
+    chartConfig[msgId] = { chartType: 'bar', xField: '', yField: '', option: null }
+  }
+  chartConfig[msgId][key] = value
+}
+
+function initChartConfig(msgId: string, data: any[], columnMeta?: any[]) {
+  const allCols = getDataColumns(data, columnMeta)
+  const numCols = getNumericColumns(data, columnMeta)
+
+  if (allCols.length === 0 || numCols.length === 0) return
+
+  const xCol = allCols.find((c) => !numCols.some((n) => n.prop === c.prop))?.prop || allCols[0].prop
+  const yCol = numCols[0].prop
+
+  chartConfig[msgId] = {
+    chartType: 'bar',
+    xField: xCol,
+    yField: yCol,
+    option: null,
+  }
+  // 默认展示图表视图
+  dataViewMode[msgId] = 'chart'
+  updateChartOption(msgId, columnMeta)
+}
+
+function updateChartOption(msgId: string, columnMeta?: any[]) {
+  const config = chartConfig[msgId]
+  if (!config || !config.xField || !config.yField) return
+
+  const msg = debugMessages.value.find((m) => m.id === Number(msgId))
+  if (!msg?.dataResult) return
+
+  const meta = columnMeta || msg.columnMeta
+  const data = msg.dataResult
+  const xData = data.map((row: any) => String(row[config.xField] ?? ''))
+  const yData = data.map((row: any) => Number(row[config.yField]) || 0)
+
+  const xAxisName = getFieldAlias(config.xField, meta) || config.xField
+  const yAxisName = getFieldAlias(config.yField, meta) || config.yField
+
+  if (config.chartType === 'pie') {
+    config.option = {
+      tooltip: { trigger: 'item' },
+      legend: {
+        type: 'scroll',
+        orient: 'horizontal',
+        bottom: 10,
+        itemGap: 12,
+        textStyle: { fontSize: 10 },
+      },
+      grid: { top: 20, bottom: 50, left: '3%', right: '3%', containLabel: true },
+      series: [{
+        type: 'pie',
+        radius: ['25%', '55%'],
+        center: ['50%', '40%'],
+        data: xData.map((name: string, i: number) => ({ name, value: yData[i] })),
+        emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' } },
+        label: { fontSize: 10, formatter: '{b}: {d}%' },
+        labelLine: { length: 10, length2: 15, smooth: true },
+        itemStyle: { borderColor: '#fff', borderWidth: 2 },
+      }],
+    }
+  } else {
+    config.option = {
+      tooltip: { trigger: 'axis' },
+      grid: { top: 30, right: 15, bottom: 50, left: 15, containLabel: true },
+      xAxis: {
+        type: 'category',
+        name: xAxisName,
+        data: xData,
+        axisLabel: { rotate: xData.length > 10 ? 45 : 0, fontSize: 10, interval: 0 },
+        nameTextStyle: { fontSize: 11, padding: [8, 0, 0, 0] },
+        nameLocation: 'middle',
+        nameGap: 25,
+      },
+      yAxis: {
+        type: 'value',
+        name: yAxisName,
+        nameTextStyle: { fontSize: 11, padding: [0, 0, 0, 30] },
+        axisLabel: { fontSize: 10 },
+      },
+      series: [{
+        type: config.chartType,
+        data: yData,
+        barMaxWidth: 30,
+        itemStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: '#409eff' },
+            { offset: 1, color: '#79bbff' },
+          ]),
+          borderRadius: [3, 3, 0, 0],
+        },
+        smooth: config.chartType === 'line',
+        areaStyle: config.chartType === 'line' ? {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(64, 158, 255, 0.3)' },
+            { offset: 1, color: 'rgba(64, 158, 255, 0.02)' },
+          ]),
+        } : undefined,
+        lineStyle: config.chartType === 'line' ? { width: 2, color: '#409eff' } : undefined,
+        symbol: config.chartType === 'line' ? 'circle' : undefined,
+        symbolSize: config.chartType === 'line' ? 5 : undefined,
+      }],
+    }
+  }
+}
+
+// 导出Excel
+function exportToExcel(data: any[], columnMeta?: any[], fileName?: string) {
+  if (!data || data.length === 0) {
+    ElMessage.warning('没有数据可导出')
+    return
+  }
+
+  const cols = getDataColumns(data, columnMeta)
+  const headers = cols.map((c) => c.label)
+  const rows = data.map((row) => cols.map((col) => String(row[col.prop] ?? '')))
+
+  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows])
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, worksheet, '数据')
+
+  const name = fileName || `数据导出_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}`
+  XLSX.writeFile(workbook, `${name}.xlsx`)
+}
+
+// 导出图表为图片
+function exportChartToImage(msgId: string) {
+  const config = chartConfig[msgId]
+  if (!config?.option) {
+    ElMessage.warning('没有图表可导出')
+    return
+  }
+
+  try {
+    // 创建隐藏的canvas元素
+    const canvas = document.createElement('canvas')
+    canvas.width = 800
+    canvas.height = 400
+    canvas.style.display = 'none'
+    document.body.appendChild(canvas)
+
+    // 创建图表实例
+    const chart = echarts.init(canvas, undefined, {
+      renderer: 'canvas',
+    })
+    chart.setOption(config.option)
+
+    // 等待图表渲染完成
+    setTimeout(() => {
+      const url = chart.getDataURL({
+        type: 'png',
+        pixelRatio: 2,
+        backgroundColor: '#fff',
+      })
+
+      chart.dispose()
+      document.body.removeChild(canvas)
+
+      // 将base64转换为Blob并下载
+      const link = document.createElement('a')
+      link.download = `图表导出_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.png`
+      link.href = url
+      link.click()
+    }, 500)
+  } catch (error) {
+    console.error('图表导出失败:', error)
+    ElMessage.error('图表导出失败，请重试')
+  }
+}
+
+// 处理导出命令
+function handleDebugExport(cmd: string, msg: DebugMessage) {
+  if (cmd === 'excel') {
+    exportToExcel(msg.dataResult || [], msg.columnMeta)
+  } else if (cmd === 'image') {
+    exportChartToImage(String(msg.id))
+  }
+}
 
 const statusText: Record<string, string> = {
   active: '启用',
@@ -520,13 +955,13 @@ const previewUrl = computed(() => {
   const params = new URLSearchParams()
   params.set('appName', encodeURIComponent(currentApp.value.name || ''))
   params.set('greetingMessage', encodeURIComponent(currentApp.value.greetingMessage || ''))
-  return `/chat/embed/${currentApp.value.id}?${params.toString()}`
+  return `/chat/${currentApp.value.accessHash}?${params.toString()}`
 })
 
 const embedCode = computed(() => {
   if (!currentApp.value) return ''
   const origin = window.location.origin
-  const url = `${origin}/chat/embed/${currentApp.value.id}`
+  const url = `${origin}/chat/${currentApp.value.accessHash}`
   const borderStyle = integrationForm.iframeBorder === '0' ? 'none' : integrationForm.iframeBorder
   return `<iframe src="${url}" width="${integrationForm.iframeWidth}" height="${integrationForm.iframeHeight}" style="border: ${borderStyle}" frameborder="0" title="智能助手"></iframe>`
 })
@@ -559,9 +994,17 @@ async function loadDatasources() {
   try {
     const res = await getDatasources() as any
     if (res.code === 0) {
-      datasources.value = res.data
+      // 兼容分页格式：新接口返回 {total, list}，旧接口直接返回数组
+      if (res.data && Array.isArray(res.data.list)) {
+        datasources.value = res.data.list
+      } else if (Array.isArray(res.data)) {
+        datasources.value = res.data
+      } else {
+        datasources.value = []
+      }
     }
   } catch (error) {
+    console.error('加载数据源失败', error)
     datasources.value = []
   }
 }
@@ -639,6 +1082,8 @@ function handleDetail(app: Application) {
   integrationForm.iframeHeight = String(app.iframeHeight) || '600px'
   integrationForm.customDomain = app.customDomain || ''
   allowedOriginsText.value = (app.iframeAllowedOrigins || []).join('\n')
+  // 检测系统提示词是否溢出
+  checkPromptOverflow()
 }
 
 function backToList() {
@@ -764,7 +1209,7 @@ async function handleSaveIntegration() {
 
 function openChat() {
   if (!currentApp.value) return
-  window.open(`/chat/embed/${currentApp.value.id}`, '_blank')
+  window.open(`/chat/${currentApp.value.accessHash}`, '_blank')
 }
 
 async function copyPublicLink() {
@@ -837,6 +1282,27 @@ async function handleDebugSend() {
 
   try {
     const knowledgeBaseId = appForm.knowledgeBaseIds?.[0] || null
+    const datasourceId = appForm.datasourceIds?.[0] || null
+    // 根据modelName查找llmConfigId
+    const llmConfig = llmModels.value.find((m) => m.modelName === appForm.modelName)
+    const llmConfigId = llmConfig?.id || null
+    
+    const requestBody: any = {
+      sessionId: `debug-${currentApp.value.id}-${Date.now()}`,
+      question: userMsg.content,
+      applicationId: currentApp.value.id,
+    }
+    
+    if (knowledgeBaseId !== null) {
+      requestBody.knowledgeBaseId = knowledgeBaseId
+    }
+    if (datasourceId !== null) {
+      requestBody.datasourceId = datasourceId
+    }
+    if (llmConfigId !== null) {
+      requestBody.llmConfigId = llmConfigId
+    }
+    
     const response = await fetch(`/api/v1/sessions/embed/chat`, {
       method: 'POST',
       headers: {
@@ -844,12 +1310,7 @@ async function handleDebugSend() {
         'Accept': 'text/event-stream',
         'Cache-Control': 'no-cache',
       },
-      body: JSON.stringify({
-        sessionId: `debug-${currentApp.value.id}-${Date.now()}`,
-        question: userMsg.content,
-        knowledgeBaseId,
-        applicationId: currentApp.value.id,
-      }),
+      body: JSON.stringify(requestBody),
     })
 
     if (!response.ok) {
@@ -881,14 +1342,55 @@ async function handleDebugSend() {
           const jsonStr = trimmedLine.substring(6)
           const data = JSON.parse(jsonStr)
 
-          if (data.type === 'content') {
+          if (data.type === 'start') {
+            // 会话开始事件
+          } else if (data.type === 'intent') {
+            // 意图识别结果
+          } else if (data.type === 'content') {
             aiMsg.content += data.content
             aiMsg.isStreaming = true
             scrollToBottom()
+          } else if (data.type === 'thinking') {
+            if (!aiMsg.thinkingSteps) {
+              aiMsg.thinkingSteps = []
+            }
+            aiMsg.thinkingSteps.push({
+              step: data.step,
+              title: data.title,
+              description: data.description,
+            })
+            scrollToBottom()
+          } else if (data.type === 'references') {
+            aiMsg.references = data.data
+            scrollToBottom()
+          } else if (data.type === 'sql_traces') {
+            aiMsg.sqlTraces = data.data
+            scrollToBottom()
+          } else if (data.type === 'data_result') {
+            aiMsg.dataResult = data.data
+            if (data.columnMeta) {
+              aiMsg.columnMeta = data.columnMeta
+            }
+            if (data.chartType) {
+              aiMsg.chartType = data.chartType
+            }
+            aiMsg.type = 'data'
+            initChartConfig(String(aiMsg.id), data.data, data.columnMeta)
+            scrollToBottom()
+          } else if (data.type === 'column_meta') {
+            aiMsg.columnMeta = data.data
+            if (aiMsg.dataResult && aiMsg.dataResult.length > 0) {
+              initChartConfig(String(aiMsg.id), aiMsg.dataResult, aiMsg.columnMeta)
+            }
+            scrollToBottom()
           } else if (data.type === 'done') {
             aiMsg.isStreaming = false
+            const elapsedTime = data.elapsed_time || data.elapsedTime
+            if (elapsedTime !== undefined) {
+              aiMsg.elapsedTime = Math.round(elapsedTime * 1000)
+            }
           } else if (data.type === 'error') {
-            aiMsg.content = `错误: ${data.message}`
+            aiMsg.content += `\n\n[错误] ${data.message}`
             aiMsg.isStreaming = false
           }
         } catch (e) {
@@ -898,7 +1400,7 @@ async function handleDebugSend() {
     }
   } catch (error: any) {
     console.error('调试对话失败:', error)
-    aiMsg.content = `发送失败: ${error.message || '未知错误'}`
+    aiMsg.content = aiMsg.content || '抱歉，消息发送失败，请稍后重试。'
     aiMsg.isStreaming = false
   } finally {
     debugSending.value = false
@@ -916,7 +1418,10 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .app-list-view {
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 100px); /* Header 60px + content-area padding 40px */
+  min-height: 0;
 }
 
 .page-header {
@@ -1058,78 +1563,41 @@ onMounted(() => {
 }
 
 .app-detail-view {
-  height: 100%;
   display: flex;
   flex-direction: column;
+  height: 100%;
 
   .app-tabs {
-    flex: 1;
-    overflow: hidden;
     background: #fff;
     border-radius: 0 $card-radius $card-radius $card-radius;
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+
+    :deep(.el-tabs__header) {
+      flex-shrink: 0;
+    }
 
     :deep(.el-tabs__content) {
-      height: calc(100% - 55px);
-      overflow: auto;
       padding: 20px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    :deep(.el-tab-pane) {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }
   }
 }
 
-.integration-card {
-  max-width: 600px;
-  margin: 0 auto;
-
-  :deep(.el-card__body) {
-    padding: 24px;
-  }
-
-  .integration-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 24px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid $card-border;
-
-    .app-info {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-
-      .app-icon {
-        width: 40px;
-        height: 40px;
-        background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: 0;
-
-        svg {
-          width: 24px;
-          height: 24px;
-        }
-      }
-
-      .app-name {
-        font-size: 18px;
-        font-weight: 600;
-        color: $text-primary;
-        margin-bottom: 0;
-      }
-    }
-
-    .public-access-badge {
-      font-size: 12px;
-      padding: 4px 12px;
-      background: rgba(59, 130, 246, 0.1);
-      color: $primary-color;
-      border-radius: 12px;
-      font-weight: 500;
-    }
-  }
+.integration-content {
+  width: 100%;
 
   .public-link-section {
     margin-bottom: 24px;
@@ -1214,6 +1682,62 @@ onMounted(() => {
         border-color: $primary-color;
         background: rgba(59, 130, 246, 0.05);
       }
+    }
+  }
+}
+
+.integration-card {
+  max-width: 600px;
+  margin: 0 auto;
+
+  :deep(.el-card__body) {
+    padding: 24px;
+  }
+
+  .integration-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid $card-border;
+
+    .app-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+
+      .app-icon {
+        width: 40px;
+        height: 40px;
+        background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 0;
+
+        svg {
+          width: 24px;
+          height: 24px;
+        }
+      }
+
+      .app-name {
+        font-size: 18px;
+        font-weight: 600;
+        color: $text-primary;
+        margin-bottom: 0;
+      }
+    }
+
+    .public-access-badge {
+      font-size: 12px;
+      padding: 4px 12px;
+      background: rgba(59, 130, 246, 0.1);
+      color: $primary-color;
+      border-radius: 12px;
+      font-weight: 500;
     }
   }
 }
@@ -1368,57 +1892,238 @@ onMounted(() => {
 }
 
 .settings-layout {
-  display: flex;
-  gap: 24px;
-  height: calc(100vh - 180px);
-
-  .settings-left {
-    width: 50%;
-    flex-shrink: 0;
-    overflow-y: auto;
-    padding-right: 8px;
     display: flex;
-    flex-direction: column;
-    gap: 16px;
-
-    :deep(.el-card) {
-      margin-bottom: 0;
-    }
-  }
-
-  .settings-right {
-    width: 50%;
-    flex-shrink: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .preview-card {
+    gap: 20px;
+    align-items: stretch;
     flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    border-radius: 12px;
+    min-height: 0;
 
-    :deep(.el-card__body) {
-      padding: 0;
+    .settings-left {
+        width: 40%;
+        flex-shrink: 0;
+        overflow-y: auto;
+        max-height: 100%;
+
+      :deep(.el-card) {
+        margin-bottom: 0;
+        border-radius: 10px;
+      }
+
+      :deep(.el-card__body) {
+        padding: 24px;
+      }
+
+      :deep(.el-card__body .el-row) {
+        margin-bottom: 24px;
+
+        &:last-child {
+          margin-bottom: 0;
+        }
+      }
+
+      :deep(.el-card__header) {
+        padding: 10px 16px;
+        border-bottom: 1px solid #e2e8f0;
+      }
+
+      .card-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #1e293b;
+      }
+
+      :deep(.el-form) {
+        label-width: 90px;
+      }
+
+      :deep(.el-form-item) {
+        margin-bottom: 24px;
+
+        &:last-child {
+          margin-bottom: 0;
+        }
+
+        // 应用描述等textarea与上一行保持足够间距
+        &:has(.el-textarea__inner) {
+          margin-top: 8px;
+        }
+      }
+
+      :deep(.el-form-item__label) {
+        font-size: 13px;
+        font-weight: 500;
+        color: #475569;
+      }
+
+      :deep(.el-input__wrapper) {
+        border-radius: 8px;
+        padding: 4px 8px;
+        width: 100%;
+        height: 36px;
+        box-sizing: border-box;
+      }
+
+      :deep(.el-input__inner) {
+        font-size: 12px;
+        padding: 8px 10px;
+        width: 100%;
+        min-width: 0;
+        height: 28px;
+        line-height: 28px;
+      }
+
+      :deep(.el-select__wrapper) {
+        border-radius: 8px;
+        padding: 4px 8px;
+        width: 100%;
+        height: 36px;
+        box-sizing: border-box;
+      }
+
+      :deep(.el-select__inner) {
+        font-size: 12px;
+        padding: 8px 10px;
+        width: 100%;
+        height: 28px;
+        line-height: 28px;
+      }
+
+      :deep(.el-input-number) {
+        width: 100%;
+        min-width: 0;
+      }
+
+      :deep(.el-input-number .el-input__wrapper) {
+        border-radius: 8px;
+        width: 100%;
+        padding: 4px 8px;
+        box-sizing: border-box;
+        height: 36px;
+      }
+
+      :deep(.el-input-number .el-input__inner) {
+        font-size: 12px;
+        width: 100%;
+        padding-right: 30px;
+        height: 28px;
+        line-height: 28px;
+      }
+
+      :deep(.el-input-number__decrease),
+      :deep(.el-input-number__increase) {
+        width: 24px;
+        height: 36px;
+        line-height: 36px;
+
+        .el-icon {
+          font-size: 12px;
+        }
+      }
+
+      :deep(.el-textarea__inner) {
+        font-size: 12px;
+        padding: 10px;
+        border-radius: 8px;
+        width: 100%;
+        min-width: 0;
+        resize: none;
+      }
+
+      .textarea-wrapper {
+        position: relative;
+        width: 100%;
+
+        .textarea-ellipsis {
+          position: absolute;
+          bottom: 12px;
+          right: 14px;
+          background: #fff;
+          padding: 0 8px;
+          color: #94a3b8;
+          font-size: 12px;
+          pointer-events: none;
+        }
+      }
+
+      :deep(.el-slider) {
+        margin-bottom: 6px;
+      }
+
+      :deep(.el-switch) {
+        font-size: 12px;
+        padding: 0 8px;
+      }
+
+      :deep(.el-switch__core) {
+        width: 32px;
+        height: 18px;
+      }
+
+      :deep(.el-switch__button) {
+        width: 16px;
+        height: 16px;
+      }
+
+      :deep(.el-switch__label) {
+        font-size: 12px;
+        padding: 0 4px;
+        line-height: normal;
+        overflow: visible;
+        height: auto;
+      }
+
+      .slider-value {
+        font-size: 11px;
+        color: #64748b;
+        margin-left: 6px;
+      }
+
+      .form-tip {
+        margin-top: 6px;
+        font-size: 11px;
+        color: #94a3b8;
+      }
+    }
+
+    .settings-right {
+      width: 60%;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+
+    .preview-card {
       flex: 1;
       display: flex;
       flex-direction: column;
-    }
+      overflow: hidden;
+      border-radius: 10px;
+      min-height: 0;
+      border: 1px solid #e2e8f0 !important;
+
+      :deep(.el-card__body) {
+        padding: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        margin: 0;
+        min-height: 0;
+      }
 
     .preview-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 16px 24px;
+      padding: 10px 16px;
       background-color: #ffffff;
       border-bottom: 1px solid #e2e8f0;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 
       .card-title {
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 600;
         color: #1e293b;
       }
@@ -1454,46 +2159,49 @@ onMounted(() => {
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 24px;
+    padding: 16px 16px 16px 16px;
+    padding-right: 32px; /* 给滚动条留出更多空间 */
     background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    scrollbar-gutter: stable; /* 保持滚动条占位稳定 */
+    box-sizing: border-box;
 
     .chat-welcome {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 60px 40px;
+      padding: 40px 24px;
       text-align: center;
 
       .welcome-icon {
-        width: 100px;
-        height: 100px;
+        width: 70px;
+        height: 70px;
         display: flex;
         align-items: center;
         justify-content: center;
         background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-        border-radius: 24px;
-        margin-bottom: 24px;
-        box-shadow: 0 8px 32px rgba(59, 130, 246, 0.3);
+        border-radius: 18px;
+        margin-bottom: 16px;
+        box-shadow: 0 6px 24px rgba(59, 130, 246, 0.3);
 
         svg {
-          width: 64px;
-          height: 64px;
+          width: 44px;
+          height: 44px;
         }
       }
 
       p {
-        font-size: 14px;
+        font-size: 12px;
         color: #64748b;
         margin: 0;
-        max-width: 300px;
+        max-width: 200px;
         line-height: 1.6;
       }
     }
 
     .message-item {
       display: flex;
-      margin-bottom: 24px;
+      margin-bottom: 16px;
 
       &.user {
         justify-content: flex-end;
@@ -1506,10 +2214,10 @@ onMounted(() => {
 
     .message-content {
       display: flex;
-      max-width: 85%;
+      max-width: 90%;
       min-width: 0;
       overflow: hidden;
-      gap: 12px;
+      gap: 8px;
 
       &.user {
         flex-direction: row-reverse;
@@ -1528,16 +2236,22 @@ onMounted(() => {
         .message-bubble {
           background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
           color: #ffffff;
-          border-radius: 16px 16px 4px 16px;
+          border-radius: 14px 14px 4px 14px;
           position: relative;
-          padding: 16px 20px;
-          font-size: 14px;
-          line-height: 1.7;
+          padding: 12px 14px;
+          font-size: 12px;
+          line-height: 1.6;
           word-break: break-word;
           overflow-wrap: break-word;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+          box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
           width: auto;
           max-width: 100%;
+
+          .bubble-arrow {
+            right: -14px;
+            border: 7px solid transparent;
+            border-left-color: #6366f1;
+          }
         }
       }
 
@@ -1547,7 +2261,7 @@ onMounted(() => {
         .message-bubble-wrap {
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 8px;
           flex: 1;
           min-width: 0;
           align-items: stretch;
@@ -1557,25 +2271,27 @@ onMounted(() => {
         .message-bubble {
           background-color: #ffffff;
           color: #1e293b;
-          border-radius: 16px 16px 16px 4px;
+          border-radius: 14px 14px 14px 4px;
           position: relative;
-          padding: 16px 20px;
-          font-size: 14px;
-          line-height: 1.7;
+          padding: 12px 14px;
+          font-size: 12px;
+          line-height: 1.6;
           word-break: break-word;
           overflow-wrap: break-word;
           overflow: hidden;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+          box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
           width: 100%;
 
-          .typing-cursor {
-            animation: blink 1s infinite;
+          .bubble-arrow {
+            left: -14px;
+            border: 7px solid transparent;
+            border-right-color: #ffffff;
           }
         }
       }
 
       .avatar-label {
-        font-size: 12px;
+        font-size: 10px;
         font-weight: 600;
         color: #1e293b;
         white-space: nowrap;
@@ -1585,13 +2301,13 @@ onMounted(() => {
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 4px;
+        gap: 3px;
         flex-shrink: 0;
       }
 
       .avatar {
-        width: 36px;
-        height: 36px;
+        width: 32px;
+        height: 32px;
         border-radius: 50%;
         display: flex;
         align-items: center;
@@ -1600,62 +2316,579 @@ onMounted(() => {
 
         &.user-avatar {
           background: linear-gradient(135deg, #fde8e8 0%, #fef3c7 100%);
-          box-shadow: 0 2px 8px rgba(220, 38, 38, 0.15);
+          box-shadow: 0 2px 6px rgba(220, 38, 38, 0.15);
         }
 
         &.assistant-avatar {
-          background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);
-          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+          background: white;
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+        }
+      }
+
+      .message-text {
+        white-space: pre-wrap;
+      }
+
+      .streaming-cursor {
+        animation: blink 1s infinite;
+        font-weight: bold;
+      }
+
+      .typing-indicator {
+        display: flex;
+        gap: 5px;
+        padding: 6px 0;
+
+        span {
+          width: 6px;
+          height: 6px;
+          background-color: #94a3b8;
+          border-radius: 50%;
+          animation: typing 1.4s infinite ease-in-out;
+
+          &:nth-child(1) { animation-delay: -0.32s; }
+          &:nth-child(2) { animation-delay: -0.16s; }
+          &:nth-child(3) { animation-delay: 0s; }
+        }
+      }
+
+      .bubble-arrow {
+        position: absolute;
+        width: 0;
+        height: 0;
+        top: 12px;
+      }
+
+      .bubble-content {
+        white-space: pre-wrap;
+      }
+
+      .thinking-process {
+        background-color: #ffffff;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        overflow: hidden;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+        width: 100%;
+
+        .thinking-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 12px;
+          cursor: pointer;
+          background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
+          transition: background-color 0.2s;
+
+          &:hover {
+            background: linear-gradient(90deg, #e2e8f0 0%, #f1f5f9 100%);
+          }
+
+          .el-icon {
+            font-size: 12px;
+            color: #64748b;
+            transition: transform 0.25s;
+
+            &.rotated {
+              transform: rotate(90deg);
+            }
+          }
+
+          .thinking-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #475569;
+          }
+
+          .thinking-count {
+            font-size: 10px;
+            padding: 2px 6px;
+            background-color: #e0e7ff;
+            color: #6366f1;
+            border-radius: 8px;
+            font-weight: 500;
+          }
+
+          .thinking-action {
+            margin-left: auto;
+            font-size: 10px;
+            color: #94a3b8;
+          }
+        }
+
+        .thinking-content {
+          padding: 12px;
+        }
+
+        .section-title {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          font-weight: 600;
+          color: #475569;
+          margin-bottom: 10px;
+          padding-left: 6px;
+          border-left: 3px solid #3b82f6;
+
+          .el-icon {
+            font-size: 12px;
+            color: #3b82f6;
+          }
+        }
+
+        .thinking-steps {
+          margin-bottom: 14px;
+        }
+
+        .steps-timeline {
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+        }
+
+        .step-item {
+          display: flex;
+          gap: 10px;
+          padding-bottom: 14px;
+
+          &:last-child {
+            padding-bottom: 0;
+
+            .step-connector {
+              .connector-line {
+                display: none;
+              }
+            }
+          }
+        }
+
+        .step-connector {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          width: 16px;
+          flex-shrink: 0;
+
+          .connector-line {
+            width: 2px;
+            flex: 1;
+            background-color: #e2e8f0;
+            margin-top: 3px;
+
+            &.last {
+              display: none;
+            }
+          }
+
+          .step-dot {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #e2e8f0;
+            border-radius: 50%;
+            border: 2px solid #ffffff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+            flex-shrink: 0;
+            font-size: 9px;
+
+            &.active {
+              background-color: #3b82f6;
+              animation: pulse 2s infinite;
+            }
+
+            &.completed {
+              background-color: #10b981;
+            }
+
+            .step-loading {
+              font-size: 8px;
+              color: #fff;
+            }
+
+            .step-check {
+              font-size: 8px;
+              color: #fff;
+            }
+
+            .step-number-text {
+              color: #64748b;
+              font-weight: 600;
+            }
+          }
+        }
+
+        .step-content {
+          flex: 1;
+          padding-top: 2px;
+
+          .step-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 3px;
+          }
+
+          .step-desc {
+            font-size: 10px;
+            color: #64748b;
+            line-height: 1.5;
+          }
+        }
+      }
+
+      .sql-section {
+        background-color: #0f172a;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+        width: 100%;
+
+        .section-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          background-color: #1e293b;
+          border-bottom: 1px solid #334155;
+
+          span {
+            font-size: 11px;
+            font-weight: 600;
+            color: #f1f5f9;
+          }
+
+          .sql-copy-btn {
+            margin-left: auto;
+            color: #94a3b8;
+            font-size: 10px;
+            gap: 3px;
+
+            &:hover {
+              color: #e2e8f0;
+            }
+          }
+        }
+
+        .sql-content {
+          padding: 12px;
+
+          .sql-code {
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 10px;
+            color: #e2e8f0;
+            line-height: 1.6;
+            margin: 0;
+            overflow-x: auto;
+          }
+
+          .sql-meta {
+            margin-top: 8px;
+            font-size: 10px;
+            color: #64748b;
+            text-align: right;
+          }
+        }
+      }
+
+      .chart-section {
+        background-color: #ffffff;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        overflow: hidden;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+        width: 100%;
+
+        .section-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 12px;
+          background: linear-gradient(90deg, #ecfdf5 0%, #ffffff 100%);
+          border-bottom: 1px solid #d1fae5;
+
+          .el-icon {
+            font-size: 14px;
+            color: #10b981;
+          }
+
+          span {
+            font-size: 12px;
+            font-weight: 600;
+            color: #065f46;
+          }
+
+          .table-name-badge {
+            font-size: 10px;
+            padding: 3px 8px;
+            background-color: #e0e7ff;
+            color: #6366f1;
+            border-radius: 5px;
+            margin-left: auto;
+          }
+
+          .chart-view-toggle {
+            margin-left: 8px;
+          }
+
+          .export-btn {
+            margin-left: 8px;
+            color: #64748b;
+            font-size: 11px;
+            padding: 3px 8px;
+
+            &:hover {
+              color: #3b82f6;
+              background-color: #eff6ff;
+            }
+          }
+        }
+
+        .chart-body {
+          padding: 10px 12px 12px;
+        }
+
+        .table-wrapper {
+          :deep(.data-table) {
+            font-size: 10px;
+            border-radius: 6px;
+            overflow: hidden;
+          }
+        }
+
+        .table-footer {
+          margin-top: 8px;
+          text-align: center;
+          font-size: 10px;
+          color: #94a3b8;
+        }
+
+        .chart-wrapper {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .chart-controls {
+          display: flex;
+          gap: 6px;
+          justify-content: flex-end;
+          padding: 0 4px;
+
+          :deep(.el-select) {
+            width: 80px;
+          }
+
+          :deep(.el-select__wrapper) {
+            border-radius: 6px;
+          }
+
+          :deep(.el-select__inner) {
+            font-size: 11px;
+            padding: 6px 10px;
+          }
+        }
+
+        .chart-container {
+          width: 100%;
+          min-height: 200px;
+        }
+
+        .chart-placeholder {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          background-color: #f8fafc;
+          border-radius: 6px;
+
+          p {
+            font-size: 11px;
+            color: #94a3b8;
+            margin-top: 8px;
+          }
+        }
+      }
+
+      .message-meta {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 4px;
+        margin-top: 6px;
+
+        span {
+          font-size: 10px;
+          color: #94a3b8;
+        }
+      }
+
+      .references-section {
+        background-color: #ffffff;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        overflow: hidden;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+        width: 100%;
+        margin-top: 8px;
+
+        .references-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 12px;
+          cursor: pointer;
+          background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
+          transition: background-color 0.2s;
+
+          &:hover {
+            background: linear-gradient(90deg, #e2e8f0 0%, #f1f5f9 100%);
+          }
+
+          .el-icon {
+            font-size: 12px;
+            color: #64748b;
+            transition: transform 0.25s;
+
+            &.rotated {
+              transform: rotate(90deg);
+            }
+          }
+
+          .references-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #475569;
+          }
+
+          .references-count {
+            font-size: 10px;
+            padding: 2px 6px;
+            background-color: #dcfce7;
+            color: #16a34a;
+            border-radius: 8px;
+            font-weight: 500;
+          }
+
+          .references-action {
+            margin-left: auto;
+            font-size: 10px;
+            color: #94a3b8;
+          }
+        }
+
+        .references-content {
+          padding: 12px;
+        }
+
+        .ref-cards {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .ref-card {
+          padding: 10px;
+          background-color: #f8fafc;
+          border-radius: 6px;
+          border: 1px solid #e2e8f0;
+
+          .ref-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+
+            .ref-name {
+              font-size: 11px;
+              font-weight: 600;
+              color: #1e293b;
+            }
+
+            .ref-score {
+              font-size: 10px;
+              padding: 2px 5px;
+              background-color: #dcfce7;
+              color: #16a34a;
+              border-radius: 5px;
+              font-weight: 500;
+            }
+          }
+
+          .ref-content {
+            font-size: 10px;
+            color: #64748b;
+            line-height: 1.5;
+          }
         }
       }
     }
   }
 
   .chat-input-area {
+    flex-shrink: 0; /* 确保输入框不被压缩 */
     background-color: #ffffff;
     border-top: 1px solid #e2e8f0;
-    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.04);
-    padding: 12px 20px;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
+    padding: 10px 16px;
+    box-sizing: border-box;
 
-    .debug-input {
-      :deep(.el-input__wrapper) {
-        border-radius: 12px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 0 0 1px #e2e8f0 inset;
-        transition: all 0.2s;
+    .debug-input-wrapper {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      width: 100%;
 
-        &:hover {
-          box-shadow: 0 0 0 1px #3b82f6 inset;
+      .debug-input {
+        flex: 1;
+        min-width: 0;
+
+        :deep(.el-input__wrapper) {
+          border-radius: 10px;
+          border: 1px solid #e2e8f0;
+          box-shadow: 0 0 0 1px #e2e8f0 inset;
+          transition: all 0.2s;
+
+          &:hover {
+            box-shadow: 0 0 0 1px #3b82f6 inset;
+          }
+
+          &.is-focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 1px #3b82f6 inset, 0 0 0 3px rgba(59, 130, 246, 0.1);
+          }
         }
 
-        &.is-focus {
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 1px #3b82f6 inset, 0 0 0 3px rgba(59, 130, 246, 0.1);
+        :deep(.el-input__inner) {
+          padding: 10px 14px;
+          font-size: 12px;
         }
       }
 
-      :deep(.el-input__inner) {
-        padding: 12px 16px;
-        font-size: 14px;
-      }
-    }
-
-    :deep(.el-button) {
-      &.el-button--primary {
+      .send-btn {
+        flex-shrink: 0;
         background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
         border: none;
         border-radius: 10px;
-        padding: 10px 24px;
-        font-weight: 500;
-        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3);
 
         &:hover:not(:disabled) {
           transform: translateY(-1px);
-          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+          box-shadow: 0 3px 10px rgba(59, 130, 246, 0.4);
         }
 
         &:disabled {
           opacity: 0.7;
+        }
+
+        .el-icon {
+          font-size: 16px;
         }
       }
     }
@@ -1665,6 +2898,17 @@ onMounted(() => {
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
+}
+
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
 }
 
 .embed-modal-content {

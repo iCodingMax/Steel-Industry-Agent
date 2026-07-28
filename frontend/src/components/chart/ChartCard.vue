@@ -76,6 +76,7 @@ onBeforeUnmount(() => {
 
 .chart-container {
   width: 100%;
-  height: 360px;
+  height: 100%;
+  min-height: 360px;
 }
 </style>

@@ -17,7 +17,7 @@ class Dimension(Base):
     name = Column(String(100), nullable=False, comment="维度名称")
     code = Column(String(50), unique=True, nullable=False, index=True, comment="维度代码")
     description = Column(Text, nullable=True, comment="维度描述")
-    datasource_id = Column(Integer, nullable=False, index=True, comment="数据源ID")
+    datasource_id = Column(Integer, nullable=True, index=True, comment="数据源ID，未绑定则不参与智能问数")
     table_name = Column(String(100), nullable=False, comment="关联表名")
     column_name = Column(String(100), nullable=False, comment="关联列名")
     data_type = Column(String(20), nullable=True, comment="数据类型: string/number/date")

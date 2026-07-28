@@ -4,10 +4,8 @@
     <div class="main-content">
       <Header />
       <div class="content-area">
-        <router-view v-slot="{ Component }">
-          <transition name="fade" mode="out-in">
-            <component :is="Component" />
-          </transition>
+        <router-view v-slot="{ Component }" :key="$route.fullPath">
+          <component :is="Component" />
         </router-view>
       </div>
     </div>

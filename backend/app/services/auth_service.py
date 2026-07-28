@@ -59,8 +59,8 @@ class AuthService:
             logger.warning(f"用户登录失败: 密码错误 - {req.username}")
             raise BusinessException(code=401, message="用户名或密码错误")
 
-        # 更新最后登录时间
-        user.last_login_at = datetime.utcnow()
+        # 更新最后登录时间（使用本地时间，避免时区转换问题）
+        user.last_login_at = datetime.now()
         await db.commit()
 
         # 生成JWT令牌
