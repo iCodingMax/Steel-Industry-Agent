@@ -15,6 +15,7 @@
 - 密码字段存储加密后的密码
 - TableSchema 使用 JSONB 缓存列信息，避免频繁查询业务数据库
 """
+import json
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -91,11 +92,20 @@ class TableSchema(Base):
 
     def to_dict(self) -> dict:
         """转换为字典"""
+        # 兼容旧数据：columns可能是JSON字符串（历史问题），也可能是list（修复后）
+        columns_data = self.columns
+        if isinstance(columns_data, str):
+            try:
+                columns_data = json.loads(columns_data)
+            except (json.JSONDecodeError, TypeError):
+                columns_data = []
+        if not isinstance(columns_data, list):
+            columns_data = []
         return {
             "id": self.id,
             "datasourceId": self.datasource_id,
             "tableName": self.table_name,
             "tableComment": self.table_comment,
-            "columns": self.columns if self.columns else [],
+            "columns": columns_data,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
         }

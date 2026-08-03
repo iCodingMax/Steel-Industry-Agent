@@ -699,6 +699,11 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
     .avatar-group {
       width: 28px;
       height: 28px;
+      overflow: hidden;
+      :deep(.avatar-image) {
+        width: 28px;
+        height: 28px;
+      }
     }
     .message-bubble {
       padding: 8px 12px;
@@ -714,7 +719,7 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
         .thinking-action { font-size: 11px; }
       }
       .thinking-content { padding: 8px 10px; }
-      .step-item { padding: 4px 0; }
+      .step-item { padding: 4px 0 4px 24px; }
       .step-title { font-size: 12px; }
       .step-desc { font-size: 11px; }
     }
@@ -730,11 +735,25 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       .sql-code { font-size: 11px; }
     }
     .chart-section {
-      .section-header { padding: 6px 10px; }
-      .header-left { font-size: 12px; gap: 6px; }
+      .section-header { padding: 6px 8px; }
+      .header-left { font-size: 12px; gap: 4px; }
+      .table-name-badge { 
+        max-width: 80px; 
+        overflow: hidden; 
+        text-overflow: ellipsis; 
+        white-space: nowrap; 
+      }
+      .view-toggle-group { margin-left: 6px; padding-left: 6px; gap: 2px; }
+      .chart-type-btn { padding: 2px 4px; }
+      .view-btn { width: 24px; height: 24px; }
       .chart-body { padding: 6px; }
       .chart-container { height: 220px; min-height: 180px; }
       .chart-placeholder { padding: 20px; }
+      .header-right { gap: 4px; }
+      .export-btn { 
+        padding: 2px 6px; 
+        span { font-size: 12px; }
+      }
     }
     .message-meta {
       margin-top: 6px;
@@ -754,6 +773,11 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
     .avatar-group {
       width: 44px;
       height: 44px;
+      overflow: hidden;
+      :deep(.avatar-image) {
+        width: 44px;
+        height: 44px;
+      }
     }
     .message-bubble {
       padding: 16px 20px;
@@ -800,6 +824,11 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
     gap: 4px;
     max-width: 80%;
 
+    // 助手消息固定宽度，确保不同类型回答（文本/图表）宽度一致
+    &:not(.user-bubble-wrap) {
+      width: 80%;
+    }
+
     // 用户消息靠右，右边与AI消息右边对齐
     &.user-bubble-wrap {
       margin-left: auto;
@@ -823,6 +852,7 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
     background: #ffffff;
     border: 1px solid #e2e8f0;
     box-shadow: none;
+    box-sizing: border-box;
 
     .bubble-arrow {
       display: none;
@@ -1288,6 +1318,8 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       font-size: 13px;
       font-weight: 500;
       color: #1e293b;
+      flex: 1;
+      min-width: 0;
     }
 
     .table-name-badge {
@@ -1296,6 +1328,11 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       border-radius: 4px;
       font-size: 11px;
       font-family: 'Courier New', monospace;
+      max-width: 100px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex-shrink: 1;
     }
 
     .view-toggle-group {
@@ -1305,6 +1342,7 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       margin-left: 12px;
       padding-left: 8px;
       border-left: 1px solid #e2e8f0;
+      flex-shrink: 0;
     }
 
     .chart-type-btn {
@@ -1314,6 +1352,7 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       font-size: 12px;
       color: #1e293b;
       padding: 4px 8px;
+      flex-shrink: 0;
       
       &:hover {
         background: #f1f5f9;
@@ -1353,6 +1392,12 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       display: flex;
       align-items: center;
       gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .export-btn {
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .chart-body {

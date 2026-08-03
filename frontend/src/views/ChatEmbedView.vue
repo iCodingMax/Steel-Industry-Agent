@@ -1,6 +1,16 @@
 <template>
-  <div class="chat-embed-view">
-    <div class="chat-sidebar">
+  <div class="chat-embed-view" :class="{ 'floating-mode': isFloatingMode, 'expanded-mode': isFloatingMode && isExpandedMode }">
+    <!-- 遮罩层 - 侧边栏显示时出现 -->
+    <div class="sidebar-overlay" v-if="sidebarVisible" @click="sidebarVisible = false"></div>
+    
+    <!-- 侧边栏 - 浮层模式 -->
+    <div class="chat-sidebar" :class="{ 'sidebar-visible': sidebarVisible }">
+      <div class="sidebar-close-btn" v-if="isFloatingMode" @click="sidebarVisible = false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </div>
       <div class="sidebar-header">
         <h2 class="sidebar-title">对话历史</h2>
         <el-button type="primary" size="small" @click="handleNewChat" class="new-chat-btn">
@@ -98,6 +108,14 @@
     <div class="chat-main">
       <div class="chat-header">
         <div class="header-left">
+          <!-- 浮窗模式下的菜单按钮 -->
+          <button v-if="isFloatingMode" class="header-menu-btn" @click="sidebarVisible = !sidebarVisible" title="会话管理">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
           <div class="header-logo">
             <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="20" cy="20" r="18" stroke="#3b82f6" stroke-width="2" fill="none" opacity="0.6"/>
@@ -108,6 +126,34 @@
             </svg>
           </div>
           <span class="session-title">{{ currentSession?.title || appName }}</span>
+        </div>
+        <!-- 浮窗模式控制按钮 -->
+        <div class="header-actions" v-if="isFloatingMode">
+          <!-- 新建对话 -->
+          <button class="header-action-btn" @click="handleNewChat" title="新建对话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
+          <!-- 展开/缩小（中等大小） -->
+          <button class="header-action-btn" @click="handleResizeToggle" :title="isExpandedMode ? '缩小' : '展开'">
+            <svg v-if="!isExpandedMode" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <polyline points="16,3 21,3 21,8"/>
+              <line x1="8" y1="16" x2="16" y2="16"/>
+            </svg>
+          </button>
+          <!-- 关闭 -->
+          <button class="header-action-btn close" @click="sendMessageToParent('chat-close')" title="关闭">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -209,6 +255,7 @@ interface DebugMessage {
   id: number | string
   role: string
   content: string
+  type?: 'text' | 'data'
   isStreaming?: boolean
   thinkingSteps?: Array<{ step: number; title: string; description: string }>
   sqlTraces?: Array<{ sql: string; rows: number }>
@@ -275,6 +322,35 @@ const isInIframe = computed(() => {
     return true  // 跨域iframe时默认为true
   }
 })
+
+// 检测是否为浮窗模式（通过URL参数mode=float）
+const isFloatingMode = computed(() => {
+  return route.query.mode === 'float'
+})
+
+// 展开模式状态（中等大小，由父页面chat-embed.js控制）
+const isExpandedMode = ref(false)
+
+// 侧边栏可见性（浮窗模式下控制会话管理面板显示）
+const sidebarVisible = ref(false)
+
+// 切换展开/缩小模式
+function handleResizeToggle() {
+  if (isExpandedMode.value) {
+    // 缩小回小窗口
+    sendMessageToParent('chat-toggle-expanded')
+  } else {
+    // 展开为中等大小
+    sendMessageToParent('chat-toggle-expanded')
+  }
+}
+
+// 向父页面发送消息（浮窗模式通信）
+function sendMessageToParent(type: string) {
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type }, '*')
+  }
+}
 
 // 跳转到登录页
 function goToLogin() {
@@ -609,11 +685,11 @@ async function loadAppConfig() {
     if (isHashMode.value) {
       // 通过hash访问，使用公开接口
       const res = await getApplicationByHash(accessHash.value)
-      appData = (res.data as unknown as { data: Application }).data
+      appData = res.data as unknown as Application
     } else {
       // 通过appId访问
       const res = await getApplication(appId.value)
-      appData = (res.data as unknown as { data: Application }).data
+      appData = res.data as unknown as Application
     }
     
     app.value = appData
@@ -888,18 +964,17 @@ async function handleSend(content?: string) {
                 if (data.columnMeta) {
                   aiMsgRef.columnMeta = data.columnMeta
                 }
-                if (aiMsgRef.dataResult && aiMsgRef.dataResult.length > 0) {
-                  aiMsgRef.chartOption = generateChartOption(aiMsgRef.dataResult, aiMsgRef, data.chartType || 'bar')
+                // 存储后端推荐的图表类型，ChatMessage组件会根据此类型自动切换到图表视图
+                if (data.chartType) {
+                  aiMsgRef.chartType = data.chartType
                 }
+                aiMsgRef.type = 'data'
                 triggerRef(sessions)
               }
               saveSessions()
             } else if (data.type === 'column_meta') {
               if (aiMsgRef) {
                 aiMsgRef.columnMeta = data.data
-                if (aiMsgRef.dataResult && aiMsgRef.dataResult.length > 0) {
-                  aiMsgRef.chartOption = generateChartOption(aiMsgRef.dataResult, aiMsgRef, data.suggested_chart_type || 'bar')
-                }
                 triggerRef(sessions)
               }
               saveSessions()
@@ -973,6 +1048,21 @@ function setupMessageListener() {
       // 重新加载会话
       loadSessions()
     }
+    
+    // 展开状态变化（浮窗模式）
+    if (data.type === 'chat-toggle-expanded') {
+      isExpandedMode.value = !isExpandedMode.value
+      // 切换展开时，重置侧边栏状态
+      sidebarVisible.value = false
+    }
+    if (data.type === 'chat-expanded-enter') {
+      isExpandedMode.value = true
+      sidebarVisible.value = false
+    }
+    if (data.type === 'chat-expanded-exit') {
+      isExpandedMode.value = false
+      sidebarVisible.value = false
+    }
   })
 }
 
@@ -982,7 +1072,9 @@ onMounted(async () => {
   setupMessageListener()
   
   await loadAppConfig()
-  await loadLLMConfigs()
+  // LLM配置加载为非阻塞，后端会从应用配置中自动解析LLM配置
+  // 这里仅用于前端显示，失败不影响对话功能
+  loadLLMConfigs().catch(() => {})
   loadSessions()
   if (sessions.value.length === 0) {
     createNewSession()
@@ -1000,6 +1092,176 @@ onMounted(async () => {
   background-color: #f1f5f9;
   overflow: hidden;
   position: relative;
+
+  // 遮罩层
+  .sidebar-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 100;
+    animation: fadeIn 0.2s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  &.floating-mode {
+    height: 100%;
+    border-radius: 16px 0 0 0;
+    overflow: hidden;
+
+    .chat-main {
+      border-radius: 16px 0 0 0;
+    }
+
+    .chat-header {
+      padding: 10px 12px;
+      
+      .header-left {
+        .session-title {
+          font-size: 13px;
+        }
+      }
+    }
+
+    // 浮窗模式下侧边栏改为浮层
+    .chat-sidebar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 240px;
+      height: 100%;
+      background: white;
+      z-index: 101;
+      transform: translateX(-100%);
+      transition: transform 0.3s ease;
+      box-shadow: 4px 0 24px rgba(0, 0, 0, 0.1);
+      display: flex;
+      flex-direction: column;
+      
+      &.sidebar-visible {
+        transform: translateX(0);
+      }
+      
+      .sidebar-close-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.05);
+        color: #6b7280;
+        cursor: pointer;
+        border: none;
+        transition: all 0.2s;
+        z-index: 10;
+        
+        &:hover {
+          background: rgba(239, 68, 68, 0.1);
+          color: #ef4444;
+        }
+        
+        svg {
+          width: 14px;
+          height: 14px;
+        }
+      }
+      
+      .sidebar-header {
+        padding: 12px 44px 12px 12px;
+        flex-shrink: 0;
+
+        .sidebar-title {
+          font-size: 14px;
+        }
+
+        .new-chat-btn {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+      }
+      
+      .sidebar-search {
+        padding: 0 12px;
+        flex-shrink: 0;
+      }
+      
+      .sidebar-sessions {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+      }
+      
+      .sidebar-footer {
+        padding: 10px;
+        flex-shrink: 0;
+      }
+    }
+
+    // 菜单按钮
+    .header-menu-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: none;
+      background: rgba(0, 0, 0, 0.05);
+      color: #374151;
+      cursor: pointer;
+      margin-right: 8px;
+      transition: all 0.2s;
+      
+      &:hover {
+        background: rgba(139, 92, 246, 0.1);
+        color: #8b5cf6;
+      }
+      
+      svg {
+        width: 18px;
+        height: 18px;
+      }
+    }
+  }
+
+  // 展开模式（右侧全高度）
+  &.expanded-mode {
+    border-radius: 0;
+    min-height: 100vh;
+    
+    .chat-main {
+      border-radius: 0;
+    }
+    
+    .chat-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      
+      .header-left {
+        .session-title {
+          font-size: 14px;
+        }
+      }
+    }
+    
+    .chat-messages {
+      padding: 20px;
+    }
+    
+    .chat-input {
+      padding: 16px 20px;
+    }
+  }
 }
 
 .sidebar-footer {
@@ -1255,6 +1517,7 @@ onMounted(async () => {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-shrink: 0;
 
     .header-logo {
       svg {
@@ -1268,6 +1531,42 @@ onMounted(async () => {
       font-weight: 600;
       color: #fff;
       white-space: nowrap;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .header-action-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: none;
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    &.close:hover {
+      background: rgba(239, 68, 68, 0.8);
+    }
+
+    svg {
+      width: 16px;
+      height: 16px;
     }
   }
 }

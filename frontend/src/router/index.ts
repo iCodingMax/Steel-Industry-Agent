@@ -41,15 +41,16 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     name: 'MainLayout',
     component: () => import('@/components/layout/MainLayout.vue'),
-    redirect: '/chat',
+    // redirect: '/chat',
+    redirect: '/app-management',
     meta: { requiresAuth: true },
     children: [
-      {
-        path: 'chat',
-        name: 'Chat',
-        component: () => import('@/views/ChatView.vue'),
-        meta: { title: '智能对话', icon: 'ChatSquare' },
-      },
+      // {
+      //   path: 'chat',
+      //   name: 'Chat',
+      //   component: () => import('@/views/ChatView.vue'),
+      //   meta: { title: '智能对话', icon: 'ChatSquare' },
+      // },
       {
         path: 'app-management',
         name: 'AppManagement',
