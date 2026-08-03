@@ -68,11 +68,11 @@ interface MenuItem {
 }
 
 const menuItems: MenuItem[] = [
-  {
-    path: '/chat',
-    title: '智能对话',
-    svgPath: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-  },
+  // {
+  //   path: '/chat',
+  //   title: '智能对话',
+  //   svgPath: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  // },
   {
     path: '/app-management',
     title: '应用管理',

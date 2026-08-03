@@ -745,6 +745,9 @@ async def embed_chat(
             datasource_id = data.datasourceId
             greeting_message = ""
 
+            # 预解析LLM配置，供各意图分支使用
+            resolved_llm_config_params = None
+
             if data.applicationId:
                 from app.models.application import Application
                 app_result = await db.execute(
@@ -757,6 +760,37 @@ async def embed_chat(
                         knowledge_base_id = app.knowledge_base_ids[0]
                     if app.datasource_ids and len(app.datasource_ids) > 0:
                         datasource_id = app.datasource_ids[0]
+
+                    # 从应用配置解析LLM配置：优先使用前端传入的llmConfigId，
+                    # 其次根据应用的model_name查找匹配的LLM配置，
+                    # 最后回退到系统默认LLM配置
+                    from app.services.llm_config_service import llm_config_service
+                    from app.models.llm_config import LLMConfig as LLMConfigModel
+
+                    llm_config = None
+                    if data.llmConfigId:
+                        llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
+                    if not llm_config and app.model_name:
+                        # 根据应用配置的model_name查找LLM配置
+                        stmt = select(LLMConfigModel).where(
+                            (LLMConfigModel.model_name == app.model_name) &
+                            (LLMConfigModel.model_type == 'llm') &
+                            (LLMConfigModel.status == 'active')
+                        )
+                        cfg_result = await db.execute(stmt)
+                        llm_config = cfg_result.scalar_one_or_none()
+                    if not llm_config:
+                        # 回退到系统默认LLM配置
+                        llm_config = await llm_config_service.get_by_model_type(db, 'llm')
+
+                    if llm_config:
+                        resolved_llm_config_params = {
+                            'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                            'api_key': llm_config.api_key or 'not-needed',
+                            'model': llm_config.model_name,
+                            'max_tokens': llm_config.max_tokens,
+                            'temperature': llm_config.temperature,
+                        }
 
             from app.services.router_service import intent_classifier
             intent = await intent_classifier.classify(data.question)
@@ -793,26 +827,7 @@ async def embed_chat(
                         yield emit_thinking(3, 3, '生成回答', '基于知识库内容生成自然语言回答...')
 
                         from app.services.llm_service import llm_service
-                        from app.services.llm_config_service import llm_config_service
-                        
-                        # 获取LLM配置
-                        llm_config = None
-                        if data.llmConfigId:
-                            llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
-                        elif session.llm_config_id:
-                            llm_config = await llm_config_service.get_by_id(db, session.llm_config_id)
-                        
-                        # 构建配置参数
-                        llm_config_params = None
-                        if llm_config:
-                            llm_config_params = {
-                                'base_url': llm_config.base_url.rstrip('/') + '/v1',
-                                'api_key': llm_config.api_key or 'not-needed',
-                                'model': llm_config.model_name,
-                                'max_tokens': llm_config.max_tokens,
-                                'temperature': llm_config.temperature,
-                            }
-                        
+
                         context_text = "\n\n".join([f"【文档{i+1}】{ref.content}" for i, ref in enumerate(refs)])
                         prompt = f"""基于以下知识内容回答用户问题，如果知识内容中没有相关信息，请明确说明。
 
@@ -824,7 +839,7 @@ async def embed_chat(
 请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
 
                         full_answer = ""
-                        async for chunk in llm_service.chat_stream(prompt, None, None, llm_config_params):
+                        async for chunk in llm_service.chat_stream(prompt, None, None, resolved_llm_config_params):
                             full_answer += chunk
                             yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
 
@@ -912,7 +927,7 @@ async def embed_chat(
                     if not kb:
                         return
                     query = KnowledgeQuery(
-                        KnowledgeBaseId=knowledge_base_id,
+                        knowledgeBaseId=knowledge_base_id,
                         question=knowledge_question,
                         topK=3,
                     )
@@ -972,26 +987,10 @@ async def embed_chat(
                 await db.commit()
 
                 from app.services.llm_service import llm_service
-                from app.services.llm_config_service import llm_config_service
-                
-                # 获取LLM配置
-                llm_config = None
-                if data.llmConfigId:
-                    llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
-                elif session.llm_config_id:
-                    llm_config = await llm_config_service.get_by_id(db, session.llm_config_id)
-                
-                # 构建配置参数
-                llm_config_params = None
-                if llm_config:
-                    llm_config_params = {
-                        'base_url': llm_config.base_url.rstrip('/') + '/v1',
-                        'api_key': llm_config.api_key or 'not-needed',
-                        'model': llm_config.model_name,
-                        'max_tokens': llm_config.max_tokens,
-                        'temperature': llm_config.temperature,
-                    }
-                
+
+                # 使用预解析的LLM配置参数
+                llm_config_params = resolved_llm_config_params
+
                 full_answer = ""
 
                 # 使用队列实现并行流式输出

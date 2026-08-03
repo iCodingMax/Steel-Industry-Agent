@@ -1,7 +1,7 @@
 <template>
   <div class="chat-panel" :class="[`size-${size}`]">
     <!-- 消息列表 -->
-    <div class="chat-messages" ref="messagesRef">
+    <div class="chat-messages" ref="messagesRef" @scroll="handleScroll">
       <!-- 欢迎提示 -->
       <div v-if="messages.length === 0" class="chat-welcome">
         <div class="welcome-icon">
@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { ChatDotRound, Right } from '@element-plus/icons-vue'
 import ChatMessage from './ChatMessage.vue'
 
@@ -112,24 +112,74 @@ const localInputText = computed({
 const messagesRef = ref<HTMLElement>()
 const inputRows = computed(() => props.size === 'sm' ? 1 : 2)
 
-// 监听 messages 变化，自动滚动到底部
+// 滚动控制状态
+const isNearBottom = ref(true)  // 用户是否接近底部（50px 以内）
+let scrollRafId: number | null = null
+let isUserScrolling = false
+
+// 监听滚动事件，判断用户是否在查看历史
+function handleScroll() {
+  if (!messagesRef.value) return
+  const el = messagesRef.value
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  isNearBottom.value = distanceFromBottom <= 50
+  isUserScrolling = true
+  
+  // 清除之前的定时器
+  if ((window as any)._scrollTimer) {
+    clearTimeout((window as any)._scrollTimer)
+  }
+  
+  // 300ms 后恢复用户滚动状态
+  ;(window as any)._scrollTimer = setTimeout(() => {
+    isUserScrolling = false
+  }, 300)
+}
+
+// 平滑滚动到底部
+function scrollToBottom() {
+  nextTick(() => {
+    if (!messagesRef.value) return
+    const el = messagesRef.value
+    cancelAnimationFrame(scrollRafId!)
+    scrollRafId = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+  })
+}
+
+// 监听消息数量变化（新消息添加时）
 watch(() => props.messages.length, () => {
   scrollToBottom()
 })
 
+// 监听消息内容变化（流式输出时内容更新）
+watch(
+  () => props.messages.map(m => m.content),
+  () => {
+    if (props.isSending && isNearBottom.value) {
+      scrollToBottom()
+    }
+  }
+)
+
+// 监听 isSending 状态变化
 watch(() => props.isSending, (val) => {
-  if (!val) {
+  if (val) {
+    // 开始发送时，重置自动滚动状态
+    isNearBottom.value = true
+  } else {
+    // 发送完成后，滚动到底部
     scrollToBottom()
   }
 })
 
-function scrollToBottom() {
-  nextTick(() => {
-    if (messagesRef.value) {
-      messagesRef.value.scrollTop = messagesRef.value.scrollHeight
-    }
-  })
-}
+// 组件卸载时清理
+onUnmounted(() => {
+  if (scrollRafId) {
+    cancelAnimationFrame(scrollRafId)
+  }
+})
 
 function handleEnterKey(e: KeyboardEvent) {
   if (e.shiftKey) {
@@ -166,6 +216,7 @@ defineExpose({
   background: #ffffff;
   border-radius: 12px;
   overflow: hidden;
+  min-height: 0;
 
   &.size-sm {
     .chat-messages {
@@ -173,6 +224,7 @@ defineExpose({
     }
     .chat-input-area {
       padding: 8px;
+      flex-shrink: 0;
     }
     .welcome-title {
       font-size: 16px;
@@ -188,6 +240,7 @@ defineExpose({
     }
     .chat-input-area {
       padding: 10px 16px;
+      flex-shrink: 0;
 
       .chat-input {
         :deep(.el-textarea__inner) {
@@ -208,6 +261,7 @@ defineExpose({
     }
     .chat-input-area {
       padding: 10px 20px;
+      flex-shrink: 0;
     }
   }
 }
@@ -294,6 +348,7 @@ defineExpose({
   background: #ffffff;
   border-top: 1px solid #e2e8f0;
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
+  flex-shrink: 0;
 
   .input-wrapper {
     display: flex;

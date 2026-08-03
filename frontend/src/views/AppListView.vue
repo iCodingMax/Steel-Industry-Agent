@@ -261,7 +261,11 @@
     <el-dialog v-model="showEmbedModal" title="嵌入第三方" width="700px" destroy-on-close>
       <div class="embed-modal-content">
         <div class="embed-mode-tabs">
-          <div class="embed-mode active">
+          <div 
+            class="embed-mode" 
+            :class="{ active: embedMode === 'fullscreen' }"
+            @click="embedMode = 'fullscreen'"
+          >
             <div class="mode-icon full-icon">
               <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <rect x="4" y="8" width="40" height="32" rx="4" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="2"/>
@@ -270,19 +274,43 @@
                 <rect x="8" y="26" width="20" height="4" rx="1" fill="#cbd5e1"/>
               </svg>
             </div>
-            <div class="mode-name">页面嵌入</div>
+            <div class="mode-name">全屏模式</div>
+          </div>
+          <div 
+            class="embed-mode" 
+            :class="{ active: embedMode === 'floating' }"
+            @click="embedMode = 'floating'"
+          >
+            <div class="mode-icon float-icon">
+              <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="24" cy="24" r="16" fill="#8b5cf6"/>
+                <rect x="16" y="18" width="16" height="12" rx="2" fill="white"/>
+                <circle cx="20" cy="24" r="2" fill="#8b5cf6"/>
+                <circle cx="28" cy="24" r="2" fill="#8b5cf6"/>
+                <path d="M42 40 Q42 32 36 32" stroke="#8b5cf6" stroke-width="2" fill="none"/>
+              </svg>
+            </div>
+            <div class="mode-name">浮窗模式</div>
           </div>
         </div>
 
         <div class="embed-code-section">
           <div class="code-header">
-            <span>复制以下代码进行嵌入</span>
+            <span>{{ embedMode === 'fullscreen' ? '复制以下代码进行嵌入' : '复制以下代码进行嵌入' }}</span>
             <el-button type="text" @click="copyEmbedCode" class="copy-code-btn">
               <el-icon><CopyDocument /></el-icon>
               复制代码
             </el-button>
           </div>
           <pre class="embed-code-block"><code>{{ currentEmbedCode }}</code></pre>
+          <div class="embed-tip" v-if="embedMode === 'floating'">
+            <p>💡 浮窗模式说明：</p>
+            <ul>
+              <li>嵌入后右下角会显示机器人图标</li>
+              <li>点击图标可展开小窗口进行对话</li>
+              <li>支持一键展开为全屏模式</li>
+            </ul>
+          </div>
         </div>
       </div>
     </el-dialog>
@@ -421,6 +449,7 @@ const allowedOriginsText = ref('')
 const publicAccessEnabled = ref(true)
 const showEmbedModal = ref(false)
 const showAccessModal = ref(false)
+const embedMode = ref<'fullscreen' | 'floating'>('fullscreen')
 
 const publicAccessUrl = computed(() => {
   if (!currentApp.value) return ''
@@ -430,8 +459,19 @@ const publicAccessUrl = computed(() => {
 const currentEmbedCode = computed(() => {
   if (!currentApp.value) return ''
   const origin = window.location.origin
-  const baseUrl = `${origin}/chat/${currentApp.value.accessHash}`
-  return '<iframe src="' + baseUrl + '" style="width: 100%; height: 100%;" frameborder="0" allow="microphone"></iframe>'
+  
+  if (embedMode.value === 'fullscreen') {
+    // 全屏模式：iframe嵌入
+    const baseUrl = `${origin}/chat/${currentApp.value.accessHash}`
+    return `<iframe src="${baseUrl}" style="width: 100%; height: 100%;" frameborder="0" allow="microphone"></iframe>`
+  } else {
+    // 浮窗模式：script嵌入
+    const token = currentApp.value.accessHash
+    const protocol = window.location.protocol.replace(':', '')
+    const host = window.location.host
+    const scriptTag = '<script async defer src="' + origin + '/chat-embed.js?token=' + token + '&protocol=' + protocol + '&host=' + host + '"></' + 'script>'
+    return scriptTag
+  }
 })
 
 function stripMarkdown(text: string): string {
@@ -1801,12 +1841,12 @@ onMounted(() => {
       border: 1px solid #e2e8f0 !important;
 
       :deep(.el-card__body) {
-        padding: 0;
+        padding: 0 !important;
         flex: 1;
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        margin: 0;
+        margin: 0 !important;
         min-height: 0;
       }
 
@@ -1883,9 +1923,14 @@ onMounted(() => {
       transition: all 0.2s;
       text-align: center;
 
+      &:hover {
+        border-color: #8b5cf6;
+        background: rgba(139, 92, 246, 0.05);
+      }
+
       &.active {
-        border-color: $primary-color;
-        background: rgba(59, 130, 246, 0.05);
+        border-color: #8b5cf6;
+        background: rgba(139, 92, 246, 0.05);
       }
 
       .mode-icon {
@@ -1906,6 +1951,32 @@ onMounted(() => {
         font-size: 14px;
         font-weight: 600;
         color: $text-primary;
+      }
+    }
+  }
+
+  .embed-tip {
+    margin-top: 12px;
+    padding: 12px 16px;
+    background: #f5f3ff;
+    border-radius: 8px;
+    border: 1px solid #ddd6fe;
+    
+    p {
+      margin: 0 0 8px 0;
+      font-weight: 600;
+      color: #5b21b6;
+      font-size: 13px;
+    }
+    
+    ul {
+      margin: 0;
+      padding-left: 20px;
+      color: #6b7280;
+      font-size: 12px;
+      
+      li {
+        margin-bottom: 4px;
       }
     }
   }

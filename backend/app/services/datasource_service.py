@@ -278,7 +278,7 @@ class DataSourceService:
                             datasource_id=ds_id,
                             table_name=table_name,
                             table_comment=table_comment or "",
-                            columns=json.dumps(columns, ensure_ascii=False),
+                            columns=columns,
                         )
                         db.add(table_schema)
                         tables.append(table_schema)
@@ -321,7 +321,7 @@ class DataSourceService:
                         datasource_id=ds_id,
                         table_name=table_name,
                         table_comment=table_comment,
-                        columns=json.dumps(columns, ensure_ascii=False),
+                        columns=columns,
                     )
                     db.add(table_schema)
                     tables.append(table_schema)
@@ -380,7 +380,7 @@ class DataSourceService:
                         datasource_id=ds_id,
                         table_name=table_name,
                         table_comment=table_comment,
-                        columns=json.dumps(columns, ensure_ascii=False),
+                        columns=columns,
                     )
                     db.add(table_schema)
                     tables.append(table_schema)
