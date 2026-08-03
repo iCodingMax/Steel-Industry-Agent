@@ -8,7 +8,6 @@
           </div>
           <h1 class="brand-title">工业智能助手平台</h1>
           <p class="brand-desc">Industrial Intelligent Assistant Platform</p>
-          <!-- <p class="brand-sub">RAG知识问答 · ChatBI智能问数 · 融合推理</p> -->
         </div>
         <div class="features">
           <div class="feature-item">
@@ -64,6 +63,22 @@
               登 录
             </el-button>
           </el-form>
+          
+          <!-- OAuth2登录入口 -->
+          <div v-if="oauthEnabled" class="oauth-section">
+            <div class="divider">
+              <span>或使用统一认证登录</span>
+            </div>
+            <el-button
+              class="oauth-btn"
+              size="large"
+              :loading="oauthLoading"
+              @click="handleOAuthLogin"
+            >
+              <el-icon class="oauth-icon"><User /></el-icon>
+              统一身份认证登录
+            </el-button>
+          </div>
         </div>
       </div>
     </div>
@@ -75,8 +90,8 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { getOAuthConfig, getOAuthLoginUrl } from '@/api/oauth'
 import {
-  Cpu,
   User,
   Lock,
   Document,
@@ -90,6 +105,8 @@ const authStore = useAuthStore()
 
 const loginFormRef = ref<FormInstance>()
 const loading = ref(false)
+const oauthEnabled = ref(false)
+const oauthLoading = ref(false)
 
 const loginForm = reactive({
   username: 'admin',
@@ -99,6 +116,17 @@ const loginForm = reactive({
 const loginRules: FormRules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+}
+
+async function checkOAuthStatus() {
+  try {
+    const res: any = await getOAuthConfig()
+    if (res.code === 0 && res.data) {
+      oauthEnabled.value = res.data.enabled
+    }
+  } catch (e) {
+    console.error('获取OAuth配置失败', e)
+  }
 }
 
 async function handleLogin() {
@@ -122,10 +150,31 @@ async function handleLogin() {
   })
 }
 
+async function handleOAuthLogin() {
+  oauthLoading.value = true
+  try {
+    const res: any = await getOAuthLoginUrl()
+    if (res.code === 0 && res.data) {
+      // 存储state到sessionStorage用于回调验证
+      sessionStorage.setItem('oauth_state', res.data.state)
+      // 跳转到OAuth2授权页面
+      window.location.href = res.data.loginUrl
+    } else {
+      ElMessage.error(res.message || '获取OAuth登录地址失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || 'OAuth登录失败')
+  } finally {
+    oauthLoading.value = false
+  }
+}
+
 onMounted(() => {
   if (authStore.isLoggedIn) {
     router.push('/chat')
+    return
   }
+  checkOAuthStatus()
 })
 </script>
 
@@ -271,6 +320,46 @@ onMounted(() => {
 
   .el-icon {
     color: $primary-color;
+  }
+}
+
+.oauth-section {
+  margin-top: 20px;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+  
+  &::before,
+  &::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: #e4e7ed;
+  }
+  
+  span {
+    padding: 0 12px;
+    font-size: 13px;
+    color: #909399;
+  }
+}
+
+.oauth-btn {
+  width: 100%;
+  background: #1a237e;
+  border-color: #1a237e;
+  color: #fff;
+  
+  &:hover {
+    background: #283593;
+    border-color: #283593;
+  }
+  
+  .oauth-icon {
+    margin-right: 6px;
   }
 }
 

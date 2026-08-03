@@ -214,239 +214,21 @@
                   </div>
                 </template>
                 <div class="chat-container">
-                  <div ref="chatMessagesRef" class="chat-messages">
-                    <div v-if="debugMessages.length === 0" class="chat-welcome">
-                      <div class="welcome-icon">
-                        <svg class="robot-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <!-- 天线 -->
-                          <line x1="32" y1="4" x2="32" y2="14" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
-                          <circle cx="32" cy="4" r="3" fill="#fbbf24"/>
-                          <!-- 头部 -->
-                          <rect x="14" y="14" width="36" height="24" rx="6" fill="#e2e8f0"/>
-                          <rect x="14" y="14" width="36" height="24" rx="6" stroke="#fff" stroke-width="1.5"/>
-                          <!-- 眼睛 -->
-                          <circle cx="24" cy="26" r="4" fill="#3b82f6"/>
-                          <circle cx="40" cy="26" r="4" fill="#3b82f6"/>
-                          <circle cx="24" cy="25" r="1.5" fill="#fff"/>
-                          <circle cx="40" cy="25" r="1.5" fill="#fff"/>
-                          <!-- 嘴巴 -->
-                          <rect x="26" y="32" width="12" height="2.5" rx="1.25" fill="#3b82f6"/>
-                          <!-- 身体 -->
-                          <rect x="18" y="40" width="28" height="16" rx="4" fill="#cbd5e1"/>
-                          <rect x="18" y="40" width="28" height="16" rx="4" stroke="#fff" stroke-width="1.5"/>
-                          <!-- 身体按钮 -->
-                          <circle cx="32" cy="48" r="3" fill="#3b82f6"/>
-                          <circle cx="32" cy="48" r="1.2" fill="#fff"/>
-                          <!-- 手臂 -->
-                          <rect x="6" y="42" width="10" height="6" rx="3" fill="#94a3b8"/>
-                          <rect x="48" y="42" width="10" height="6" rx="3" fill="#94a3b8"/>
-                          <!-- 钢铁火花装饰 -->
-                          <circle cx="10" cy="38" r="1" fill="#fbbf24"/>
-                          <circle cx="54" cy="38" r="1" fill="#fbbf24"/>
-                          <circle cx="8" cy="50" r="0.8" fill="#fb923c"/>
-                          <circle cx="56" cy="50" r="0.8" fill="#fb923c"/>
-                        </svg>
-                      </div>
-                      <p>{{ appForm.greetingMessage || '你好，有什么我可以帮你的吗？' }}</p>
-                    </div>
-                    <div
-                      v-for="msg in debugMessages"
-                      :key="msg.id"
-                      class="message-item"
-                      :class="[msg.role, msg.type || '']"
-                    >
-                      <div v-if="msg.role === 'user'" class="message-content user">
-                        <div class="avatar-group">
-                          <AvatarImage type="user" />
-                        </div>
-                        <div class="message-bubble-wrap">
-                          <div class="message-bubble">
-                            <div class="bubble-arrow"></div>
-                            <div class="bubble-content">{{ msg.content }}</div>
-                          </div>
-                        </div>
-                      </div>
-                      <div v-else class="message-content assistant">
-                        <div class="avatar-group">
-                          <AvatarImage type="assistant" />
-                        </div>
-                        <div class="message-bubble-wrap">
-                          <div class="thinking-process" v-if="(msg.thinkingSteps && msg.thinkingSteps.length > 0) || (msg.sqlTraces && msg.sqlTraces.length > 0)">
-                            <div class="thinking-header" @click="toggleThinking(String(msg.id))">
-                              <el-icon :class="{ 'rotated': thinkingExpanded[String(msg.id)] }"><ArrowRight /></el-icon>
-                              <span class="thinking-title">思考过程</span>
-                              <span class="thinking-count">{{ msg.thinkingSteps?.length || 0 }} 步</span>
-                              <span class="thinking-action">{{ thinkingExpanded[String(msg.id)] ? '收起' : '展开' }}</span>
-                            </div>
-                            <div v-show="thinkingExpanded[String(msg.id)]" class="thinking-content">
-                              <div v-if="msg.thinkingSteps && msg.thinkingSteps.length > 0" class="thinking-steps">
-                                <div class="section-title">
-                                  <el-icon><List /></el-icon>
-                                  <span>执行步骤</span>
-                                </div>
-                                <div class="steps-timeline">
-                                  <div v-for="(step, idx) in msg.thinkingSteps" :key="idx" class="step-item">
-                                    <div class="step-connector">
-                                      <div class="connector-line" :class="{ last: idx === msg.thinkingSteps!.length - 1 }"></div>
-                                      <div class="step-dot" :class="{ active: idx === msg.thinkingSteps!.length - 1 && msg.isStreaming, completed: idx < msg.thinkingSteps!.length - 1 || !msg.isStreaming }">
-                                        <el-icon v-if="idx === msg.thinkingSteps!.length - 1 && msg.isStreaming"><Loading class="step-loading" /></el-icon>
-                                        <el-icon v-else-if="idx < msg.thinkingSteps!.length - 1 || !msg.isStreaming"><CircleCheck class="step-check" /></el-icon>
-                                        <span v-else class="step-number-text">{{ step.step }}</span>
-                                      </div>
-                                    </div>
-                                    <div class="step-content">
-                                      <div class="step-title">{{ step.title }}</div>
-                                      <div class="step-desc">{{ step.description }}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          <!-- 消息气泡：始终显示，确保流式内容能实时展示 -->
-                          <div class="message-bubble">
-                            <div class="bubble-arrow"></div>
-                            <!-- 打字指示器：仅在流式中且内容为空时显示 -->
-                            <div v-if="msg.isStreaming && !msg.content" class="typing-indicator">
-                              <span></span>
-                              <span></span>
-                              <span></span>
-                            </div>
-                            <!-- 消息内容：始终渲染，确保流式内容实时更新 -->
-                            <template v-else>
-                              <span class="message-text">{{ stripMarkdown(msg.content) }}</span>
-                              <span v-if="msg.isStreaming" class="streaming-cursor">|</span>
-                            </template>
-                          </div>
-
-                          <div v-if="msg.sqlTraces && msg.sqlTraces.length > 0" class="sql-section">
-                            <div class="section-header">
-                              <span>SQL查询</span>
-                              <el-button text size="small" class="sql-copy-btn" @click="copySql(msg.sqlTraces[0].sql)">
-                                <el-icon><CopyDocument /></el-icon>
-                                复制
-                              </el-button>
-                            </div>
-                            <div class="sql-content">
-                              <pre class="sql-code">{{ msg.sqlTraces[0].sql }}</pre>
-                              <div class="sql-meta">返回 {{ msg.sqlTraces[0].rows || 0 }} 行数据</div>
-                            </div>
-                          </div>
-
-                          <div v-if="msg.dataResult && msg.dataResult.length > 0" class="chart-section">
-                            <div class="section-header">
-                              <el-icon><TrendCharts /></el-icon>
-                              <span>数据可视化</span>
-                              <div class="table-name-badge">表名：{{ getTableName(msg.sqlTraces || []) }}</div>
-                              <div class="chart-view-toggle">
-                                <el-radio-group v-model="dataViewMode[msg.id]" size="small">
-                                  <el-radio-button value="table">表格</el-radio-button>
-                                  <el-radio-button value="chart">图表</el-radio-button>
-                                </el-radio-group>
-                              </div>
-                              <!-- 导出按钮 -->
-                              <el-dropdown trigger="click" @command="(cmd: string) => handleDebugExport(cmd, msg)">
-                                <el-button type="text" size="small" class="export-btn">
-                                  <el-icon><Download /></el-icon>
-                                  <span>导出</span>
-                                </el-button>
-                                <template #dropdown>
-                                  <el-dropdown-menu>
-                                    <el-dropdown-item command="excel">Excel</el-dropdown-item>
-                                    <el-dropdown-item v-if="dataViewMode[msg.id] === 'chart'" command="image">图片</el-dropdown-item>
-                                  </el-dropdown-menu>
-                                </template>
-                              </el-dropdown>
-                            </div>
-                            <div class="chart-body">
-                              <div v-if="dataViewMode[msg.id] !== 'chart'" class="table-wrapper">
-                                <el-table
-                                  :data="msg.dataResult.slice(0, 100)"
-                                  size="small"
-                                  border
-                                  max-height="400"
-                                  stripe
-                                  class="data-table"
-                                >
-                                  <el-table-column
-                                    v-for="col in getDataColumns(msg.dataResult, msg.columnMeta)"
-                                    :key="col.prop"
-                                    :prop="col.prop"
-                                    :label="col.label"
-                                    :min-width="col.minWidth"
-                                    show-overflow-tooltip
-                                  />
-                                </el-table>
-                                <div v-if="msg.dataResult.length > 100" class="table-footer">
-                                  仅展示前 100 行，共 {{ msg.dataResult.length }} 行
-                                </div>
-                              </div>
-                              <div v-else class="chart-wrapper">
-                                <div class="chart-controls">
-                                  <el-select :model-value="getChartConfigValue(String(msg.id), 'chartType')" placeholder="图表类型" size="small" @change="(val: string) => { setChartConfigValue(String(msg.id), 'chartType', val); updateChartOption(String(msg.id), msg.columnMeta); }">
-                                    <el-option label="柱状图" value="bar" />
-                                    <el-option label="折线图" value="line" />
-                                    <el-option label="饼图" value="pie" />
-                                  </el-select>
-                                  <el-select :model-value="getChartConfigValue(String(msg.id), 'xField')" placeholder="X轴" size="small" @change="(val: string) => { setChartConfigValue(String(msg.id), 'xField', val); updateChartOption(String(msg.id), msg.columnMeta); }">
-                                    <el-option v-for="col in getDataColumns(msg.dataResult, msg.columnMeta)" :key="col.prop" :label="col.label" :value="col.prop" />
-                                  </el-select>
-                                  <el-select :model-value="getChartConfigValue(String(msg.id), 'yField')" placeholder="Y轴" size="small" @change="(val: string) => { setChartConfigValue(String(msg.id), 'yField', val); updateChartOption(String(msg.id), msg.columnMeta); }">
-                                    <el-option v-for="col in getNumericColumns(msg.dataResult, msg.columnMeta)" :key="col.prop" :label="col.label" :value="col.prop" />
-                                  </el-select>
-                                </div>
-                                <div v-if="chartConfig[String(msg.id)]?.option" class="chart-container">
-                                  <ChartCard :option="chartConfig[String(msg.id)].option" />
-                                </div>
-                                <div v-else class="chart-placeholder">
-                                  <el-icon :size="36" color="#cbd5e1">BarChart</el-icon>
-                                  <p>请选择 X 轴和 Y 轴字段以生成图表</p>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div v-if="msg.references && msg.references.length > 0" class="references-section">
-                            <div class="references-header" @click="toggleReferences(String(msg.id))">
-                              <el-icon :class="{ 'rotated': refsExpanded[String(msg.id)] }"><ArrowRight /></el-icon>
-                              <span class="references-title">知识引用</span>
-                              <span class="references-count">{{ msg.references.length }} 条</span>
-                              <span class="references-action">{{ refsExpanded[String(msg.id)] ? '收起' : '展开' }}</span>
-                            </div>
-                            <div v-show="refsExpanded[String(msg.id)]" class="references-content">
-                              <div class="ref-cards">
-                                <div v-for="(ref, idx) in msg.references" :key="idx" class="ref-card">
-                                  <div class="ref-header">
-                                    <span class="ref-name">{{ ref.documentName }}</span>
-                                    <span class="ref-score">{{ (ref.score * 100).toFixed(1) }}%</span>
-                                  </div>
-                                  <div class="ref-content">{{ ref.content.slice(0, 200) }}...</div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div v-if="msg.elapsedTime !== undefined" class="message-meta">
-                            <span class="meta-time">耗时 {{ (msg.elapsedTime / 1000).toFixed(2) }}s</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="chat-input-area">
-                    <div class="debug-input-wrapper">
-                      <el-input
-                        v-model="debugInput"
-                        placeholder="请输入问题"
-                        @keydown.enter.exact="handleDebugSend"
-                        class="debug-input"
-                      />
-                      <el-button type="primary" :loading="debugSending" @click="handleDebugSend" class="send-btn">
-                        <el-icon><Message /></el-icon>
-                      </el-button>
-                    </div>
-                  </div>
+                  <ChatPanel
+                    :messages="debugMessages"
+                    v-model="debugInput"
+                    :isSending="debugSending"
+                    welcomeTitle=""
+                    :welcomeDesc="appForm.greetingMessage || '你好，有什么我可以帮你的吗？'"
+                    size="sm"
+                    @send="handleDebugSend"
+                    @copy="copyMessageContent"
+                    @regenerate="regenerateDebugMessage"
+                    @edit="submitDebugEdit"
+                    @sql="handleSql"
+                    @reference="handleReference"
+                    @export="handleDebugExport"
+                  />
                 </div>
               </el-card>
             </div>
@@ -528,10 +310,8 @@
 import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import * as XLSX from 'xlsx'
-import { saveAs } from 'file-saver'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import ChartCard from '@/components/chart/ChartCard.vue'
-import AvatarImage from '@/components/AvatarImage.vue'
+import ChatPanel from '@/components/chat/ChatPanel.vue'
 import {
   Plus,
   Setting,
@@ -539,8 +319,9 @@ import {
   CopyDocument,
   Link,
   RefreshLeft,
-  TrendCharts,
-  Download,
+  ArrowLeft,
+  View,
+  Message,
 } from '@element-plus/icons-vue'
 import {
   getApplications,
@@ -681,36 +462,68 @@ interface DebugMessage {
     score: number
   }>
   elapsedTime?: number
-}
-
-interface ChartConfig {
-  chartType: string
-  xField: string
-  yField: string
-  option?: any
+  queryTime?: number
 }
 
 const debugInput = ref('')
 const debugSending = ref(false)
 const debugMessages = ref<DebugMessage[]>([])
-const chatMessagesRef = ref<HTMLElement>()
-const thinkingExpanded = reactive<Record<string, boolean>>({})
-const refsExpanded = reactive<Record<string, boolean>>({})
-const dataViewMode = reactive<Record<string, string>>({})
-const chartConfig = reactive<Record<string, ChartConfig>>({})
-
-function toggleThinking(msgId: string) {
-  thinkingExpanded[msgId] = !thinkingExpanded[msgId]
-}
-
-function toggleReferences(msgId: string) {
-  refsExpanded[msgId] = !refsExpanded[msgId]
-}
 
 function getFieldAlias(fieldName: string, columnMeta?: any[]): string | null {
   if (!columnMeta || columnMeta.length === 0) return null
-  const meta = columnMeta.find((m) => m.columnName === fieldName)
-  return meta?.columnAlias || null
+  // 兼容不同的字段名格式：name（后端返回）或 columnName（其他来源）
+  const meta = columnMeta.find((m: any) => (m.name || m.columnName) === fieldName)
+  // 兼容不同的别名字段：comment（后端返回）或 columnAlias（其他来源）
+  return meta?.comment || meta?.columnAlias || null
+}
+
+function copyMessageContent(content: string) {
+  navigator.clipboard.writeText(content).then(() => {
+    ElMessage.success('已复制')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
+
+function handleSql(sql: string) {
+  navigator.clipboard.writeText(sql).then(() => {
+    ElMessage.success('SQL已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败，请手动复制')
+  })
+}
+
+function handleReference(_reference: any) {
+}
+
+// 提交编辑（调试预览）
+function submitDebugEdit(msg: any, content: string) {
+  if (!content.trim()) {
+    ElMessage.warning('请输入内容')
+    return
+  }
+  msg.content = content.trim()
+  msg.isStreaming = false
+  debugInput.value = msg.content
+  handleDebugSend()
+}
+
+// 重新生成调试消息
+function regenerateDebugMessage(msg: any) {
+  const msgIndex = debugMessages.value.findIndex((m) => m.id === msg.id)
+  if (msgIndex <= 0) {
+    ElMessage.error('无法重新生成此消息')
+    return
+  }
+
+  const prevMsg = debugMessages.value[msgIndex - 1]
+  if (!prevMsg || prevMsg.role !== 'user') {
+    ElMessage.error('无法重新生成此消息')
+    return
+  }
+
+  debugInput.value = prevMsg.content
+  handleDebugSend()
 }
 
 function getTableName(sqlTraces: any[]) {
@@ -753,119 +566,6 @@ function copySql(sql: string) {
   })
 }
 
-function getChartConfigValue(msgId: string, key: 'chartType' | 'xField' | 'yField') {
-  return chartConfig[msgId]?.[key] || ''
-}
-
-function setChartConfigValue(msgId: string, key: 'chartType' | 'xField' | 'yField', value: string) {
-  if (!chartConfig[msgId]) {
-    chartConfig[msgId] = { chartType: 'bar', xField: '', yField: '', option: null }
-  }
-  chartConfig[msgId][key] = value
-}
-
-function initChartConfig(msgId: string, data: any[], columnMeta?: any[]) {
-  const allCols = getDataColumns(data, columnMeta)
-  const numCols = getNumericColumns(data, columnMeta)
-
-  if (allCols.length === 0 || numCols.length === 0) return
-
-  const xCol = allCols.find((c) => !numCols.some((n) => n.prop === c.prop))?.prop || allCols[0].prop
-  const yCol = numCols[0].prop
-
-  chartConfig[msgId] = {
-    chartType: 'bar',
-    xField: xCol,
-    yField: yCol,
-    option: null,
-  }
-  // 默认展示图表视图
-  dataViewMode[msgId] = 'chart'
-  updateChartOption(msgId, columnMeta)
-}
-
-function updateChartOption(msgId: string, columnMeta?: any[]) {
-  const config = chartConfig[msgId]
-  if (!config || !config.xField || !config.yField) return
-
-  const msg = debugMessages.value.find((m) => m.id === Number(msgId))
-  if (!msg?.dataResult) return
-
-  const meta = columnMeta || msg.columnMeta
-  const data = msg.dataResult
-  const xData = data.map((row: any) => String(row[config.xField] ?? ''))
-  const yData = data.map((row: any) => Number(row[config.yField]) || 0)
-
-  const xAxisName = getFieldAlias(config.xField, meta) || config.xField
-  const yAxisName = getFieldAlias(config.yField, meta) || config.yField
-
-  if (config.chartType === 'pie') {
-    config.option = {
-      tooltip: { trigger: 'item' },
-      legend: {
-        type: 'scroll',
-        orient: 'horizontal',
-        bottom: 10,
-        itemGap: 12,
-        textStyle: { fontSize: 10 },
-      },
-      grid: { top: 20, bottom: 50, left: '3%', right: '3%', containLabel: true },
-      series: [{
-        type: 'pie',
-        radius: ['25%', '55%'],
-        center: ['50%', '40%'],
-        data: xData.map((name: string, i: number) => ({ name, value: yData[i] })),
-        emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' } },
-        label: { fontSize: 10, formatter: '{b}: {d}%' },
-        labelLine: { length: 10, length2: 15, smooth: true },
-        itemStyle: { borderColor: '#fff', borderWidth: 2 },
-      }],
-    }
-  } else {
-    config.option = {
-      tooltip: { trigger: 'axis' },
-      grid: { top: 30, right: 15, bottom: 50, left: 15, containLabel: true },
-      xAxis: {
-        type: 'category',
-        name: xAxisName,
-        data: xData,
-        axisLabel: { rotate: xData.length > 10 ? 45 : 0, fontSize: 10, interval: 0 },
-        nameTextStyle: { fontSize: 11, padding: [8, 0, 0, 0] },
-        nameLocation: 'middle',
-        nameGap: 25,
-      },
-      yAxis: {
-        type: 'value',
-        name: yAxisName,
-        nameTextStyle: { fontSize: 11, padding: [0, 0, 0, 30] },
-        axisLabel: { fontSize: 10 },
-      },
-      series: [{
-        type: config.chartType,
-        data: yData,
-        barMaxWidth: 30,
-        itemStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: '#409eff' },
-            { offset: 1, color: '#79bbff' },
-          ]),
-          borderRadius: [3, 3, 0, 0],
-        },
-        smooth: config.chartType === 'line',
-        areaStyle: config.chartType === 'line' ? {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(64, 158, 255, 0.3)' },
-            { offset: 1, color: 'rgba(64, 158, 255, 0.02)' },
-          ]),
-        } : undefined,
-        lineStyle: config.chartType === 'line' ? { width: 2, color: '#409eff' } : undefined,
-        symbol: config.chartType === 'line' ? 'circle' : undefined,
-        symbolSize: config.chartType === 'line' ? 5 : undefined,
-      }],
-    }
-  }
-}
-
 // 导出Excel
 function exportToExcel(data: any[], columnMeta?: any[], fileName?: string) {
   if (!data || data.length === 0) {
@@ -886,28 +586,24 @@ function exportToExcel(data: any[], columnMeta?: any[], fileName?: string) {
 }
 
 // 导出图表为图片
-function exportChartToImage(msgId: string) {
-  const config = chartConfig[msgId]
-  if (!config?.option) {
+function exportChartToImage(chartOption: any) {
+  if (!chartOption) {
     ElMessage.warning('没有图表可导出')
     return
   }
 
   try {
-    // 创建隐藏的canvas元素
     const canvas = document.createElement('canvas')
     canvas.width = 800
     canvas.height = 400
     canvas.style.display = 'none'
     document.body.appendChild(canvas)
 
-    // 创建图表实例
     const chart = echarts.init(canvas, undefined, {
       renderer: 'canvas',
     })
-    chart.setOption(config.option)
+    chart.setOption(chartOption)
 
-    // 等待图表渲染完成
     setTimeout(() => {
       const url = chart.getDataURL({
         type: 'png',
@@ -918,7 +614,6 @@ function exportChartToImage(msgId: string) {
       chart.dispose()
       document.body.removeChild(canvas)
 
-      // 将base64转换为Blob并下载
       const link = document.createElement('a')
       link.download = `图表导出_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.png`
       link.href = url
@@ -931,11 +626,11 @@ function exportChartToImage(msgId: string) {
 }
 
 // 处理导出命令
-function handleDebugExport(cmd: string, msg: DebugMessage) {
+function handleDebugExport(cmd: string, msg: DebugMessage, chartOption?: any, dataViewMode?: string) {
   if (cmd === 'excel') {
     exportToExcel(msg.dataResult || [], msg.columnMeta)
   } else if (cmd === 'image') {
-    exportChartToImage(String(msg.id))
+    exportChartToImage(chartOption)
   }
 }
 
@@ -1249,22 +944,26 @@ async function handleSaveAccessSettings() {
 }
 
 function scrollToBottom() {
-  if (chatMessagesRef.value) {
-    chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight
-  }
+  nextTick(() => {
+    const el = document.querySelector('.preview-card .chat-panel .chat-messages') as HTMLElement
+    if (el) {
+      el.scrollTop = el.scrollHeight
+    }
+  })
 }
 
 function clearMessages() {
   debugMessages.value = []
 }
 
-async function handleDebugSend() {
-  if (!debugInput.value.trim() || !currentApp.value) return
+async function handleDebugSend(content?: string) {
+  const messageContent = (content ?? debugInput.value).trim()
+  if (!messageContent || !currentApp.value) return
 
   const userMsg: DebugMessage = {
     id: Date.now(),
     role: 'user',
-    content: debugInput.value.trim(),
+    content: messageContent,
   }
   debugMessages.value.push(userMsg)
   debugInput.value = ''
@@ -1375,19 +1074,16 @@ async function handleDebugSend() {
               aiMsg.chartType = data.chartType
             }
             aiMsg.type = 'data'
-            initChartConfig(String(aiMsg.id), data.data, data.columnMeta)
             scrollToBottom()
           } else if (data.type === 'column_meta') {
             aiMsg.columnMeta = data.data
-            if (aiMsg.dataResult && aiMsg.dataResult.length > 0) {
-              initChartConfig(String(aiMsg.id), aiMsg.dataResult, aiMsg.columnMeta)
-            }
             scrollToBottom()
           } else if (data.type === 'done') {
             aiMsg.isStreaming = false
             const elapsedTime = data.elapsed_time || data.elapsedTime
             if (elapsedTime !== undefined) {
               aiMsg.elapsedTime = Math.round(elapsedTime * 1000)
+              aiMsg.queryTime = Math.round(elapsedTime * 1000)
             }
           } else if (data.type === 'error') {
             aiMsg.content += `\n\n[错误] ${data.message}`
@@ -2153,745 +1849,6 @@ onMounted(() => {
     flex-direction: column;
     min-height: 0;
     background-color: #f1f5f9;
-  }
-
-  .chat-messages {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 16px 16px 16px 16px;
-    padding-right: 32px; /* 给滚动条留出更多空间 */
-    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-    scrollbar-gutter: stable; /* 保持滚动条占位稳定 */
-    box-sizing: border-box;
-
-    .chat-welcome {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 40px 24px;
-      text-align: center;
-
-      .welcome-icon {
-        width: 70px;
-        height: 70px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-        border-radius: 18px;
-        margin-bottom: 16px;
-        box-shadow: 0 6px 24px rgba(59, 130, 246, 0.3);
-
-        svg {
-          width: 44px;
-          height: 44px;
-        }
-      }
-
-      p {
-        font-size: 12px;
-        color: #64748b;
-        margin: 0;
-        max-width: 200px;
-        line-height: 1.6;
-      }
-    }
-
-    .message-item {
-      display: flex;
-      margin-bottom: 16px;
-
-      &.user {
-        justify-content: flex-end;
-      }
-
-      &.assistant {
-        justify-content: flex-start;
-      }
-    }
-
-    .message-content {
-      display: flex;
-      max-width: 90%;
-      min-width: 0;
-      overflow: hidden;
-      gap: 8px;
-
-      &.user {
-        flex-direction: row-reverse;
-
-        .message-bubble-wrap {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-          flex: 0 1 auto;
-          min-width: 0;
-          max-width: 100%;
-          overflow: hidden;
-          align-items: flex-end;
-        }
-
-        .message-bubble {
-          background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-          color: #ffffff;
-          border-radius: 14px 14px 4px 14px;
-          position: relative;
-          padding: 12px 14px;
-          font-size: 12px;
-          line-height: 1.6;
-          word-break: break-word;
-          overflow-wrap: break-word;
-          box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
-          width: auto;
-          max-width: 100%;
-
-          .bubble-arrow {
-            right: -14px;
-            border: 7px solid transparent;
-            border-left-color: #6366f1;
-          }
-        }
-      }
-
-      &.assistant {
-        flex-direction: row;
-
-        .message-bubble-wrap {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          flex: 1;
-          min-width: 0;
-          align-items: stretch;
-          overflow: hidden;
-        }
-
-        .message-bubble {
-          background-color: #ffffff;
-          color: #1e293b;
-          border-radius: 14px 14px 14px 4px;
-          position: relative;
-          padding: 12px 14px;
-          font-size: 12px;
-          line-height: 1.6;
-          word-break: break-word;
-          overflow-wrap: break-word;
-          overflow: hidden;
-          box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
-          width: 100%;
-
-          .bubble-arrow {
-            left: -14px;
-            border: 7px solid transparent;
-            border-right-color: #ffffff;
-          }
-        }
-      }
-
-      .avatar-label {
-        font-size: 10px;
-        font-weight: 600;
-        color: #1e293b;
-        white-space: nowrap;
-      }
-
-      .avatar-group {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 3px;
-        flex-shrink: 0;
-      }
-
-      .avatar {
-        width: 32px;
-        height: 32px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-
-        &.user-avatar {
-          background: linear-gradient(135deg, #fde8e8 0%, #fef3c7 100%);
-          box-shadow: 0 2px 6px rgba(220, 38, 38, 0.15);
-        }
-
-        &.assistant-avatar {
-          background: white;
-          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
-        }
-      }
-
-      .message-text {
-        white-space: pre-wrap;
-      }
-
-      .streaming-cursor {
-        animation: blink 1s infinite;
-        font-weight: bold;
-      }
-
-      .typing-indicator {
-        display: flex;
-        gap: 5px;
-        padding: 6px 0;
-
-        span {
-          width: 6px;
-          height: 6px;
-          background-color: #94a3b8;
-          border-radius: 50%;
-          animation: typing 1.4s infinite ease-in-out;
-
-          &:nth-child(1) { animation-delay: -0.32s; }
-          &:nth-child(2) { animation-delay: -0.16s; }
-          &:nth-child(3) { animation-delay: 0s; }
-        }
-      }
-
-      .bubble-arrow {
-        position: absolute;
-        width: 0;
-        height: 0;
-        top: 12px;
-      }
-
-      .bubble-content {
-        white-space: pre-wrap;
-      }
-
-      .thinking-process {
-        background-color: #ffffff;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
-        overflow: hidden;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-        width: 100%;
-
-        .thinking-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 12px;
-          cursor: pointer;
-          background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
-          transition: background-color 0.2s;
-
-          &:hover {
-            background: linear-gradient(90deg, #e2e8f0 0%, #f1f5f9 100%);
-          }
-
-          .el-icon {
-            font-size: 12px;
-            color: #64748b;
-            transition: transform 0.25s;
-
-            &.rotated {
-              transform: rotate(90deg);
-            }
-          }
-
-          .thinking-title {
-            font-size: 11px;
-            font-weight: 600;
-            color: #475569;
-          }
-
-          .thinking-count {
-            font-size: 10px;
-            padding: 2px 6px;
-            background-color: #e0e7ff;
-            color: #6366f1;
-            border-radius: 8px;
-            font-weight: 500;
-          }
-
-          .thinking-action {
-            margin-left: auto;
-            font-size: 10px;
-            color: #94a3b8;
-          }
-        }
-
-        .thinking-content {
-          padding: 12px;
-        }
-
-        .section-title {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 11px;
-          font-weight: 600;
-          color: #475569;
-          margin-bottom: 10px;
-          padding-left: 6px;
-          border-left: 3px solid #3b82f6;
-
-          .el-icon {
-            font-size: 12px;
-            color: #3b82f6;
-          }
-        }
-
-        .thinking-steps {
-          margin-bottom: 14px;
-        }
-
-        .steps-timeline {
-          display: flex;
-          flex-direction: column;
-          gap: 0;
-        }
-
-        .step-item {
-          display: flex;
-          gap: 10px;
-          padding-bottom: 14px;
-
-          &:last-child {
-            padding-bottom: 0;
-
-            .step-connector {
-              .connector-line {
-                display: none;
-              }
-            }
-          }
-        }
-
-        .step-connector {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          width: 16px;
-          flex-shrink: 0;
-
-          .connector-line {
-            width: 2px;
-            flex: 1;
-            background-color: #e2e8f0;
-            margin-top: 3px;
-
-            &.last {
-              display: none;
-            }
-          }
-
-          .step-dot {
-            width: 16px;
-            height: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-color: #e2e8f0;
-            border-radius: 50%;
-            border: 2px solid #ffffff;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
-            flex-shrink: 0;
-            font-size: 9px;
-
-            &.active {
-              background-color: #3b82f6;
-              animation: pulse 2s infinite;
-            }
-
-            &.completed {
-              background-color: #10b981;
-            }
-
-            .step-loading {
-              font-size: 8px;
-              color: #fff;
-            }
-
-            .step-check {
-              font-size: 8px;
-              color: #fff;
-            }
-
-            .step-number-text {
-              color: #64748b;
-              font-weight: 600;
-            }
-          }
-        }
-
-        .step-content {
-          flex: 1;
-          padding-top: 2px;
-
-          .step-title {
-            font-size: 11px;
-            font-weight: 600;
-            color: #1e293b;
-            margin-bottom: 3px;
-          }
-
-          .step-desc {
-            font-size: 10px;
-            color: #64748b;
-            line-height: 1.5;
-          }
-        }
-      }
-
-      .sql-section {
-        background-color: #0f172a;
-        border-radius: 10px;
-        overflow: hidden;
-        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
-        width: 100%;
-
-        .section-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 8px 12px;
-          background-color: #1e293b;
-          border-bottom: 1px solid #334155;
-
-          span {
-            font-size: 11px;
-            font-weight: 600;
-            color: #f1f5f9;
-          }
-
-          .sql-copy-btn {
-            margin-left: auto;
-            color: #94a3b8;
-            font-size: 10px;
-            gap: 3px;
-
-            &:hover {
-              color: #e2e8f0;
-            }
-          }
-        }
-
-        .sql-content {
-          padding: 12px;
-
-          .sql-code {
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 10px;
-            color: #e2e8f0;
-            line-height: 1.6;
-            margin: 0;
-            overflow-x: auto;
-          }
-
-          .sql-meta {
-            margin-top: 8px;
-            font-size: 10px;
-            color: #64748b;
-            text-align: right;
-          }
-        }
-      }
-
-      .chart-section {
-        background-color: #ffffff;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
-        overflow: hidden;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-        width: 100%;
-
-        .section-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 12px;
-          background: linear-gradient(90deg, #ecfdf5 0%, #ffffff 100%);
-          border-bottom: 1px solid #d1fae5;
-
-          .el-icon {
-            font-size: 14px;
-            color: #10b981;
-          }
-
-          span {
-            font-size: 12px;
-            font-weight: 600;
-            color: #065f46;
-          }
-
-          .table-name-badge {
-            font-size: 10px;
-            padding: 3px 8px;
-            background-color: #e0e7ff;
-            color: #6366f1;
-            border-radius: 5px;
-            margin-left: auto;
-          }
-
-          .chart-view-toggle {
-            margin-left: 8px;
-          }
-
-          .export-btn {
-            margin-left: 8px;
-            color: #64748b;
-            font-size: 11px;
-            padding: 3px 8px;
-
-            &:hover {
-              color: #3b82f6;
-              background-color: #eff6ff;
-            }
-          }
-        }
-
-        .chart-body {
-          padding: 10px 12px 12px;
-        }
-
-        .table-wrapper {
-          :deep(.data-table) {
-            font-size: 10px;
-            border-radius: 6px;
-            overflow: hidden;
-          }
-        }
-
-        .table-footer {
-          margin-top: 8px;
-          text-align: center;
-          font-size: 10px;
-          color: #94a3b8;
-        }
-
-        .chart-wrapper {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .chart-controls {
-          display: flex;
-          gap: 6px;
-          justify-content: flex-end;
-          padding: 0 4px;
-
-          :deep(.el-select) {
-            width: 80px;
-          }
-
-          :deep(.el-select__wrapper) {
-            border-radius: 6px;
-          }
-
-          :deep(.el-select__inner) {
-            font-size: 11px;
-            padding: 6px 10px;
-          }
-        }
-
-        .chart-container {
-          width: 100%;
-          min-height: 200px;
-        }
-
-        .chart-placeholder {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          padding: 24px;
-          background-color: #f8fafc;
-          border-radius: 6px;
-
-          p {
-            font-size: 11px;
-            color: #94a3b8;
-            margin-top: 8px;
-          }
-        }
-      }
-
-      .message-meta {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 4px;
-        margin-top: 6px;
-
-        span {
-          font-size: 10px;
-          color: #94a3b8;
-        }
-      }
-
-      .references-section {
-        background-color: #ffffff;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
-        overflow: hidden;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-        width: 100%;
-        margin-top: 8px;
-
-        .references-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 12px;
-          cursor: pointer;
-          background: linear-gradient(90deg, #f1f5f9 0%, #ffffff 100%);
-          transition: background-color 0.2s;
-
-          &:hover {
-            background: linear-gradient(90deg, #e2e8f0 0%, #f1f5f9 100%);
-          }
-
-          .el-icon {
-            font-size: 12px;
-            color: #64748b;
-            transition: transform 0.25s;
-
-            &.rotated {
-              transform: rotate(90deg);
-            }
-          }
-
-          .references-title {
-            font-size: 11px;
-            font-weight: 600;
-            color: #475569;
-          }
-
-          .references-count {
-            font-size: 10px;
-            padding: 2px 6px;
-            background-color: #dcfce7;
-            color: #16a34a;
-            border-radius: 8px;
-            font-weight: 500;
-          }
-
-          .references-action {
-            margin-left: auto;
-            font-size: 10px;
-            color: #94a3b8;
-          }
-        }
-
-        .references-content {
-          padding: 12px;
-        }
-
-        .ref-cards {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .ref-card {
-          padding: 10px;
-          background-color: #f8fafc;
-          border-radius: 6px;
-          border: 1px solid #e2e8f0;
-
-          .ref-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
-
-            .ref-name {
-              font-size: 11px;
-              font-weight: 600;
-              color: #1e293b;
-            }
-
-            .ref-score {
-              font-size: 10px;
-              padding: 2px 5px;
-              background-color: #dcfce7;
-              color: #16a34a;
-              border-radius: 5px;
-              font-weight: 500;
-            }
-          }
-
-          .ref-content {
-            font-size: 10px;
-            color: #64748b;
-            line-height: 1.5;
-          }
-        }
-      }
-    }
-  }
-
-  .chat-input-area {
-    flex-shrink: 0; /* 确保输入框不被压缩 */
-    background-color: #ffffff;
-    border-top: 1px solid #e2e8f0;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
-    padding: 10px 16px;
-    box-sizing: border-box;
-
-    .debug-input-wrapper {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      width: 100%;
-
-      .debug-input {
-        flex: 1;
-        min-width: 0;
-
-        :deep(.el-input__wrapper) {
-          border-radius: 10px;
-          border: 1px solid #e2e8f0;
-          box-shadow: 0 0 0 1px #e2e8f0 inset;
-          transition: all 0.2s;
-
-          &:hover {
-            box-shadow: 0 0 0 1px #3b82f6 inset;
-          }
-
-          &.is-focus {
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 1px #3b82f6 inset, 0 0 0 3px rgba(59, 130, 246, 0.1);
-          }
-        }
-
-        :deep(.el-input__inner) {
-          padding: 10px 14px;
-          font-size: 12px;
-        }
-      }
-
-      .send-btn {
-        flex-shrink: 0;
-        background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-        border: none;
-        border-radius: 10px;
-        width: 36px;
-        height: 36px;
-        padding: 0;
-        box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3);
-
-        &:hover:not(:disabled) {
-          transform: translateY(-1px);
-          box-shadow: 0 3px 10px rgba(59, 130, 246, 0.4);
-        }
-
-        &:disabled {
-          opacity: 0.7;
-        }
-
-        .el-icon {
-          font-size: 16px;
-        }
-      }
-    }
   }
 }
 

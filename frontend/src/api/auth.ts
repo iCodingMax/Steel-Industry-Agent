@@ -13,8 +13,13 @@ export interface LoginResponse {
 export interface UserInfo {
   id: number
   username: string
+  name?: string
+  email?: string
+  phone?: string
   role: string
+  status?: string
   createdAt: string
+  updatedAt?: string
   lastLoginAt: string
   forceChangePassword: boolean
 }

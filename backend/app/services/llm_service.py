@@ -92,7 +92,20 @@ class LLMService:
                 data = json.loads(raw_data)
 
             # 3. 解析返回结果
-            content = data["choices"][0]["message"]["content"]
+            # 检查返回数据格式是否正确
+            if (not data 
+                or "choices" not in data 
+                or not isinstance(data.get("choices"), list) 
+                or len(data["choices"]) == 0
+                or not isinstance(data["choices"][0], dict)
+                or "message" not in data["choices"][0]
+                or not isinstance(data["choices"][0]["message"], dict)):
+                logger.error(f"LLM返回格式异常: raw_data={raw_data[:500] if raw_data else 'None'}")
+                raise Exception("大模型返回格式异常：返回数据结构不符合预期")
+            
+            content = data["choices"][0]["message"].get("content", "")
+            if content is None:
+                content = ""
             logger.info(f"LLM调用完成: 模型={self.model}, 输入长度={len(prompt)}, 输出长度={len(content)}")
             return content
 
@@ -179,11 +192,15 @@ class LLMService:
                                 break
                             try:
                                 data = json.loads(data_str)
-                                if "choices" in data and len(data["choices"]) > 0:
+                                if ("choices" in data 
+                                    and isinstance(data["choices"], list) 
+                                    and len(data["choices"]) > 0
+                                    and isinstance(data["choices"][0], dict)):
                                     delta = data["choices"][0].get("delta", {})
-                                    content = delta.get("content", "")
-                                    if content:
-                                        yield content
+                                    if isinstance(delta, dict):
+                                        content = delta.get("content", "")
+                                        if content:
+                                            yield content
                             except json.JSONDecodeError:
                                 logger.debug(f"JSON解析失败，跳过该行: {line[:100]}")
                                 continue
@@ -227,14 +244,15 @@ class LLMService:
         default_prompt = """你是一个意图分类助手，请根据用户问题判断其意图类型。
 
 分类规则：
-- knowledge: 用户仅询问工艺知识、技术规范、操作规程、概念解释等文档类问题，以及问候语、闲聊等通用对话
+- knowledge: 用户仅询问工艺知识、技术规范、操作规程、概念解释、操作建议等文档类问题，以及问候语、闲聊等通用对话
 - data: 用户仅查询生产数据、指标数值、统计报表、图表展示等数据类问题
 - hybrid: 用户问题同时包含知识查询和数据查询两部分意图
 
 判断要点：
-- 如果问题中出现"展示"、"查询"、"统计"、"次数"、"数量"等数据相关关键词，同时出现"解释"、"什么是"、"原理"等知识相关关键词，则属于hybrid
-- 包含"并且"、"同时"、"另外"、"以及"等连接词连接不同类型的问题时，通常属于hybrid
-- 只要问题中有一部分涉及数据查询，另一部分涉及知识问答，就是hybrid
+- 如果问题中包含分号";"、问号"?"、或逗号","分隔的多个子问题，检查是否同时涉及数据查询和知识问答
+- 如果问题前半部分涉及"展示"、"查询"、"统计"、"次数"、"数量"等数据相关关键词，后半部分涉及"如何"、"应该"、"解释"、"什么是"、"原理"、"调整"等知识相关关键词，则属于hybrid
+- 包含"并且"、"同时"、"另外"、"以及"、"？"等连接词连接不同类型的问题时，通常属于hybrid
+- 只要问题中有一部分涉及数据查询（如展示数据、统计数值），另一部分涉及知识问答（如操作建议、工艺解释），就是hybrid
 - 简单问候语（如hello、你好、hi等）属于knowledge意图
 
 示例：
@@ -245,6 +263,7 @@ class LLMService:
 - "展示2023年8月的每日吹炼次数，并且解释什么是高炉炼铁的还原过程" → hybrid
 - "转炉炼钢的吹炼制度有哪些？上个月吹炼次数是多少" → hybrid
 - "什么是铁水预处理？同时统计一下近一周的钢水产量" → hybrid
+- "使用折线图展示2025年9月第一周的炉况报告打分值；当前压差不稳，炉料质量不是很好，应该如何调整以减少炉况波动?" → hybrid
 
 请直接返回分类结果（knowledge/data/hybrid），不要返回其他内容。"""
 

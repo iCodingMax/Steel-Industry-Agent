@@ -10,13 +10,33 @@
 注意：
 - 使用 PostgreSQL JSONB 类型存储结构化数据（references、sql_traces、thinking_steps等）
 - created_at/updated_at 使用 SQLAlchemy func.now() 自动生成
+- 时间统一返回北京时间（UTC+8），确保前端显示一致
 """
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.core.base_model import Base
+
+# 北京时间时区
+CST = timezone(timedelta(hours=8))
+
+
+def _to_cst_iso(dt: datetime | None) -> str | None:
+    """
+    将时间转换为北京时间ISO格式字符串
+
+    :param dt: 原始时间（通常是UTC）
+    :return: 北京时间ISO格式字符串，如 '2024-01-15T14:30:00+08:00'
+    """
+    if dt is None:
+        return None
+    # 如果是naive datetime（无时区信息），假设为UTC时间
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    # 转换为北京时间
+    return dt.astimezone(CST).isoformat()
 
 
 class Session(Base):
@@ -38,7 +58,7 @@ class Session(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
 
     def to_dict(self) -> dict:
-        """转换为字典"""
+        """转换为字典，时间统一转换为北京时间"""
         return {
             "id": self.id,
             "userId": self.user_id,
@@ -46,8 +66,8 @@ class Session(Base):
             "intentType": self.intent_type,
             "llmConfigId": self.llm_config_id,
             "status": self.status,
-            "createdAt": self.created_at.isoformat() if self.created_at else None,
-            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "createdAt": _to_cst_iso(self.created_at),
+            "updatedAt": _to_cst_iso(self.updated_at),
         }
 
 
@@ -75,7 +95,7 @@ class Message(Base):
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
 
     def to_dict(self) -> dict:
-        """转换为字典"""
+        """转换为字典，时间统一转换为北京时间"""
         return {
             "id": self.id,
             "sessionId": self.session_id,
@@ -89,7 +109,7 @@ class Message(Base):
             "chartType": self.chart_type,
             "thinkingSteps": self.thinking_steps,
             "queryTime": self.query_time,
-            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "createdAt": _to_cst_iso(self.created_at),
         }
 
 
@@ -113,7 +133,7 @@ class Trace(Base):
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
 
     def to_dict(self) -> dict:
-        """转换为字典"""
+        """转换为字典，时间统一转换为北京时间"""
         return {
             "id": self.id,
             "sessionId": self.session_id,
@@ -123,5 +143,5 @@ class Trace(Base):
             "sourceName": self.source_name,
             "content": self.content,
             "score": self.score,
-            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "createdAt": _to_cst_iso(self.created_at),
         }

@@ -288,11 +288,21 @@ export const useChatStore = defineStore('chat', () => {
               // SQL溯源
               msg.sqlTraces = event.data
               break
+            case 'column_meta':
+              // 列元数据（用于图表字段映射）
+              msg.columnMeta = event.data
+              break
             case 'data_result':
               // 数据查询结果
               msg.dataResult = event.data
-              msg.columnMeta = event.columnMeta
-              msg.chartType = event.chartType
+              // 如果data_result事件中包含columnMeta，优先使用
+              if (event.columnMeta) {
+                msg.columnMeta = event.columnMeta
+              }
+              // 如果没有指定chartType，使用后端建议的类型
+              if (event.chartType) {
+                msg.chartType = event.chartType
+              }
               msg.type = 'data'
               break
             case 'content':
@@ -302,6 +312,7 @@ export const useChatStore = defineStore('chat', () => {
             case 'done':
               // 流式完成，包含耗时
               msg.queryTime = Math.round(event.elapsed_time * 1000)
+              msg.elapsedTime = Math.round(event.elapsed_time * 1000)
               msg.isStreaming = false
               break
             case 'error':
