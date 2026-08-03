@@ -49,9 +49,12 @@ async def get_db_session() -> AsyncSession:
     async with SystemAsyncSession() as session:
         try:
             yield session
-            await session.commit()
+            # 若业务代码已显式提交/回滚则跳过；否则统一提交，确保改动落库
+            if session.is_active:
+                await session.commit()
         except Exception:
-            await session.rollback()
+            if session.is_active:
+                await session.rollback()
             raise
         finally:
             await session.close()
@@ -62,9 +65,11 @@ async def get_pgvector_session() -> AsyncSession:
     async with PGVectorAsyncSession() as session:
         try:
             yield session
-            await session.commit()
+            if session.is_active:
+                await session.commit()
         except Exception:
-            await session.rollback()
+            if session.is_active:
+                await session.rollback()
             raise
         finally:
             await session.close()
@@ -75,6 +80,8 @@ async def init_db() -> None:
     logger.info("初始化数据库连接...")
 
     import app.models.user  # noqa: F401
+    import app.models.chat_user  # noqa: F401
+    import app.models.oauth_config  # noqa: F401
     import app.models.datasource  # noqa: F401
     import app.models.metric  # noqa: F401
     import app.models.dimension  # noqa: F401
@@ -150,5 +157,37 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN applications.datasource_ids IS '关联数据源ID列表'"
                 ))
                 logger.info("已为 applications 表添加 datasource_ids 列")
+
+        # users 表添加 user_source 字段
+        if 'users' in inspector.get_table_names():
+            existing_cols = {col['name'] for col in inspector.get_columns('users')}
+            if 'user_source' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN user_source VARCHAR(20) DEFAULT 'local'"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN users.user_source IS '用户来源: local/oauth2'"
+                ))
+                logger.info("已为 users 表添加 user_source 列")
+
+        # chat_users 表添加密码相关字段
+        if 'chat_users' in inspector.get_table_names():
+            existing_cols = {col['name'] for col in inspector.get_columns('chat_users')}
+            if 'password_hash' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE chat_users ADD COLUMN password_hash VARCHAR(255) DEFAULT NULL"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN chat_users.password_hash IS '密码哈希（用于账号密码登录）'"
+                ))
+                logger.info("已为 chat_users 表添加 password_hash 列")
+            if 'force_change_password' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE chat_users ADD COLUMN force_change_password BOOLEAN DEFAULT FALSE"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN chat_users.force_change_password IS '是否强制改密（OAuth首次登录后设置密码）'"
+                ))
+                logger.info("已为 chat_users 表添加 force_change_password 列")
 
     await conn.run_sync(_add_missing_columns)

@@ -1,51 +1,128 @@
 <template>
-  <div class="settings-view">
+  <div class="user-manage-view">
     <div class="page-header">
-      <h2 class="page-title">系统设置</h2>
+      <h1 class="page-title">系统设置</h1>
     </div>
 
     <el-tabs v-model="activeTab" class="settings-tabs">
-      <el-tab-pane label="用户管理" name="user">
-        <div class="config-section">
-          <h3 class="section-title">
-            <el-icon><User /></el-icon>
-            个人信息
-          </h3>
-          <el-descriptions :column="1" border class="config-desc">
-            <el-descriptions-item label="用户名">
-              <span class="config-value">{{ userInfo.username }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="角色">
-              <el-tag type="primary" effect="plain">{{ userInfo.role === 'admin' ? '管理员' : userInfo.role }}</el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="创建时间">
-              <span class="config-value">{{ formatDate(userInfo.createdAt) }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="最后登录">
-              <span class="config-value">{{ formatDate(userInfo.lastLoginAt) }}</span>
-            </el-descriptions-item>
-          </el-descriptions>
-        </div>
+      <el-tab-pane label="用户列表" name="list">
+        <div class="tab-content">
+          <div class="tab-toolbar">
+            <div class="toolbar-left">
+              <el-input
+                v-model="searchKeyword"
+                placeholder="搜索用户名/姓名/邮箱"
+                style="width: 240px"
+                clearable
+                @keyup.enter="handleSearch"
+              >
+                <template #prefix>
+                  <el-icon><Search /></el-icon>
+                </template>
+              </el-input>
+              <el-select
+                v-model="statusFilter"
+                placeholder="状态筛选"
+                style="width: 120px"
+                clearable
+              >
+                <el-option label="已启用" value="active" />
+                <el-option label="已禁用" value="disabled" />
+              </el-select>
+              <el-button type="primary" @click="handleSearch">
+                <el-icon><Search /></el-icon>
+                查询
+              </el-button>
+            </div>
+            <el-button type="success" @click="handleAddUser">
+              <el-icon><Plus /></el-icon>
+              创建用户
+            </el-button>
+          </div>
 
-        <div class="config-section">
-          <h3 class="section-title">
-            <el-icon><Lock /></el-icon>
-            修改密码
-          </h3>
-          <el-form :model="pwdForm" label-width="100px" style="max-width: 400px" :rules="pwdRules" ref="pwdFormRef">
-            <el-form-item label="当前密码" prop="oldPassword">
-              <el-input v-model="pwdForm.oldPassword" type="password" show-password placeholder="请输入当前密码" />
-            </el-form-item>
-            <el-form-item label="新密码" prop="newPassword">
-              <el-input v-model="pwdForm.newPassword" type="password" show-password placeholder="请输入新密码(至少6位)" />
-            </el-form-item>
-            <el-form-item label="确认新密码" prop="confirmPassword">
-              <el-input v-model="pwdForm.confirmPassword" type="password" show-password placeholder="请再次输入新密码" />
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" @click="handleChangePwd" :loading="pwdChanging">确认修改</el-button>
-            </el-form-item>
-          </el-form>
+          <el-table :data="users" style="width: 100%" v-loading="loading">
+            <el-table-column prop="name" label="姓名" min-width="120">
+              <template #default="{ row }">
+                <span>{{ row.name || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="username" label="用户名" min-width="140" />
+            <el-table-column label="用户来源" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.userSource === 'oauth2' ? 'primary' : 'info'" effect="plain">
+                  {{ row.userSource === 'oauth2' ? 'OAuth2' : '本地创建' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag
+                  :type="row.status === 'active' ? 'success' : 'danger'"
+                  effect="plain"
+                >
+                  {{ row.status === 'active' ? '已启用' : '已禁用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="email" label="邮箱" min-width="180">
+              <template #default="{ row }">
+                <span>{{ row.email || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="phone" label="手机号" width="130">
+              <template #default="{ row }">
+                <span>{{ row.phone || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="role" label="角色" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.role === 'admin' ? 'primary' : 'info'" effect="plain">
+                  {{ row.role === 'admin' ? '管理员' : '普通用户' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="创建时间" width="170">
+              <template #default="{ row }">
+                {{ formatDate(row.createdAt) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="280" fixed="right">
+              <template #default="{ row }">
+                <div class="action-btns">
+                  <el-switch
+                    v-model="row.status"
+                    active-value="active"
+                    inactive-value="disabled"
+                    @change="handleToggleStatus(row)"
+                    :disabled="row.username === 'admin'"
+                  />
+                  <el-button link type="primary" @click="handleEditUser(row)">编辑</el-button>
+                  <el-button link type="warning" @click="handleResetPassword(row)">重置密码</el-button>
+                  <el-button
+                    link
+                    type="danger"
+                    @click="handleDeleteUser(row)"
+                    :disabled="row.username === 'admin' || row.id === currentUserId"
+                  >
+                    删除
+                  </el-button>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="pagination-container">
+            <el-pagination
+              v-model:current-page="page"
+              v-model:page-size="pageSize"
+              :page-sizes="[10, 20, 50, 100]"
+              :total="total"
+              layout="total, sizes, prev, pager, next, jumper"
+              background
+              @size-change="loadUsers"
+              @current-change="loadUsers"
+            />
+          </div>
         </div>
       </el-tab-pane>
 
@@ -90,52 +167,155 @@
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- 创建/编辑用户对话框 -->
+    <el-dialog
+      v-model="userDialogVisible"
+      :title="isEditUser ? '编辑用户' : '创建用户'"
+      width="500px"
+      destroy-on-close
+    >
+      <el-form :model="userForm" label-width="100px" :rules="userRules" ref="userFormRef">
+        <el-form-item label="用户名" prop="username">
+          <el-input
+            v-model="userForm.username"
+            placeholder="请输入用户名"
+            :disabled="isEditUser"
+          />
+        </el-form-item>
+        <el-form-item v-if="!isEditUser" label="密码" prop="password">
+          <el-input v-model="userForm.password" type="password" show-password placeholder="请输入密码(至少6位)" />
+        </el-form-item>
+        <el-form-item v-if="!isEditUser" label="确认密码" prop="confirmPassword">
+          <el-input v-model="userForm.confirmPassword" type="password" show-password placeholder="请再次输入密码" />
+        </el-form-item>
+        <el-form-item label="姓名" prop="name">
+          <el-input v-model="userForm.name" placeholder="请输入姓名" />
+        </el-form-item>
+        <el-form-item label="邮箱" prop="email">
+          <el-input v-model="userForm.email" placeholder="请输入邮箱" />
+        </el-form-item>
+        <el-form-item label="手机号" prop="phone">
+          <el-input v-model="userForm.phone" placeholder="请输入手机号（选填）" />
+        </el-form-item>
+        <el-form-item label="角色" prop="role">
+          <el-select v-model="userForm.role" style="width: 100%">
+            <el-option label="管理员" value="admin" />
+            <el-option label="普通用户" value="user" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="userDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveUser" :loading="saving">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重置密码对话框 -->
+    <el-dialog
+      v-model="pwdDialogVisible"
+      title="重置密码"
+      width="420px"
+      destroy-on-close
+    >
+      <el-form :model="pwdForm" label-width="100px" :rules="pwdRules" ref="pwdFormRef">
+        <el-form-item label="新密码" prop="password">
+          <el-input v-model="pwdForm.password" type="password" show-password placeholder="请输入新密码(至少6位)" />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input v-model="pwdForm.confirmPassword" type="password" show-password placeholder="请再次输入密码" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pwdDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSavePassword" :loading="pwdSaving">确认修改</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { User, Lock, Key } from '@element-plus/icons-vue'
-import { getUserInfoApi, changePasswordApi, type UserInfo } from '@/api/auth'
+import { ref, reactive, onMounted } from 'vue'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { Search, Plus, Key } from '@element-plus/icons-vue'
+import {
+  getUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  resetUserPassword,
+  toggleUserStatus,
+  type UserInfo,
+  type UserCreateForm,
+  type UserUpdateForm,
+} from '@/api/user'
+import { getUserInfoApi } from '@/api/auth'
+import { getOAuthConfig, saveOAuthConfig } from '@/api/oauth'
 
-const route = useRoute()
-const router = useRouter()
-const activeTab = ref('user')
-
-const pwdChanging = ref(false)
-const pwdFormRef = ref<FormInstance>()
-
+const activeTab = ref('list')
+const loading = ref(false)
+const saving = ref(false)
+const pwdSaving = ref(false)
 const oauthSaving = ref(false)
+
+const searchKeyword = ref('')
+const statusFilter = ref('')
+const page = ref(1)
+const pageSize = ref(10)
+const total = ref(0)
+
+const users = ref<UserInfo[]>([])
+const currentUserId = ref(0)
+
+const userDialogVisible = ref(false)
+const pwdDialogVisible = ref(false)
+
+const isEditUser = ref(false)
+const editUserId = ref<number | null>(null)
+const pwdUserId = ref<number | null>(null)
+
+const userFormRef = ref<FormInstance>()
+const pwdFormRef = ref<FormInstance>()
 const oauthFormRef = ref<FormInstance>()
 
-const userInfo = ref<UserInfo>({
-  id: 0,
+const userForm = reactive<UserCreateForm & { confirmPassword?: string }>({
   username: '',
-  role: '',
-  createdAt: '',
-  lastLoginAt: '',
-  forceChangePassword: false,
+  password: '',
+  confirmPassword: '',
+  name: '',
+  email: '',
+  phone: '',
+  role: 'user',
 })
 
 const pwdForm = reactive({
-  oldPassword: '',
-  newPassword: '',
+  password: '',
   confirmPassword: '',
 })
 
-const pwdRules: FormRules = {
-  oldPassword: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
-  newPassword: [
-    { required: true, message: '请输入新密码', trigger: 'blur' },
+const oauthForm = reactive({
+  authorizationUrl: '',
+  tokenUrl: '',
+  userInfoUrl: '',
+  scope: '',
+  clientId: '',
+  clientSecret: '',
+  fieldMapping: '',
+  redirectUrl: 'http://localhost:5173/admin/api/oauth2',
+  enabled: false,
+})
+
+const userRules: FormRules = {
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  password: [
+    { required: true, message: '请输入密码', trigger: 'blur' },
     { min: 6, message: '密码长度不能少于6位', trigger: 'blur' },
   ],
   confirmPassword: [
-    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    { required: true, message: '请再次输入密码', trigger: 'blur' },
     {
       validator: (_rule, value, callback) => {
-        if (value !== pwdForm.newPassword) {
+        if (value !== userForm.password) {
           callback(new Error('两次密码输入不一致'))
         } else {
           callback()
@@ -146,17 +326,25 @@ const pwdRules: FormRules = {
   ],
 }
 
-const oauthForm = reactive({
-  authorizationUrl: '',
-  tokenUrl: '',
-  userInfoUrl: '',
-  scope: '',
-  clientId: '',
-  clientSecret: '',
-  fieldMapping: '',
-  redirectUrl: '',
-  enabled: false,
-})
+const pwdRules: FormRules = {
+  password: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, message: '密码长度不能少于6位', trigger: 'blur' },
+  ],
+  confirmPassword: [
+    { required: true, message: '请再次输入密码', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        if (value !== pwdForm.password) {
+          callback(new Error('两次密码输入不一致'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+}
 
 const oauthRules: FormRules = {
   authorizationUrl: [{ required: true, message: '请输入授权端地址', trigger: 'blur' }],
@@ -169,51 +357,196 @@ const oauthRules: FormRules = {
   redirectUrl: [{ required: true, message: '请输入回调地址', trigger: 'blur' }],
 }
 
-watch(() => route.path, (newPath) => {
-  if (newPath.includes('oauth')) {
-    activeTab.value = 'oauth'
-  } else {
-    activeTab.value = 'user'
-  }
-}, { immediate: true })
+function formatDate(dateStr: string | null) {
+  if (!dateStr) return '-'
+  const date = new Date(dateStr)
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
 
-watch(activeTab, (newTab) => {
-  // 不再自动导航到子路由，保持在当前页面
-})
-
-async function loadUserInfo() {
+async function loadCurrentUser() {
   try {
     const res: any = await getUserInfoApi()
     if (res.code === 0 && res.data) {
-      userInfo.value = res.data
+      currentUserId.value = res.data.id
     }
   } catch (e) {
-    console.error('加载用户信息失败', e)
+    console.error('获取当前用户信息失败', e)
   }
 }
 
-async function handleChangePwd() {
+async function loadUsers() {
+  loading.value = true
+  try {
+    const params: any = {
+      page: page.value,
+      pageSize: pageSize.value,
+    }
+    if (searchKeyword.value) {
+      params.keyword = searchKeyword.value
+    }
+    if (statusFilter.value) {
+      params.status = statusFilter.value
+    }
+    const res: any = await getUsers(params)
+    if (res.code === 0 && res.data) {
+      users.value = res.data.list || []
+      total.value = res.data.total || 0
+    }
+  } catch (e) {
+    console.error('加载用户列表失败', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+function handleSearch() {
+  page.value = 1
+  loadUsers()
+}
+
+function handleAddUser() {
+  isEditUser.value = false
+  editUserId.value = null
+  Object.assign(userForm, {
+    username: '',
+    password: '',
+    confirmPassword: '',
+    name: '',
+    email: '',
+    phone: '',
+    role: 'user',
+  })
+  userDialogVisible.value = true
+}
+
+function handleEditUser(row: UserInfo) {
+  isEditUser.value = true
+  editUserId.value = row.id
+  Object.assign(userForm, {
+    username: row.username,
+    name: row.name || '',
+    email: row.email || '',
+    phone: row.phone || '',
+    role: row.role,
+  })
+  userDialogVisible.value = true
+}
+
+async function handleSaveUser() {
+  if (!userFormRef.value) return
+  await userFormRef.value.validate(async (valid) => {
+    if (!valid) return
+    saving.value = true
+    try {
+      if (isEditUser.value && editUserId.value) {
+        const updateData: UserUpdateForm = {
+          name: userForm.name,
+          email: userForm.email,
+          phone: userForm.phone,
+          role: userForm.role,
+        }
+        const res: any = await updateUser(editUserId.value, updateData)
+        if (res.code === 0) {
+          ElMessage.success('更新成功')
+          userDialogVisible.value = false
+          await loadUsers()
+        }
+      } else {
+        const createData: UserCreateForm = {
+          username: userForm.username,
+          password: userForm.password,
+          name: userForm.name,
+          email: userForm.email,
+          phone: userForm.phone,
+          role: userForm.role,
+        }
+        const res: any = await createUser(createData)
+        if (res.code === 0) {
+          ElMessage.success('创建成功')
+          userDialogVisible.value = false
+          await loadUsers()
+        }
+      }
+    } catch (e: any) {
+      if (e?.message) {
+        ElMessage.error(e.message)
+      }
+    } finally {
+      saving.value = false
+    }
+  })
+}
+
+async function handleToggleStatus(row: UserInfo) {
+  try {
+    const res: any = await toggleUserStatus(row.id)
+    if (res.code === 0) {
+      ElMessage.success(row.status === 'active' ? '已启用' : '已禁用')
+      await loadUsers()
+    }
+  } catch (e: any) {
+    if (e?.message) {
+      ElMessage.error(e.message)
+    }
+  }
+}
+
+function handleResetPassword(row: UserInfo) {
+  pwdUserId.value = row.id
+  pwdForm.password = ''
+  pwdForm.confirmPassword = ''
+  pwdDialogVisible.value = true
+}
+
+async function handleSavePassword() {
   if (!pwdFormRef.value) return
   await pwdFormRef.value.validate(async (valid) => {
     if (!valid) return
-    pwdChanging.value = true
+    pwdSaving.value = true
     try {
-      const res: any = await changePasswordApi({
-        oldPassword: pwdForm.oldPassword,
-        newPassword: pwdForm.newPassword,
-      })
-      if (res.code === 0) {
-        ElMessage.success('密码修改成功')
-        pwdForm.oldPassword = ''
-        pwdForm.newPassword = ''
-        pwdForm.confirmPassword = ''
+      if (pwdUserId.value) {
+        const res: any = await resetUserPassword(pwdUserId.value, {
+          password: pwdForm.password,
+        })
+        if (res.code === 0) {
+          ElMessage.success('密码重置成功')
+          pwdDialogVisible.value = false
+        }
       }
-    } catch (e) {
-      console.error('修改密码失败', e)
+    } catch (e: any) {
+      if (e?.message) {
+        ElMessage.error(e.message)
+      }
     } finally {
-      pwdChanging.value = false
+      pwdSaving.value = false
     }
   })
+}
+
+async function handleDeleteUser(row: UserInfo) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除用户「${row.username}」吗？删除后不可恢复！`,
+      '删除确认',
+      {
+        type: 'warning',
+      }
+    )
+    const res: any = await deleteUser(row.id)
+    if (res.code === 0) {
+      ElMessage.success('删除成功')
+      await loadUsers()
+    }
+  } catch {
+    // 用户取消
+  }
 }
 
 async function handleSaveOAuth() {
@@ -222,43 +555,81 @@ async function handleSaveOAuth() {
     if (!valid) return
     oauthSaving.value = true
     try {
-      const res: any = await fetch('/api/v1/system-settings/oauth', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(oauthForm),
-      })
-      const data = await res.json()
-      if (data.code === 0) {
+      // 解析字段映射
+      let fieldMappingObj: Record<string, string> = {}
+      if (typeof oauthForm.fieldMapping === 'string') {
+        try {
+          fieldMappingObj = JSON.parse(oauthForm.fieldMapping)
+        } catch {
+          ElMessage.error('字段映射JSON格式错误')
+          return
+        }
+      } else {
+        fieldMappingObj = oauthForm.fieldMapping as Record<string, string>
+      }
+
+      const configData = {
+        configType: 'system',
+        authorizationUrl: oauthForm.authorizationUrl,
+        tokenUrl: oauthForm.tokenUrl,
+        userInfoUrl: oauthForm.userInfoUrl,
+        scope: oauthForm.scope,
+        clientId: oauthForm.clientId,
+        clientSecret: oauthForm.clientSecret,
+        fieldMapping: fieldMappingObj,
+        redirectUrl: oauthForm.redirectUrl,
+        enabled: oauthForm.enabled,
+      }
+
+      const res: any = await saveOAuthConfig(configData)
+      if (res.code === 0) {
         ElMessage.success('OAuth2配置保存成功')
       } else {
-        ElMessage.error(data.message || '保存失败')
+        ElMessage.error(res.message || '保存失败')
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('保存OAuth2配置失败', e)
-      ElMessage.error('保存OAuth2配置失败，请重试')
+      ElMessage.error(e?.message || '保存OAuth2配置失败，请重试')
     } finally {
       oauthSaving.value = false
     }
   })
 }
 
-function formatDate(dateStr?: string) {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString('zh-CN')
+async function loadOAuthConfig() {
+  try {
+    const res: any = await getOAuthConfig('system')
+    if (res.code === 0 && res.data) {
+      const data = res.data
+      oauthForm.authorizationUrl = data.authorizationUrl || ''
+      oauthForm.tokenUrl = data.tokenUrl || ''
+      oauthForm.userInfoUrl = data.userInfoUrl || ''
+      oauthForm.scope = data.scope || ''
+      oauthForm.clientId = data.clientId || ''
+      oauthForm.clientSecret = data.clientSecret || ''
+      oauthForm.redirectUrl = data.redirectUrl || ''
+      oauthForm.enabled = data.enabled || false
+      // 字段映射处理
+      if (data.fieldMapping && typeof data.fieldMapping === 'object') {
+        oauthForm.fieldMapping = JSON.stringify(data.fieldMapping)
+      } else if (typeof data.fieldMapping === 'string') {
+        oauthForm.fieldMapping = data.fieldMapping
+      }
+    }
+  } catch (e) {
+    console.error('加载OAuth配置失败', e)
+  }
 }
 
 onMounted(() => {
-  loadUserInfo()
-  if (route.path.includes('oauth')) {
-    activeTab.value = 'oauth'
-  }
+  loadCurrentUser()
+  loadUsers()
+  loadOAuthConfig()
 })
 </script>
 
 <style lang="scss" scoped>
-.settings-view {
+.user-manage-view {
   height: 100%;
 }
 
@@ -270,12 +641,40 @@ onMounted(() => {
   font-size: 20px;
   font-weight: 600;
   color: $text-primary;
+  margin: 0;
 }
 
 .settings-tabs {
   :deep(.el-tabs__header) {
     margin-bottom: 24px;
   }
+}
+
+.tab-content {
+  .tab-toolbar {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .toolbar-left {
+    display: flex;
+    gap: 12px;
+  }
+
+  .pagination-container {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 16px;
+  }
+}
+
+.action-btns {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+  gap: 4px;
 }
 
 .config-section {
@@ -299,14 +698,5 @@ onMounted(() => {
     color: $primary-color;
     font-size: 18px;
   }
-}
-
-.config-desc {
-  margin-bottom: 16px;
-}
-
-.config-value {
-  font-family: 'Courier New', monospace;
-  color: $text-primary;
 }
 </style>

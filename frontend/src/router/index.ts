@@ -8,6 +8,24 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', requiresAuth: false },
   },
   {
+    path: '/app-login',
+    name: 'AppLogin',
+    component: () => import('@/views/AppLoginView.vue'),
+    meta: { title: '应用登录', requiresAuth: false },
+  },
+  {
+    path: '/admin/api/oauth2',
+    name: 'OAuthCallback',
+    component: () => import('@/views/OAuthCallbackView.vue'),
+    meta: { title: '系统认证回调', requiresAuth: false },
+  },
+  {
+    path: '/chat/api/auth/oauth2',
+    name: 'AppOAuthCallback',
+    component: () => import('@/views/AppOAuthCallbackView.vue'),
+    meta: { title: '对话用户认证回调', requiresAuth: false },
+  },
+  {
     path: '/chat/embed/:appId',
     name: 'ChatEmbed',
     component: () => import('@/views/ChatEmbedView.vue'),
@@ -69,24 +87,16 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '模型配置', icon: 'Monitor' },
       },
       {
+        path: 'chat-users',
+        name: 'ChatUsers',
+        component: () => import('@/views/ChatUserView.vue'),
+        meta: { title: '对话用户', icon: 'UserFilled' },
+      },
+      {
         path: 'system-settings',
         name: 'SystemSettings',
         component: () => import('@/views/SystemSettingsView.vue'),
         meta: { title: '系统设置', icon: 'Setting' },
-        children: [
-          {
-            path: 'user',
-            name: 'UserSettings',
-            component: () => import('@/views/SystemSettingsView.vue'),
-            meta: { title: '用户管理', icon: 'User' },
-          },
-          {
-            path: 'oauth',
-            name: 'OAuthSettings',
-            component: () => import('@/views/SystemSettingsView.vue'),
-            meta: { title: '登录认证', icon: 'Lock' },
-          },
-        ],
       },
     ],
   },

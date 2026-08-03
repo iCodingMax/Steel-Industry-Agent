@@ -1,4 +1,4 @@
-﻿"""
+"""
 认证API
 """
 from fastapi import APIRouter, Depends
@@ -24,6 +24,7 @@ async def login(
     return success_response(data={
         "token": result["token"],
         "expiresIn": result["expiresIn"],
+        "user": result["user"],
     })
 
 

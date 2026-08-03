@@ -61,7 +61,11 @@ class AuthService:
 
         # 更新最后登录时间（使用本地时间，避免时区转换问题）
         user.last_login_at = datetime.now()
-        await db.commit()
+        # refresh 同步数据库生成的 updated_at（onupdate=func.now()）到内存，
+        # 避免后续 to_dict() 访问过期属性时触发惰性加载，从而抛出
+        # SQLAlchemy 的 MissingGreenlet（greenlet_spawn 未就绪场景下）
+        await db.flush()
+        await db.refresh(user)
 
         # 生成JWT令牌
         token = create_access_token(
@@ -71,10 +75,14 @@ class AuthService:
 
         logger.info(f"用户登录成功: {user.username}, 角色={user.role}")
 
+        # 在 session 有效状态下提前取 to_dict()，避免 commit 后属性过期
+        user_dict = user.to_dict()
+
+        # 由 get_db_session 统一提交事务，保证会话上下文完整
         return {
             "token": token,
             "expiresIn": settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            "user": user.to_dict(),
+            "user": user_dict,
         }
 
     @staticmethod

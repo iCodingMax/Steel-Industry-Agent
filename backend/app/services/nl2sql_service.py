@@ -349,6 +349,108 @@ class NL2SQLEngine:
     }
 
     @staticmethod
+    def _parse_time_range(question: str) -> Optional[dict]:
+        """
+        从中文问题中解析时间范围
+
+        解析规则：
+        - "2023年8月" -> 2023-08-01 到 2023-09-01
+        - "2023年" -> 2023-01-01 到 2024-01-01
+        - "8月" -> 当前年份的8月1日到9月1日
+        - "2023年8月15日" -> 2023-08-15 到 2023-08-16
+        - "2023年8月第一周" -> 2023-08-01 到 2023-08-08
+        - "最近一周" -> 7天前到今天
+        - "本月" -> 本月1日到下个月1日
+
+        :param question: 用户问题
+        :return: {"start": "2023-08-01", "end": "2023-09-01", "field": "PRODUCE_DATE"} 或 None
+        """
+        today = datetime.date.today()
+        current_year = today.year
+        
+        # 匹配模式：从具体到一般
+        patterns = [
+            # YYYY年MM月DD日
+            (r'(\d{4})年(\d{1,2})月(\d{1,2})日', lambda m: (
+                datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))),
+                datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)) + datetime.timedelta(days=1))
+            )),
+            # YYYY年MM月第N周
+            (r'(\d{4})年(\d{1,2})月第([一二三四五六日])周', lambda m: (
+                datetime.date(int(m.group(1)), int(m.group(2)), 1),
+                datetime.date(int(m.group(1)), int(m.group(2)), 8)
+            )),
+            # YYYY年MM月
+            (r'(\d{4})年(\d{1,2})月(?!份)', lambda m: _get_month_range(int(m.group(1)), int(m.group(2)))),
+            # YYYY年
+            (r'(\d{4})年(?!.*月)', lambda m: (
+                datetime.date(int(m.group(1)), 1, 1),
+                datetime.date(int(m.group(1)) + 1, 1, 1)
+            )),
+            # MM月DD日
+            (r'(\d{1,2})月(\d{1,2})日', lambda m: (
+                datetime.date(current_year, int(m.group(1)), int(m.group(2))),
+                datetime.date(current_year, int(m.group(1)), int(m.group(2)) + datetime.timedelta(days=1))
+            )),
+            # MM月 (没有年份，使用当前年份)
+            (r'(\d{1,2})月(?!.*日)', lambda m: _get_month_range(current_year, int(m.group(1)))),
+            # 最近一周
+            (r'最近(一|1)周|过去(一|1)周', lambda m: (
+                today - datetime.timedelta(days=7),
+                today + datetime.timedelta(days=1)
+            )),
+            # 本周
+            (r'本周', lambda m: (
+                today - datetime.timedelta(days=today.weekday()),
+                today + datetime.timedelta(days=7 - today.weekday())
+            )),
+            # 本月
+            (r'本月', lambda m: (
+                datetime.date(current_year, today.month, 1),
+                _get_next_month_start(current_year, today.month)
+            )),
+            # 最近N天
+            (r'最近(\d+)天', lambda m: (
+                today - datetime.timedelta(days=int(m.group(1))),
+                today + datetime.timedelta(days=1)
+            )),
+        ]
+
+        def _get_month_range(year: int, month: int):
+            """获取月份的起止日期"""
+            if month == 12:
+                return (
+                    datetime.date(year, 12, 1),
+                    datetime.date(year + 1, 1, 1)
+                )
+            else:
+                return (
+                    datetime.date(year, month, 1),
+                    datetime.date(year, month + 1, 1)
+                )
+
+        def _get_next_month_start(year: int, month: int):
+            """获取下个月的第一天"""
+            if month == 12:
+                return datetime.date(year + 1, 1, 1)
+            else:
+                return datetime.date(year, month + 1, 1)
+
+        for pattern, extractor in patterns:
+            match = re.search(pattern, question)
+            if match:
+                try:
+                    start_date, end_date = extractor(match)
+                    return {
+                        "start": start_date.strftime("%Y-%m-%d"),
+                        "end": end_date.strftime("%Y-%m-%d"),
+                    }
+                except (ValueError, TypeError):
+                    continue
+
+        return None
+
+    @staticmethod
     def _build_sql_prompt(
         schema_text: str,
         term_text: str,
@@ -369,13 +471,14 @@ class NL2SQLEngine:
             - 数据库Schema（DDL格式，包含字段注释）
             - 业务术语映射（可选）
             - 用户问题
+            - 解析后的时间范围（如果有）
             - 生成要求（8条规则）
 
         生成要求：
             1. 只生成SELECT查询语句
             2. 严格使用Schema中存在的表名和字段名
             3. 根据用户问题添加适当的WHERE条件和聚合函数
-            4. 如果存在时间字段，默认添加最近一周的数据过滤
+            4. 时间范围处理：使用代码解析的时间范围，确保准确性
             5. 限制返回行数不超过MAX_ROWS
             6. 为查询字段和聚合结果添加中文别名
             7. ORDER BY子句中使用中文别名排序
@@ -383,6 +486,22 @@ class NL2SQLEngine:
         """
         today = datetime.date.today()
         one_week_ago = today - datetime.timedelta(days=7)
+        
+        # 使用代码解析时间范围，确保准确性
+        time_range = NL2SQLEngine._parse_time_range(question)
+        
+        # 构建时间范围指令
+        time_instruction = ""
+        if time_range:
+            time_instruction = f"""4. 时间范围处理（必须严格执行）：
+   - 用户指定的时间范围已解析为：PRODUCE_DATE >= '{time_range['start']}' AND PRODUCE_DATE < '{time_range['end']}'
+   - 你必须使用这个精确的时间范围，不要修改或猜测
+   - 在WHERE子句中添加：PRODUCE_DATE >= '{time_range['start']}' AND PRODUCE_DATE < '{time_range['end']}'
+"""
+        else:
+            time_instruction = f"""4. 时间范围处理：
+   - 用户问题中没有明确的时间范围，默认添加最近一周的数据过滤：PRODUCE_DATE >= '{one_week_ago.strftime("%Y-%m-%d")}'
+"""
         
         return f"""你是一个钢铁行业数据分析SQL专家。请根据用户问题和数据库Schema，生成一个MySQL SELECT查询语句。
 
@@ -396,8 +515,7 @@ class NL2SQLEngine:
 1. 只生成SELECT查询语句，禁止使用INSERT/UPDATE/DELETE/DROP等操作
 2. 严格使用Schema中存在的表名和字段名，不要编造
 3. 根据用户问题添加适当的WHERE条件和聚合函数
-4. 如果表中存在时间相关字段（如produce_date、create_time、update_time、date等），默认添加最近一周的数据过滤：
-   时间字段 >= '{one_week_ago.strftime("%Y-%m-%d")}'
+{time_instruction}
 5. 限制返回行数不超过{NL2SQLEngine.MAX_ROWS}行（使用LIMIT）
 6. 为每个查询字段和聚合结果添加中文别名（AS子句），别名优先使用字段COMMENT中的中文名称；聚合函数使用语义化中文别名，如SUM(BLOW_COUNT) AS 总吹炼次数
 7. ORDER BY子句中也使用中文别名排序
@@ -406,21 +524,157 @@ class NL2SQLEngine:
 请直接返回SQL语句："""
 
     @staticmethod
-    async def _generate_sql_from_prompt(prompt: str) -> str:
+    def _validate_and_fix_sql_time_range(sql: str, question: str) -> str:
+        """
+        验证并修正SQL中的时间范围
+
+        当用户指定了时间范围时，检查SQL中的时间范围是否正确，
+        如果不正确（如只有一天而不是一个月），则进行修正。
+
+        :param sql: LLM生成的SQL语句
+        :param question: 用户问题
+        :return: 修正后的SQL语句
+        """
+        # 解析用户问题中的时间范围
+        time_range = NL2SQLEngine._parse_time_range(question)
+        
+        if not time_range:
+            return sql  # 没有指定时间范围，直接返回
+        
+        expected_start = time_range["start"]
+        expected_end = time_range["end"]
+        
+        # 查找SQL中现有的时间范围条件
+        # 匹配模式: 字段 >= '日期' AND 字段 < '日期'
+        time_pattern = r"([a-zA-Z_]+)\s*>=\s*['\"](\d{4}-\d{2}-\d{2})['\"]\s*AND\s+\1\s*<\s*['\"](\d{4}-\d{2}-\d{2})['\"]"
+        match = re.search(time_pattern, sql, re.IGNORECASE)
+        
+        if match:
+            field_name = match.group(1)
+            current_start = match.group(2)
+            current_end = match.group(3)
+            
+            # 检查时间范围是否正确
+            if current_start != expected_start or current_end != expected_end:
+                logger.warning(
+                    f"SQL时间范围不正确: 当前={current_start}~{current_end}, "
+                    f"预期={expected_start}~{expected_end}, 正在修正..."
+                )
+                # 替换为正确的时间范围
+                old_condition = f"{field_name} >= '{current_start}' AND {field_name} < '{current_end}'"
+                new_condition = f"{field_name} >= '{expected_start}' AND {field_name} < '{expected_end}'"
+                sql = sql.replace(old_condition, new_condition)
+                logger.info(f"时间范围修正完成: {sql[:150]}...")
+        else:
+            # 如果没有找到时间范围条件，添加一个
+            logger.info(f"SQL中没有时间范围条件，添加预期时间范围: {expected_start}~{expected_end}")
+            # 查找WHERE子句
+            where_match = re.search(r'\bWHERE\b', sql, re.IGNORECASE)
+            if where_match:
+                # 在WHERE后面添加时间条件
+                where_pos = where_match.end()
+                # 检查是否已经有AND条件
+                remaining = sql[where_pos:].strip()
+                if remaining.upper().startswith('AND'):
+                    # 替换第一个AND为我们的时间条件
+                    time_condition = f"{field_name} >= '{expected_start}' AND {field_name} < '{expected_end}'"
+                    # 需要找到合适的字段名
+                    # 从schema中获取或使用默认字段
+                    field_match = re.search(r'SELECT\s+.*?FROM\s+(\w+)', sql, re.IGNORECASE)
+                    if field_match:
+                        # 使用常见的日期字段名
+                        time_condition = f"PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
+                    else:
+                        time_condition = f"PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
+                    
+                    # 插入时间条件
+                    sql = sql[:where_pos] + f" {time_condition} AND" + sql[where_pos + 3:]
+                else:
+                    # 在WHERE后面添加AND时间条件
+                    time_condition = f"PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
+                    sql = sql[:where_pos] + f" {time_condition} AND" + sql[where_pos:]
+            else:
+                # 没有WHERE子句，添加一个
+                # 查找FROM子句
+                from_match = re.search(r'\bFROM\s+\w+', sql, re.IGNORECASE)
+                if from_match:
+                    from_end = from_match.end()
+                    time_condition = f" WHERE PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
+                    sql = sql[:from_end] + time_condition + sql[from_end:]
+        
+        return sql
+
+    @staticmethod
+    def _fix_time_conflict(sql: str, question: str) -> str:
+        """
+        修复时间范围冲突：当用户指定了具体时间范围时，移除默认的一周过滤条件
+
+        当LLM生成的SQL同时包含用户指定的时间范围和默认的一周过滤条件时，
+        会导致时间范围冲突。此方法检测并移除默认的一周过滤条件。
+
+        :param sql: LLM生成的SQL语句
+        :param question: 用户问题
+        :return: 修复时间冲突后的SQL语句
+        """
+        import re
+        
+        # 检测用户问题中是否包含明确的时间范围
+        has_user_time_range = bool(re.search(
+            r'(\d{4})年(\d{1,2})月(\d{1,2})日?|'  # YYYY年MM月DD日
+            r'(\d{4})年(\d{1,2})月|'  # YYYY年MM月
+            r'(\d{4})年|'  # YYYY年
+            r'(\d{1,2})月(\d{1,2})日|'  # MM月DD日
+            r'(\d{1,2})月|'  # MM月
+            r'今日|昨日|今天|昨天|本周|本月|本季度|本年|最近|近期|历史)',
+            question
+        ))
+        
+        if not has_user_time_range:
+            return sql
+            
+        # 获取今天和一周前的日期
+        today = datetime.date.today()
+        one_week_ago = today - datetime.timedelta(days=7)
+        one_week_ago_str = one_week_ago.strftime("%Y-%m-%d")
+        
+        # 检查SQL中是否同时包含用户时间范围和默认的一周过滤
+        # 查找形如 "时间字段 >= '一周前日期'" 的条件
+        week_pattern = rf"AND\s+[a-zA-Z_]+\s*>=\s*['\"]{re.escape(one_week_ago_str)}['\"]"
+        
+        if re.search(week_pattern, sql, re.IGNORECASE):
+            logger.info(f"检测到默认一周过滤条件，用户指定了时间范围，移除冲突条件")
+            # 移除默认的一周过滤条件
+            sql = re.sub(week_pattern, "", sql, flags=re.IGNORECASE)
+            # 清理残留
+            sql = " ".join(sql.split())
+            logger.info(f"时间冲突修复后SQL: {sql[:100]}...")
+        
+        return sql
+
+    @staticmethod
+    async def _generate_sql_from_prompt(prompt: str, question: str = "") -> str:
         """
         从Prompt生成SQL（纯LLM调用，不持有数据库会话）
 
         :param prompt: SQL生成Prompt
+        :param question: 用户问题（用于时间冲突检测和验证）
         :return: 清理后的SQL语句
 
         处理步骤：
             1. 调用LLM生成SQL
             2. 移除markdown代码块标记（```sql或```）
             3. 安全清理（移除注释、多余空格）
-            4. 添加行数限制（如果没有LIMIT子句）
-            5. 返回最终SQL
+            4. 验证并修正时间范围
+            5. 修复时间范围冲突
+            6. 添加行数限制（如果没有LIMIT子句）
+            7. 返回最终SQL
         """
         sql = await llm_service.chat(prompt)
+        
+        if not sql:
+            logger.error("LLM返回SQL为空")
+            raise BusinessException(code=500, message="大模型返回的SQL为空")
+            
         logger.info(f"LLM原始输出: {repr(sql[:100])}...")
 
         # 移除markdown代码块标记
@@ -437,6 +691,14 @@ class NL2SQLEngine:
         # 清理SQL
         sql = SQLSecurityFilter.sanitize(sql)
         logger.info(f"安全清理后SQL: {repr(sql[:100])}...")
+
+        # 验证并修正时间范围（关键步骤）
+        if question:
+            sql = NL2SQLEngine._validate_and_fix_sql_time_range(sql, question)
+
+        # 修复时间范围冲突
+        if question:
+            sql = NL2SQLEngine._fix_time_conflict(sql, question)
 
         # 添加行数限制
         if "LIMIT" not in sql.upper():
@@ -605,8 +867,12 @@ class NL2SQLEngine:
         # 构建Prompt（不调用LLM）
         prompt = NL2SQLEngine._build_sql_prompt(schema_text, term_text, question)
 
-        # 调用LLM生成SQL（不再提交事务，由路由层统一管理）
-        sql = await NL2SQLEngine._generate_sql_from_prompt(prompt)
+        # 调用LLM生成SQL（传入question用于时间冲突检测）
+        sql = await NL2SQLEngine._generate_sql_from_prompt(prompt, question)
+
+        if not sql:
+            logger.error(f"SQL生成失败: 问题={question[:30]}..., 返回结果为空")
+            raise BusinessException(code=500, message="SQL生成失败，大模型返回为空")
 
         logger.info(f"SQL生成完成: 问题={question[:30]}..., SQL={sql[:80]}...")
         return sql

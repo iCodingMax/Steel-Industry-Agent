@@ -9,7 +9,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
+import { ref, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 
 const props = defineProps<{
@@ -19,6 +19,7 @@ const props = defineProps<{
 
 const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
+let resizeObserver: ResizeObserver | null = null
 
 function initChart() {
   if (!chartRef.value) return
@@ -29,7 +30,9 @@ function initChart() {
 }
 
 function resizeChart() {
-  chartInstance?.resize()
+  if (chartInstance) {
+    chartInstance.resize()
+  }
 }
 
 watch(
@@ -37,6 +40,8 @@ watch(
   (newOption) => {
     if (chartInstance && newOption) {
       chartInstance.setOption(newOption)
+      // 选项更新后立即调整大小
+      nextTick(() => resizeChart())
     }
   },
   { deep: true }
@@ -44,12 +49,26 @@ watch(
 
 onMounted(() => {
   initChart()
+  
+  // 使用 ResizeObserver 监听容器大小变化
+  if (chartRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      resizeChart()
+    })
+    resizeObserver.observe(chartRef.value)
+  }
+  
   window.addEventListener('resize', resizeChart)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeChart)
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
   chartInstance?.dispose()
+  chartInstance = null
 })
 </script>
 
@@ -59,6 +78,8 @@ onBeforeUnmount(() => {
   border-radius: 0;
   box-shadow: none;
   padding: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .chart-header {
@@ -77,6 +98,6 @@ onBeforeUnmount(() => {
 .chart-container {
   width: 100%;
   height: 100%;
-  min-height: 360px;
+  min-height: 200px;
 }
 </style>

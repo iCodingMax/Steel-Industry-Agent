@@ -10,15 +10,10 @@
     />
     <!-- 回退显示SVG -->
     <svg v-else viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" class="avatar-svg">
-      <!-- 用户头像 SVG (钢铁侠) -->
+      <!-- 用户头像 SVG (紫色圆形+白色小人，与右上角账号头像一致) -->
       <template v-if="type === 'user'">
-        <path d="M20 4C12 4 8 10 8 16c0 4 1 6 2 8l2 4c1 2 2 4 4 4h8c2 0 3-2 4-4l2-4c1-2 2-4 2-8 0-6-4-12-12-12z" fill="#dc2626"/>
-        <path d="M20 6C14 6 10 11 10 16c0 3 1 5 2 7l2 4c1 1 2 3 3 3h6c1 0 2-2 3-3l2-4c1-2 2-4 2-7 0-5-4-10-10-10z" fill="#d97706"/>
-        <line x1="20" y1="6" x2="20" y2="30" stroke="#991b1b" stroke-width="1.5"/>
-        <path d="M12 15l4-2 4 2" fill="#60a5fa" stroke="#2563eb" stroke-width="0.5"/>
-        <path d="M20 15l4-2 4 2" fill="#60a5fa" stroke="#2563eb" stroke-width="0.5"/>
-        <rect x="15" y="24" width="10" height="2" rx="1" fill="#991b1b"/>
-        <circle cx="20" cy="10" r="2" fill="#93c5fd" stroke="#3b82f6" stroke-width="0.5"/>
+        <circle cx="20" cy="20" r="18" fill="#6366f1"/>
+        <path d="M20 14c-2.2 0-4 1.8-4 4s1.8 4 4 4 4-1.8 4-4-1.8-4-4-4zM12 30c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="#ffffff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
       </template>
       <!-- 助手头像 SVG (贾维斯) -->
       <template v-else>
@@ -106,8 +101,8 @@ watch(() => props.type, () => {
 }
 
 .user .avatar-svg {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
 }
 
 .assistant .avatar-svg {

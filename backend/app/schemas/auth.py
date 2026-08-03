@@ -27,7 +27,12 @@ class UserInfoResponse(BaseModel):
     """用户信息响应"""
     id: int = Field(..., description="用户ID")
     username: str = Field(..., description="用户名")
+    name: Optional[str] = Field(None, description="姓名")
+    email: Optional[str] = Field(None, description="邮箱")
+    phone: Optional[str] = Field(None, description="手机号")
     role: str = Field(..., description="角色")
+    status: Optional[str] = Field("active", description="状态")
     createdAt: Optional[str] = Field(None, description="创建时间")
+    updatedAt: Optional[str] = Field(None, description="更新时间")
     lastLoginAt: Optional[str] = Field(None, description="最后登录时间")
     forceChangePassword: bool = Field(True, description="是否强制改密")

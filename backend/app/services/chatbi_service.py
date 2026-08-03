@@ -190,7 +190,7 @@ class ChatBIService:
 
                 # 调用NL2SQL引擎生成并执行SQL
                 sql, data, error, meta = await nl2sql_engine.query(db, question, datasource_id)
-                logger.info(f"NL2SQL查询结果: sql={sql[:80]}..., data_count={len(data) if data else 0}, error={error}")
+                logger.info(f"NL2SQL查询结果: sql={sql[:80] if sql else 'None'}..., data_count={len(data) if data else 0}, error={error}")
                 column_meta = meta
 
                 if sql:

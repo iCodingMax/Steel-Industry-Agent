@@ -389,7 +389,7 @@ async def stream_chat(
                 # 发送数据结果（含字段元信息和推荐图表类型）
                 yield f"data: {json.dumps({'type': 'data_result', 'data': results, 'columnMeta': column_meta, 'chartType': chart_type})}\n\n"
 
-                # 提交事务释放数据库连接，再调用LLM生成解释
+                # 提交事务释放数据库连接
                 await db.commit()
 
                 # 使用prompt流式生成解释（真正的流式输出）
@@ -425,8 +425,7 @@ async def stream_chat(
                     full_explanation = explanation
                     yield f"data: {json.dumps({'type': 'content', 'content': explanation})}\n\n"
 
-                # 保存AI回复（需要重新创建事务）
-                await db.begin()
+                # 保存AI回复（commit后查询会自动开启新事务，无需显式begin）
                 await message_service.create(
                     db,
                     session_id=data.sessionId,
@@ -625,8 +624,7 @@ async def stream_chat(
                     label = "【数据分析】" + chr(10) + explanation
                     yield f"data: {json.dumps({'type': 'content', 'content': label})}\n\n"
 
-                # 重新创建事务
-                await db.begin()
+                # commit后查询会自动开启新事务，无需显式begin
 
                 if not full_answer.strip():
                     full_answer = "抱歉，无法找到相关信息或数据。"
@@ -656,7 +654,23 @@ async def stream_chat(
             yield f"data: {json.dumps({'type': 'done', 'elapsed_time': elapsed_time})}\n\n"
 
         except Exception as e:
+            # 回滚事务（如果存在）
+            try:
+                if db:
+                    await db.rollback()
+            except Exception:
+                pass
+            
+            # 发送错误事件
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            
+            # 发送done事件以确保前端正确结束
+            try:
+                elapsed_time = time.time() - stream_start_time
+                yield f"data: {json.dumps({'type': 'done', 'elapsed_time': elapsed_time})}\n\n"
+            except Exception:
+                pass
+            
             raise
         finally:
             if data_producer and not data_producer.done():
@@ -689,6 +703,8 @@ class EmbedChatRequest(BaseModel):
     datasourceId: Optional[int] = Field(None, description="数据源ID")
     applicationId: Optional[int] = Field(None, description="应用ID")
     llmConfigId: Optional[int] = Field(None, description="LLM配置ID")
+    chatUserId: Optional[int] = Field(None, description="对话用户ID，用于数据隔离")
+    chatUsername: Optional[str] = Field(None, description="对话用户名，用于数据隔离")
 
 
 @router.post("/embed/chat", summary="嵌入模式对话")
