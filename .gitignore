@@ -26,7 +26,6 @@ var/
 .idea/
 
 # Environment
-.env
 .env.local
 
 # Database
