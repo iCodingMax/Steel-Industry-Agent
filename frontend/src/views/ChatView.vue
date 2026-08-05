@@ -164,6 +164,7 @@ import {
 import { getKnowledgeBases } from '@/api/knowledge'
 import { getDatasources } from '@/api/datasource'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
+import { copyToClipboard } from '@/utils/clipboard'
 
 const chatStore = useChatStore()
 const chatPanelRef = ref<InstanceType<typeof ChatPanel> | null>(null)
@@ -311,21 +312,15 @@ function showReferenceDetail(ref: any) {
 }
 
 // 复制SQL
-function copySql(sql: string) {
-  navigator.clipboard.writeText(sql).then(() => {
-    ElMessage.success('SQL已复制到剪贴板')
-  }).catch(() => {
-    ElMessage.error('复制失败')
-  })
+async function copySql(sql: string) {
+  const ok = await copyToClipboard(sql)
+  ok ? ElMessage.success('SQL已复制到剪贴板') : ElMessage.error('复制失败')
 }
 
 // 复制消息内容
-function copyMessageContent(content: string) {
-  navigator.clipboard.writeText(content).then(() => {
-    ElMessage.success('已复制')
-  }).catch(() => {
-    ElMessage.error('复制失败')
-  })
+async function copyMessageContent(content: string) {
+  const ok = await copyToClipboard(content)
+  ok ? ElMessage.success('已复制') : ElMessage.error('复制失败')
 }
 
 // 处理 ChatMessage 的编辑提交事件

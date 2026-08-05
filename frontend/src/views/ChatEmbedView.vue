@@ -233,6 +233,7 @@ import {
 import * as echarts from 'echarts'
 import * as XLSX from 'xlsx'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
+import { copyToClipboard } from '@/utils/clipboard'
 import { getApplication, getApplicationByHash } from '@/api/application'
 import type { Application } from '@/api/application'
 import { getLLMConfigs } from '@/api/llmConfig'
@@ -608,12 +609,9 @@ function handleExport(cmd: string, msg: DebugMessage) {
   }
 }
 
-function copySql(sql: string) {
-  navigator.clipboard.writeText(sql).then(() => {
-    ElMessage.success('SQL已复制')
-  }).catch(() => {
-    ElMessage.error('复制失败')
-  })
+async function copySql(sql: string) {
+  const ok = await copyToClipboard(sql)
+  ok ? ElMessage.success('SQL已复制') : ElMessage.error('复制失败')
 }
 
 function showSqlDialog(sql: string) {
@@ -626,12 +624,9 @@ function showReferenceDetail(ref: any) {
   referenceDetailVisible.value = true
 }
 
-function copyMessageContent(content: string) {
-  navigator.clipboard.writeText(content).then(() => {
-    ElMessage.success('已复制')
-  }).catch(() => {
-    ElMessage.error('复制失败')
-  })
+async function copyMessageContent(content: string) {
+  const ok = await copyToClipboard(content)
+  ok ? ElMessage.success('已复制') : ElMessage.error('复制失败')
 }
 
 // 重新生成消息

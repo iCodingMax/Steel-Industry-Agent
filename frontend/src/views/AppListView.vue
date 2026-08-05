@@ -340,6 +340,7 @@ import * as echarts from 'echarts'
 import * as XLSX from 'xlsx'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
+import { copyToClipboard } from '@/utils/clipboard'
 import {
   Plus,
   Setting,
@@ -517,20 +518,14 @@ function getFieldAlias(fieldName: string, columnMeta?: any[]): string | null {
   return meta?.comment || meta?.columnAlias || null
 }
 
-function copyMessageContent(content: string) {
-  navigator.clipboard.writeText(content).then(() => {
-    ElMessage.success('已复制')
-  }).catch(() => {
-    ElMessage.error('复制失败')
-  })
+async function copyMessageContent(content: string) {
+  const ok = await copyToClipboard(content)
+  ok ? ElMessage.success('已复制') : ElMessage.error('复制失败')
 }
 
-function handleSql(sql: string) {
-  navigator.clipboard.writeText(sql).then(() => {
-    ElMessage.success('SQL已复制到剪贴板')
-  }).catch(() => {
-    ElMessage.error('复制失败，请手动复制')
-  })
+async function handleSql(sql: string) {
+  const ok = await copyToClipboard(sql)
+  ok ? ElMessage.success('SQL已复制到剪贴板') : ElMessage.error('复制失败，请手动复制')
 }
 
 function handleReference(_reference: any) {
@@ -598,12 +593,9 @@ function getNumericColumns(data: any[], columnMeta?: any[]) {
     }))
 }
 
-function copySql(sql: string) {
-  navigator.clipboard.writeText(sql).then(() => {
-    ElMessage.success('SQL已复制到剪贴板')
-  }).catch(() => {
-    ElMessage.error('复制失败，请手动复制')
-  })
+async function copySql(sql: string) {
+  const ok = await copyToClipboard(sql)
+  ok ? ElMessage.success('SQL已复制到剪贴板') : ElMessage.error('复制失败，请手动复制')
 }
 
 // 导出Excel
@@ -887,22 +879,14 @@ function toggleApiKeyVisibility() {
 }
 
 async function copyEmbedCode() {
-  try {
-    await navigator.clipboard.writeText(currentEmbedCode.value)
-    ElMessage.success('嵌入代码已复制')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+  const ok = await copyToClipboard(currentEmbedCode.value)
+  ok ? ElMessage.success('嵌入代码已复制') : ElMessage.error('复制失败')
 }
 
 async function copyApiKey() {
   if (!currentApp.value?.apiKey) return
-  try {
-    await navigator.clipboard.writeText(currentApp.value.apiKey)
-    ElMessage.success('API密钥已复制')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+  const ok = await copyToClipboard(currentApp.value.apiKey)
+  ok ? ElMessage.success('API密钥已复制') : ElMessage.error('复制失败')
 }
 
 async function handleRegenerateApiKey() {
@@ -948,12 +932,8 @@ function openChat() {
 }
 
 async function copyPublicLink() {
-  try {
-    await navigator.clipboard.writeText(publicAccessUrl.value)
-    ElMessage.success('链接已复制')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+  const ok = await copyToClipboard(publicAccessUrl.value)
+  ok ? ElMessage.success('链接已复制') : ElMessage.error('复制失败')
 }
 
 function openPublicLink() {

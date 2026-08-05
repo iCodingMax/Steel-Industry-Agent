@@ -272,6 +272,7 @@ import * as XLSX from 'xlsx';
 import { marked } from 'marked';
 import ChartCard from '@/components/chart/ChartCard.vue';
 import AvatarImage from '@/components/AvatarImage.vue';
+import { copyToClipboard } from '@/utils/clipboard';
 
 // 配置marked选项
 marked.setOptions({
@@ -341,12 +342,9 @@ function toggleReferences() {
 function handleCopy(content: string) {
  emit('copy', content);
 }
-function handleCopySql(sql: string) {
- navigator.clipboard.writeText(sql).then(() => {
- ElMessage.success('SQL已复制');
- }).catch(() => {
- ElMessage.error('复制失败');
- });
+async function handleCopySql(sql: string) {
+ const ok = await copyToClipboard(sql);
+ ok ? ElMessage.success('SQL已复制') : ElMessage.error('复制失败');
 }
 function handleStartEdit() {
  isEditing.value = true;
