@@ -19,6 +19,7 @@
 | Docker Compose | 2.26+ | 容器编排 |
 | Python | 3.11 | 后端开发环境（可选） |
 | Node.js | 18+ | 前端开发环境（可选） |
+| pnpm | 8+ | 前端包管理器 |
 
 ---
 
@@ -120,10 +121,24 @@ cd backend
 
 # 使用pip安装
 python -m pip install -r requirements.txt
-
-# 或使用Poetry（推荐）
-poetry install
 ```
+
+核心依赖说明：
+
+| 库 | 版本 | 说明 |
+|----|------|------|
+| fastapi | >=0.111.0 | Web框架 |
+| sqlalchemy[asyncio] | >=2.0.30 | ORM框架 |
+| asyncpg | >=0.29.0 | PostgreSQL异步驱动 |
+| aiomysql | >=0.2.0 | MySQL异步驱动 |
+| llama-index | - | RAG框架 |
+| llama-index-vector-stores-postgres | - | pgvector向量存储 |
+| llama-index-embeddings-huggingface | - | HuggingFace嵌入模型 |
+| llama-index-readers-file | - | 文档读取器 |
+| pypdf | >=4.0.0 | PDF解析 |
+| python-docx | >=1.1.0 | Word文档解析 |
+| redis[hiredis] | >=5.0.0 | Redis缓存 |
+| loguru | >=0.7.2 | 日志管理 |
 
 #### 3.1.2 安装前端依赖
 
@@ -131,6 +146,34 @@ poetry install
 cd frontend
 pnpm install
 ```
+
+核心依赖说明：
+
+| 库 | 版本 | 说明 |
+|----|------|------|
+| vue | ^3.4.0 | 前端框架 |
+| vue-router | ^4.3.0 | 路由管理 |
+| pinia | ^2.2.0 | 状态管理 |
+| element-plus | ^2.8.0 | UI组件库 |
+| @element-plus/icons-vue | ^2.3.0 | Element Plus图标 |
+| echarts | ^5.5.0 | 数据可视化图表 |
+| vue-echarts | ^7.0.0 | ECharts Vue封装 |
+| axios | ^1.6.0 | HTTP客户端 |
+| marked | ^12.0.0 | Markdown解析 |
+| highlight.js | ^11.9.0 | 代码高亮 |
+| xlsx | ^0.18.5 | Excel导入导出 |
+| file-saver | ^2.0.5 | 文件下载 |
+| vueuse | ^10.0.0 | Vue工具库 |
+
+开发依赖：
+
+| 库 | 版本 | 说明 |
+|----|------|------|
+| vite | ^5.4.0 | 构建工具 |
+| typescript | ^5.3.0 | TypeScript支持 |
+| sass | ^1.70.0 | CSS预处理 |
+| eslint | ^8.56.0 | 代码检查 |
+| prettier | ^3.2.0 | 代码格式化 |
 
 #### 3.1.3 配置环境变量
 
@@ -221,14 +264,8 @@ docker-compose logs -f mysql postgres
 ```bash
 cd backend
 
-# 方式一：使用uvicorn（推荐）
+# 使用uvicorn（推荐）
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-
-# 方式二：使用python直接运行
-python main.py
-
-# 方式三：使用Poetry
-poetry run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 #### 3.3.2 启动前端服务
@@ -244,6 +281,12 @@ pnpm build
 
 # 预览生产构建
 pnpm preview
+
+# 代码检查
+pnpm lint
+
+# 代码格式化
+pnpm format
 ```
 
 ### 3.4 访问地址
@@ -256,6 +299,8 @@ pnpm preview
 | Swagger文档 | http://localhost:8000/docs | API文档 |
 | Redoc文档 | http://localhost:8000/redoc | API文档 |
 | 健康检查 | http://localhost:8000/api/v1/health | 健康检查 |
+| 登录页 | http://localhost:5173/login | 用户登录 |
+| 应用管理 | http://localhost:5173/app-management | 登录后默认跳转 |
 
 ### 3.5 数据库初始化机制
 
@@ -461,9 +506,73 @@ Oracle数据库的Schema同步通过以下视图获取表结构信息：
 
 ---
 
-## 六、健康检查
+## 六、功能模块说明
 
-### 6.1 API接口
+### 6.1 应用管理
+
+应用管理模块支持以下功能：
+
+- 应用创建/编辑/删除
+- 模型配置（大语言模型、向量模型、重排模型）
+- 提示词管理
+- 关联知识库
+- 开场白配置
+- 应用分享与嵌入
+
+#### 6.1.1 嵌入模式（页面嵌入）
+
+在应用管理页面点击"页面嵌入"，可获取嵌入代码。支持两种嵌入模式：
+
+**全屏模式**：通过 iframe 嵌入完整的对话界面
+
+```html
+<script async defer src="http://your-host:port/chat-embed.js?token=YOUR_TOKEN"></script>
+```
+
+**浮窗模式**：页面右下角悬浮助手图标，点击展开对话窗口
+
+```html
+<script async defer src="http://your-host:port/chat-embed.js?token=YOUR_TOKEN&mode=floating"></script>
+```
+
+浮窗模式特点：
+- 机器人图标显示在页面右下角
+- 点击图标展开对话窗口（50%视口宽度）
+- 支持最小化、展开/全屏、关闭等操作
+- 窗口关闭后图标自动恢复
+- 支持 SSE 流式输出
+- 支持知识检索和智能问数
+
+#### 6.1.2 API密钥管理
+
+每个应用可生成独立的 API 密钥，用于嵌入集成和 API 调用。
+
+### 6.2 知识管理
+
+- 文档上传与解析（PDF、Word、TXT）
+- 文本切片与向量索引
+- 知识库检索与问答
+- 相似度分数显示
+
+### 6.3 数据管理
+
+- 多数据源支持（MySQL、PostgreSQL、Oracle、SQL Server）
+- Schema 同步与字段结构展示
+- 字段注释（中文）展示
+- 数据预览
+
+### 6.4 数据可视化
+
+- 默认图表视图
+- 表格视图切换
+- 数据导出（Excel）
+- 全屏查看
+
+---
+
+## 七、健康检查
+
+### 7.1 API接口
 
 | 接口路径 | 方法 | 说明 |
 |---------|------|------|
@@ -471,7 +580,7 @@ Oracle数据库的Schema同步通过以下视图获取表结构信息：
 | /api/v1/health/ready | GET | 就绪检查（K8s就绪探针） |
 | /api/v1/health/live | GET | 存活检查（K8s存活探针） |
 
-### 6.2 响应示例
+### 7.2 响应示例
 
 ```json
 {
@@ -489,9 +598,51 @@ Oracle数据库的Schema同步通过以下视图获取表结构信息：
 
 ---
 
-## 七、常见问题
+## 八、测试与工具脚本
 
-### 7.1 Docker网络问题
+### 8.1 脚本目录
+
+所有测试脚本和工具脚本已统一存放至 `backend/tests/` 目录。这些脚本不参与业务运行，已被 `.gitignore` 排除。
+
+详细脚本清单请参考 [backend/tests/README.md](file:///e:/@wisdri2026/00_aistudio/training_camp/Steel-Industry-Agent/backend/tests/README.md)
+
+### 8.2 脚本分类
+
+| 分类 | 数量 | 说明 |
+|------|------|------|
+| 测试 | 14 | 接口测试、功能测试、流程测试 |
+| 检查 | 5 | 数据库状态检查、数据检查 |
+| 分析 | 1 | Schema分析工具 |
+| 调试 | 1 | pgvector调试工具 |
+| 修复 | 1 | PostgreSQL序列修复 |
+| 清理 | 1 | 重复数据源清理 |
+| 迁移 | 7 | 数据库字段迁移、表结构迁移 |
+
+### 8.3 运行测试脚本
+
+```bash
+# 进入tests目录
+cd backend/tests
+
+# 运行测试脚本
+python test_login.py
+python test_stream_chat.py
+
+# 运行迁移脚本（注意：迁移前请备份数据库）
+python migrate_add_user_fields.py
+```
+
+### 8.4 注意事项
+
+- 运行迁移脚本前必须备份数据库
+- 迁移脚本会自动连接 `.env` 配置的数据库
+- 检查/分析脚本为只读操作，不会修改数据
+
+---
+
+## 九、常见问题
+
+### 9.1 Docker网络问题
 
 **现象**：容器之间无法通信
 
@@ -507,7 +658,7 @@ docker network rm steel-agent-net
 docker-compose up -d
 ```
 
-### 7.2 数据库连接失败
+### 9.2 数据库连接失败
 
 **现象**：后端服务启动后无法连接数据库
 
@@ -517,7 +668,7 @@ docker-compose up -d
 3. 检查防火墙规则是否允许访问
 4. 查看容器日志：`docker-compose logs -f backend`
 
-### 7.3 Oracle连接问题
+### 9.3 Oracle连接问题
 
 **现象**：Oracle数据源测试连接失败
 
@@ -528,7 +679,7 @@ docker-compose up -d
 4. 确认用户名密码正确
 5. 确认服务名配置正确（使用 `tnsping` 测试）
 
-### 7.4 Xinference模型服务连接问题
+### 9.4 Xinference模型服务连接问题
 
 **现象**：无法连接Xinference服务
 
@@ -541,7 +692,7 @@ docker-compose up -d
    curl http://your-xinference-host:9997/v1/models
    ```
 
-### 7.5 psycopg2模块未找到
+### 9.5 psycopg2模块未找到
 
 **现象**：向量检索失败，报错 `No module named 'psycopg2'`
 
@@ -550,7 +701,7 @@ docker-compose up -d
 pip install psycopg2-binary
 ```
 
-### 7.6 重复键违反唯一约束
+### 9.6 重复键违反唯一约束
 
 **现象**：插入数据时报错 `UniqueViolationError: 重复键违反唯一约束`
 
@@ -565,11 +716,25 @@ SELECT nextval('messages_id_seq');
 SELECT setval('messages_id_seq', (SELECT MAX(id) FROM messages) + 1);
 ```
 
+### 9.7 登录后跳转页面
+
+**说明**：用户登录成功后默认跳转到 `/app-management`（应用管理页面），而非智能对话页面。
+
+如需修改跳转路径，请编辑 `frontend/src/views/LoginView.vue` 中的 `defaultRedirect` 变量。
+
+### 9.8 前端路由切换空白
+
+**说明**：已在路由配置中添加 `:key="$route.fullPath"` 强制组件重新渲染，避免页面切换时的空白问题。
+
+### 9.9 流式输出自动滚动
+
+**说明**：所有对话窗口支持流式输出时自动滚动到底部。当用户主动向上滚动查看历史时，自动滚动会暂停；当用户滚回底部时，自动滚动恢复。
+
 ---
 
-## 八、安全建议
+## 十、安全建议
 
-### 8.1 生产环境配置
+### 10.1 生产环境配置
 
 1. **修改默认密码**：
    - 修改MySQL root密码
@@ -590,7 +755,7 @@ SELECT setval('messages_id_seq', (SELECT MAX(id) FROM messages) + 1);
    - 仅允许内网访问数据库端口
    - 配置防火墙规则
 
-### 8.2 数据安全
+### 10.2 数据安全
 
 1. **定期备份**：
    ```bash
@@ -608,7 +773,93 @@ SELECT setval('messages_id_seq', (SELECT MAX(id) FROM messages) + 1);
 
 ---
 
-## 九、技术支持
+## 十一、项目结构
+
+```
+Steel-Industry-Agent/
+├── backend/                          # 后端代码
+│   ├── app/
+│   │   ├── api/v1/                   # API路由
+│   │   │   ├── auth.py              # 认证接口
+│   │   │   ├── chat.py              # 对话接口
+│   │   │   ├── chatbi.py            # ChatBI接口
+│   │   │   ├── knowledge.py         # 知识库接口
+│   │   │   ├── datasource.py        # 数据源接口
+│   │   │   ├── application.py       # 应用管理接口
+│   │   │   ├── llm_config.py        # 模型配置接口
+│   │   │   ├── audit_log.py         # 审计日志接口
+│   │   │   └── ...
+│   │   ├── core/                     # 核心模块
+│   │   │   ├── database.py          # 数据库连接
+│   │   │   ├── config.py            # 配置管理
+│   │   │   ├── llm_client.py        # LLM客户端
+│   │   │   └── redis_client.py      # Redis客户端
+│   │   ├── models/                   # 数据模型
+│   │   │   ├── user.py              # 用户模型
+│   │   │   ├── session.py           # 会话模型
+│   │   │   ├── application.py       # 应用模型
+│   │   │   ├── knowledge.py         # 知识库模型
+│   │   │   ├── datasource.py        # 数据源模型
+│   │   │   └── ...
+│   │   ├── schemas/                  # Pydantic Schema
+│   │   ├── services/                 # 业务服务
+│   │   │   ├── auth_service.py      # 认证服务
+│   │   │   ├── router_service.py    # 意图路由服务
+│   │   │   ├── chatbi_service.py    # ChatBI服务
+│   │   │   ├── knowledge_service.py # 知识库服务
+│   │   │   ├── vector_service.py    # 向量服务
+│   │   │   └── ...
+│   │   ├── middlewares/              # 中间件
+│   │   └── utils/                    # 工具函数
+│   ├── tests/                        # 测试与工具脚本（已加入.gitignore）
+│   │   ├── test_*.py               # 测试脚本
+│   │   ├── check_*.py              # 检查脚本
+│   │   ├── migrate_*.py            # 迁移脚本
+│   │   └── README.md               # 脚本清单说明
+│   ├── main.py                       # 应用入口
+│   ├── requirements.txt              # Python依赖
+│   └── Dockerfile                    # Docker配置
+├── frontend/                        # 前端代码
+│   ├── src/
+│   │   ├── views/                    # 页面
+│   │   │   ├── LoginView.vue        # 登录页
+│   │   │   ├── AppListView.vue      # 应用管理页
+│   │   │   ├── ChatView.vue         # 智能对话页
+│   │   │   ├── ChatEmbedView.vue    # 嵌入对话页
+│   │   │   ├── KnowledgeView.vue    # 知识管理页
+│   │   │   ├── DataConfigView.vue   # 数据管理页
+│   │   │   ├── ModelConfigView.vue  # 模型配置页
+│   │   │   ├── AuditLogView.vue     # 审计日志页
+│   │   │   └── ...
+│   │   ├── components/               # 组件
+│   │   │   ├── layout/              # 布局组件
+│   │   │   │   ├── MainLayout.vue
+│   │   │   │   ├── Header.vue
+│   │   │   │   └── Sidebar.vue
+│   │   │   ├── chat/                # 对话组件
+│   │   │   │   ├── ChatPanel.vue
+│   │   │   │   └── ChatMessage.vue
+│   │   │   └── chart/               # 图表组件
+│   │   │       ├── ChartCard.vue
+│   │   │       └── DataTable.vue
+│   │   ├── stores/                   # Pinia状态管理
+│   │   ├── router/                   # 路由配置
+│   │   └── assets/                   # 静态资源
+│   │       ├── login-logo-dark.png
+│   │       ├── company-logo-dark.png
+│   │       └── company-logo-light.png
+│   ├── chat-embed.js                 # 嵌入脚本（浮窗/全屏模式）
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── Dockerfile
+├── docker-compose.yml               # Docker编排配置
+├── .gitignore                       # Git忽略规则
+└── DEPLOYMENT.md                    # 本文档
+```
+
+---
+
+## 十二、技术支持
 
 如需技术支持，请提供以下信息：
 
@@ -620,20 +871,21 @@ SELECT setval('messages_id_seq', (SELECT MAX(id) FROM messages) + 1);
 
 ---
 
-## 十、版本历史
+## 十三、版本历史
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | 1.0.0 | 2024-01-15 | 初始版本，支持RAG知识问答、ChatBI智能问数、Oracle数据源 |
 | 1.1.0 | 2024-01-20 | 架构优化：PostgreSQL统一作为系统库+向量库，MySQL作为业务数据库；迁移至Xinference统一模型服务 |
-| 1.1.1 | 2024-01-25 | 代码注释增强：为所有服务类、模型类添加详细文档注释；日志增强：关键业务流程添加INFO/DEBUG级别日志；文档更新：更新README.md、DEPLOYMENT.md及spec文档 |
-| 1.2.0 | 2024-02-01 | 新增应用管理模块：支持应用创建/编辑/删除、模型设置、提示词管理、关联知识库、开场白配置；支持iFrame嵌入集成，生成嵌入代码和API密钥管理；新增嵌入模式对话接口 |
+| 1.1.1 | 2024-01-25 | 代码注释增强：为所有服务类、模型类添加详细文档注释；日志增强：关键业务流程添加INFO/DEBUG级别日志；文档更新 |
+| 1.2.0 | 2024-02-01 | 新增应用管理模块：支持应用创建/编辑/删除、模型设置、提示词管理、关联知识库、开场白配置；支持嵌入集成（全屏模式），生成嵌入代码和API密钥管理 |
+| 1.3.0 | 2024-08-03 | 新增浮窗助手模式；优化流式输出自动滚动；测试脚本统一整理至 backend/tests/；登录后默认跳转应用管理页；前端依赖更新（ECharts、Element Plus等）；数据可视化交互优化 |
 
 ---
 
-## 十一、代码注释与日志说明
+## 十四、代码注释与日志说明
 
-### 11.1 代码注释规范
+### 14.1 代码注释规范
 
 项目已为所有核心文件添加详细注释，便于新手理解代码逻辑：
 
@@ -653,7 +905,7 @@ SELECT setval('messages_id_seq', (SELECT MAX(id) FROM messages) + 1);
 - [nl2sql_service.py](file:///e:/@wisdri2026/00_aistudio/training_camp/Steel-Industry-Agent/backend/app/services/nl2sql_service.py)：NL2SQL兜底引擎
 - [session.py](file:///e:/@wisdri2026/00_aistudio/training_camp/Steel-Industry-Agent/backend/app/models/session.py)：会话与消息模型
 
-### 11.2 日志说明
+### 14.2 日志说明
 
 项目使用 loguru 进行日志管理，日志级别和用途如下：
 
@@ -679,7 +931,7 @@ logger.add(
 )
 ```
 
-### 11.3 新手入门指南
+### 14.3 新手入门指南
 
 #### 1. 理解项目架构
 - 阅读 [tech_plan.md](file:///e:/@wisdri2026/00_aistudio/training_camp/Steel-Industry-Agent/.trae/specs/init-steel-agent/tech_plan.md) 了解整体技术架构

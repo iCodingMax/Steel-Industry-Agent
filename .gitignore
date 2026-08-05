@@ -44,3 +44,6 @@ dist/
 
 # Tests & Dev Scripts
 backend/tests/
+
+# .vite 缓存目录
+frontend/.vite/deps/

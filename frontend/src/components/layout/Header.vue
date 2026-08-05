@@ -29,6 +29,7 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+      <img src="@/assets/company-logo-light.png" alt="公司标志" class="company-logo" />
     </div>
 
     <el-dialog v-model="pwdDialogVisible" title="修改密码" width="400px">
@@ -181,6 +182,14 @@ async function handleChangePwd() {
   display: flex;
   align-items: center;
   gap: 16px;
+
+  .company-logo {
+    height: 36px;
+    object-fit: contain;
+    margin-left: 16px;
+    padding-left: 16px;
+    border-left: 1px solid $card-border;
+  }
 }
 
 .user-info {

@@ -4,7 +4,7 @@
       <div class="login-left">
         <div class="brand-info">
           <div class="brand-logo">
-            <img src="@/assets/company-logo-dark.png" alt="工业智能助手平台" class="logo-image" />
+            <img src="@/assets/login-logo-dark.png" alt="工业智能助手平台" class="logo-image" />
           </div>
           <h1 class="brand-title">工业智能助手平台</h1>
           <p class="brand-desc">Industrial Intelligent Assistant Platform</p>
@@ -140,7 +140,7 @@ async function handleLogin() {
         password: loginForm.password,
       })
       ElMessage.success('登录成功')
-      const redirect = (route.query.redirect as string) || '/chat'
+      const redirect = (route.query.redirect as string) || '/app-management'
       router.push(redirect)
     } catch (e) {
       // error handled by interceptor
@@ -171,7 +171,7 @@ async function handleOAuthLogin() {
 
 onMounted(() => {
   if (authStore.isLoggedIn) {
-    router.push('/chat')
+    router.push('/app-management')
     return
   }
   checkOAuthStatus()
@@ -217,17 +217,14 @@ onMounted(() => {
   text-align: center;
 
   .brand-logo {
-    width: 160px;
-    height: 100px;
     display: flex;
     align-items: center;
     justify-content: center;
     margin-bottom: 28px;
-    overflow: hidden;
 
     .logo-image {
-      width: 100%;
-      height: 100%;
+      width: 160px;
+      height: 100px;
       object-fit: contain;
     }
   }
