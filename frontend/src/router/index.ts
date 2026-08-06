@@ -38,6 +38,18 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '智能助手', requiresAuth: false },
   },
   {
+    path: '/ai-assistant',
+    name: 'AiAssistant',
+    component: () => import('@/views/AiAssistantView.vue'),
+    meta: { title: 'AI智能助手', requiresAuth: false },
+  },
+  {
+    path: '/ai-assistant/:accessHash',
+    name: 'AiAssistantByHash',
+    component: () => import('@/views/AiAssistantView.vue'),
+    meta: { title: 'AI智能助手', requiresAuth: false },
+  },
+  {
     path: '/',
     name: 'MainLayout',
     component: () => import('@/components/layout/MainLayout.vue'),
