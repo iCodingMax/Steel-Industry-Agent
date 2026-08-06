@@ -741,6 +741,23 @@ function loadSessions() {
     const saved = localStorage.getItem(sessionStorageKey.value)
     if (saved) {
       sessions.value = JSON.parse(saved)
+      // 修复加载的会话中残留的 isStreaming 状态
+      // 如果之前的对话在流式输出中中断，消息可能保持 isStreaming: true
+      // 导致 UI 一直显示"正在输入"状态
+      let needsFix = false
+      for (const session of sessions.value) {
+        if (session.messages && Array.isArray(session.messages)) {
+          for (const msg of session.messages) {
+            if (msg.isStreaming) {
+              msg.isStreaming = false
+              needsFix = true
+            }
+          }
+        }
+      }
+      if (needsFix) {
+        saveSessions()
+      }
     } else {
       sessions.value = []
     }
@@ -814,21 +831,30 @@ async function handleSend(content?: string) {
     return
   }
 
+  // 确保存在当前会话，如果不存在则自动创建
+  let session = currentSession.value
+  if (!session) {
+    console.warn('当前会话不存在，自动创建新会话')
+    createNewSession()
+    session = currentSession.value
+    if (!session) {
+      ElMessage.error('会话创建失败，请刷新页面重试')
+      return
+    }
+  }
+
   const userMsg: DebugMessage = {
     id: Date.now(),
     role: 'user',
     content: sendContent,
   }
   
-  const session = currentSession.value
-  if (session) {
-    session.messages.push(userMsg)
-    session.updatedAt = new Date().toISOString()
-    if (!session.title || session.title === '新对话') {
-      session.title = sendContent.substring(0, 20) + (sendContent.length > 20 ? '...' : '')
-    }
-    saveSessions()
+  session.messages.push(userMsg)
+  session.updatedAt = new Date().toISOString()
+  if (!session.title || session.title === '新对话') {
+    session.title = sendContent.substring(0, 20) + (sendContent.length > 20 ? '...' : '')
   }
+  saveSessions()
   
   inputText.value = ''
 
@@ -841,20 +867,18 @@ async function handleSend(content?: string) {
     content: '',
     isStreaming: true,
   }
-  if (session) {
-    session.messages.push(aiMsg)
-    // 关键：从数组中重新获取响应式代理对象，确保Vue能检测到属性变化
-    const reactiveAiMsg = session.messages[session.messages.length - 1]
-    saveSessions()
-  }
+  session.messages.push(aiMsg)
+  // 关键：从数组中重新获取响应式代理对象，确保Vue能检测到属性变化
+  saveSessions()
 
   // 获取响应式代理对象的引用，用于后续流式更新
   // 这样可以确保Vue能正确追踪所有属性变化
-  let aiMsgRef: DebugMessage | undefined = session?.messages.find(m => m.id === aiMsgId)
-  
-  // 如果找不到（理论上不应该），使用原始对象
+  const aiMsgRef = session.messages.find(m => m.id === aiMsgId)
   if (!aiMsgRef) {
-    aiMsgRef = aiMsg
+    // 理论上不应该发生，但作为安全回退
+    console.error('无法在会话中找到AI消息')
+    isSending.value = false
+    return
   }
 
   try {
@@ -931,54 +955,52 @@ async function handleSend(content?: string) {
             if (aiMsgRef) {
               aiMsgRef.content += data.content
               aiMsgRef.isStreaming = true
-              // 强制触发响应式更新
               triggerRef(sessions)
             }
           } else if (data.type === 'thinking') {
-              if (aiMsgRef) {
-                if (!aiMsgRef.thinkingSteps) {
-                  aiMsgRef.thinkingSteps = []
-                }
-                aiMsgRef.thinkingSteps.push({
-                  step: data.step,
-                  title: data.title,
-                  description: data.description
-                })
-                triggerRef(sessions)
+            if (aiMsgRef) {
+              if (!aiMsgRef.thinkingSteps) {
+                aiMsgRef.thinkingSteps = []
               }
+              aiMsgRef.thinkingSteps.push({
+                step: data.step,
+                title: data.title,
+                description: data.description
+              })
+              triggerRef(sessions)
               saveSessions()
-            } else if (data.type === 'sql_traces') {
-              if (aiMsgRef) {
-                aiMsgRef.sqlTraces = data.data
-                triggerRef(sessions)
+            }
+          } else if (data.type === 'sql_traces') {
+            if (aiMsgRef) {
+              aiMsgRef.sqlTraces = data.data
+              triggerRef(sessions)
+              saveSessions()
+            }
+          } else if (data.type === 'data_result') {
+            if (aiMsgRef) {
+              aiMsgRef.dataResult = data.data
+              if (data.columnMeta) {
+                aiMsgRef.columnMeta = data.columnMeta
               }
-              saveSessions()
-            } else if (data.type === 'data_result') {
-              if (aiMsgRef) {
-                aiMsgRef.dataResult = data.data
-                if (data.columnMeta) {
-                  aiMsgRef.columnMeta = data.columnMeta
-                }
-                // 存储后端推荐的图表类型，ChatMessage组件会根据此类型自动切换到图表视图
-                if (data.chartType) {
-                  aiMsgRef.chartType = data.chartType
-                }
-                aiMsgRef.type = 'data'
-                triggerRef(sessions)
+              if (data.chartType) {
+                aiMsgRef.chartType = data.chartType
               }
+              aiMsgRef.type = 'data'
+              triggerRef(sessions)
               saveSessions()
-            } else if (data.type === 'column_meta') {
-              if (aiMsgRef) {
-                aiMsgRef.columnMeta = data.data
-                triggerRef(sessions)
-              }
+            }
+          } else if (data.type === 'column_meta') {
+            if (aiMsgRef) {
+              aiMsgRef.columnMeta = data.data
+              triggerRef(sessions)
               saveSessions()
+            }
           } else if (data.type === 'references') {
             if (aiMsgRef) {
               aiMsgRef.references = data.data
               triggerRef(sessions)
+              saveSessions()
             }
-            saveSessions()
           } else if (data.type === 'done') {
             if (aiMsgRef) {
               aiMsgRef.isStreaming = false
