@@ -65,9 +65,15 @@ async function processCallback() {
       success.value = true
       message.value = '认证成功，正在跳转...'
       
-      // 跳转到主页面
+      // 跳转到目标页面
+      // 优先级: URL参数 > sessionStorage > 默认/app-management
       setTimeout(() => {
-        const redirect = (route.query.redirect as string) || '/chat'
+        const urlRedirect = route.query.redirect as string
+        const oauthRedirect = sessionStorage.getItem('oauth_redirect')
+        const chatRedirect = sessionStorage.getItem('chat_redirect')
+        const embedRedirect = sessionStorage.getItem('embed_redirect')
+        let redirect = urlRedirect || oauthRedirect || chatRedirect || embedRedirect || '/app-management'
+        sessionStorage.removeItem('oauth_redirect')
         router.replace(redirect)
       }, 1000)
     } else {

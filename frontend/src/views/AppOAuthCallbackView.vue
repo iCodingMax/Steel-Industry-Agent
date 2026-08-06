@@ -97,20 +97,16 @@ async function handleCallback() {
       }
       
       // 获取保存的redirect路径（按优先级获取）
-      // 优先级: oauth_redirect > chat_redirect > embed_redirect > 默认/chat
+      // 优先级: URL参数 > oauth_redirect > chat_redirect > embed_redirect > 默认/chat
+      const urlRedirect = route.query.redirect as string
       const oauthRedirect = sessionStorage.getItem('oauth_redirect')
       const chatRedirect = sessionStorage.getItem('chat_redirect')
       const embedRedirect = sessionStorage.getItem('embed_redirect')
-      let redirect = oauthRedirect || chatRedirect || embedRedirect || '/chat'
-      
-      // 清理临时存储（保留chat_redirect和embed_redirect，因为可能还有其他地方需要使用）
+      let redirect = urlRedirect || oauthRedirect || chatRedirect || embedRedirect || '/chat'
+
+      // 清理临时存储
       sessionStorage.removeItem('oauth_redirect')
-      
-      // 确保redirect路径有效（必须以/chat开头）
-      if (!redirect.startsWith('/chat')) {
-        redirect = '/chat'
-      }
-      
+
       // 跳转到原页面
       router.replace(redirect)
     } else {
