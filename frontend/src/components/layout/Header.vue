@@ -8,13 +8,9 @@
     </div>
     <div class="header-right">
       <el-dropdown trigger="click" @command="handleCommand">
-        <div class="user-info">
-          <el-avatar :size="32" style="background-color: #3b82f6">
-            <el-icon><User /></el-icon>
-          </el-avatar>
-          <span class="username">{{ username }}</span>
-          <el-icon class="arrow-down"><ArrowDown /></el-icon>
-        </div>
+        <el-avatar :size="32" style="background-color: #3b82f6; cursor: pointer">
+          <el-icon><User /></el-icon>
+        </el-avatar>
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="profile">
@@ -79,7 +75,6 @@ import { useAuthStore } from '@/stores/auth'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import {
   User,
-  ArrowDown,
   Lock,
   SwitchButton,
 } from '@element-plus/icons-vue'
@@ -88,7 +83,6 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
-const username = computed(() => authStore.username || 'admin')
 const currentPageTitle = computed(() => (route.meta.title as string) || '')
 
 const pwdDialogVisible = ref(false)
@@ -186,34 +180,9 @@ async function handleChangePwd() {
   .company-logo {
     height: 36px;
     object-fit: contain;
-    margin-left: 16px;
+    margin-left: 8px;
     padding-left: 16px;
     border-left: 1px solid $card-border;
-  }
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: $border-radius;
-  transition: background-color 0.2s;
-
-  &:hover {
-    background-color: $main-bg;
-  }
-
-  .username {
-    font-size: 14px;
-    font-weight: 500;
-    color: $text-primary;
-  }
-
-  .arrow-down {
-    font-size: 12px;
-    color: $text-secondary;
   }
 }
 

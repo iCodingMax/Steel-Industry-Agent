@@ -63,16 +63,14 @@
         </div>
       </div>
       <!-- 侧边栏底部用户区域 -->
-      <div class="sidebar-footer">
+          <div class="sidebar-footer">
         <el-dropdown
           v-if="chatUser"
           trigger="click"
           @command="handleUserMenu"
         >
           <div class="user-info">
-            <div class="user-avatar">
-              <el-icon :size="18"><UserFilled /></el-icon>
-            </div>
+            <AvatarImage type="user" />
             <div class="user-detail">
               <div class="user-name">{{ chatUser.name || chatUser.username }}</div>
               <div class="user-username">{{ chatUser.username }}</div>
@@ -95,9 +93,7 @@
           </template>
         </el-dropdown>
         <div v-else class="user-info login-prompt" @click="goToLogin">
-          <div class="user-avatar">
-            <el-icon :size="18"><User /></el-icon>
-          </div>
+          <AvatarImage type="user" />
           <div class="user-detail">
             <div class="user-name">点击登录</div>
           </div>
@@ -116,15 +112,6 @@
               <line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
-          <div class="header-logo">
-            <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="20" cy="20" r="18" stroke="#3b82f6" stroke-width="2" fill="none" opacity="0.6"/>
-              <circle cx="20" cy="20" r="14" stroke="#3b82f6" stroke-width="1.5" fill="none" stroke-dasharray="22 66" stroke-dashoffset="0" opacity="0.8"/>
-              <circle cx="20" cy="20" r="10" stroke="#60a5fa" stroke-width="1.5" fill="none" stroke-dasharray="16 47" stroke-dashoffset="-8" opacity="0.9"/>
-              <circle cx="20" cy="20" r="4" fill="#3b82f6"/>
-              <circle cx="20" cy="20" r="2" fill="#93c5fd"/>
-            </svg>
-          </div>
           <span class="session-title">{{ currentSession?.title || appName }}</span>
         </div>
         <!-- 浮窗模式控制按钮 -->
@@ -225,14 +212,13 @@ import {
   ArrowDown,
   Loading,
   CopyDocument,
-  User,
-  UserFilled,
   SwitchButton,
   Document,
 } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import * as XLSX from 'xlsx'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
+import AvatarImage from '@/components/AvatarImage.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 import { getApplication, getApplicationByHash } from '@/api/application'
 import type { Application } from '@/api/application'
@@ -1157,7 +1143,6 @@ onMounted(async () => {
       z-index: 101;
       transform: translateX(-100%);
       transition: transform 0.3s ease;
-      box-shadow: 4px 0 24px rgba(0, 0, 0, 0.1);
       display: flex;
       flex-direction: column;
       
@@ -1296,7 +1281,6 @@ onMounted(async () => {
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 
   &:hover {
     background: #f0f4ff;
@@ -1319,16 +1303,15 @@ onMounted(async () => {
   }
 }
 
-.user-avatar {
+/* AvatarImage 组件在侧边栏中的样式适配 */
+.sidebar-footer :deep(.avatar-image) {
   width: 32px;
   height: 32px;
-  background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
   flex-shrink: 0;
+}
+
+.sidebar-footer :deep(.avatar-image .avatar-img) {
+  border-radius: 50%;
 }
 
 .user-detail {
@@ -1524,24 +1507,17 @@ onMounted(async () => {
 
 .chat-header {
   padding: 12px 16px;
-  background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+  background: #3b82f6;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 
   .header-left {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
-
-    .header-logo {
-      svg {
-        width: 20px;
-        height: 20px;
-      }
-    }
 
     .session-title {
       font-size: 14px;

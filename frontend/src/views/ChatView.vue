@@ -57,7 +57,6 @@
     <div class="chat-main">
       <div class="chat-header">
         <div class="header-left">
-          <el-icon class="header-icon"><ChatSquare /></el-icon>
           <span class="session-title">{{ currentSession?.title || '新对话' }}</span>
         </div>
         <div class="header-right">
@@ -156,7 +155,6 @@ import {
   Plus,
   Search,
   ChatDotRound,
-  ChatSquare,
   Document,
   Edit,
   Delete,
@@ -654,17 +652,11 @@ watch(
     display: flex;
     justify-content: space-between;
     align-items: center;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 
     .header-left {
       display: flex;
       align-items: center;
       gap: 10px;
-
-      .header-icon {
-        font-size: 20px;
-        color: #3b82f6;
-      }
 
       .session-title {
         font-size: 16px;
@@ -713,7 +705,7 @@ watch(
   }
 
   :deep(.chat-panel .chat-messages) {
-    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    background: #f8fafc;
   }
 }
 
