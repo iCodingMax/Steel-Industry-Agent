@@ -270,6 +270,8 @@ import { ElMessage } from 'element-plus';
 import { CopyDocument, Edit, ArrowRight, ArrowDown, List, Loading, CircleCheck, Document, TrendCharts, PieChart, Download, Clock, Refresh } from '@element-plus/icons-vue';
 import * as XLSX from 'xlsx';
 import { marked } from 'marked';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import ChartCard from '@/components/chart/ChartCard.vue';
 import AvatarImage from '@/components/AvatarImage.vue';
 import { copyToClipboard } from '@/utils/clipboard';
@@ -279,6 +281,37 @@ marked.setOptions({
   breaks: true,
   gfm: true,
 });
+
+// KaTeX渲染函数：处理$...$行内公式和$$...$$块级公式
+function renderLatex(content: string): string {
+  // 先处理块级公式 $$...$$
+  content = content.replace(/\$\$([\s\S]*?)\$\$/g, (_match, tex) => {
+    try {
+      return katex.renderToString(tex.trim(), {
+        throwOnError: false,
+        displayMode: true,
+      });
+    } catch {
+      // 渲染失败则原样显示
+      return tex.trim();
+    }
+  });
+  
+  // 再处理行内公式 $...$
+  content = content.replace(/\$([^\$\n]+?)\$/g, (_match, tex) => {
+    try {
+      return katex.renderToString(tex.trim(), {
+        throwOnError: false,
+        displayMode: false,
+      });
+    } catch {
+      // 渲染失败则原样显示
+      return tex.trim();
+    }
+  });
+  
+  return content;
+}
 const props = withDefaults(defineProps<{
  message: any;
  size?: 'sm' | 'md' | 'lg';
@@ -312,10 +345,13 @@ const showThinking = computed(() => {
  return (props.message.thinkingSteps && props.message.thinkingSteps.length > 0) ||
  (props.message.sqlTraces && props.message.sqlTraces.length > 0);
 });
-// Markdown渲染内容
+// Markdown渲染内容（先处理LaTeX公式，再渲染Markdown）
 const renderedContent = computed(() => {
  const content = props.message.content || '';
- return marked.parse(content) as string;
+ // 先渲染LaTeX公式
+ const processed = renderLatex(content);
+ // 再渲染Markdown
+ return marked.parse(processed) as string;
 });
 const elapsedTime = computed(() => {
  // 优先使用queryTime，其次使用elapsedTime

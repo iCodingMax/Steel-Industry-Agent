@@ -163,6 +163,17 @@ watch(
   }
 )
 
+// 监听思考过程步骤变化（执行过程时滚动条自动滚动）
+watch(
+  () => props.messages.map(m => m.thinkingSteps?.length || 0),
+  () => {
+    if (props.isSending) {
+      // 执行过程更新时，强制滚动到底部
+      scrollToBottom()
+    }
+  }
+)
+
 // 监听 isSending 状态变化
 watch(() => props.isSending, (val) => {
   if (val) {

@@ -311,7 +311,7 @@
             </ul>
           </div>
           <div class="embed-tip" v-if="embedMode === 'floating'">
-            <p>💡 浮窗模式说明：</p>
+            <p>💡 浮窗助手说明：</p>
             <ul>
               <li>嵌入后右下角会显示机器人图标</li>
               <li>点击图标可展开小窗口进行对话</li>
@@ -1885,16 +1885,16 @@ onMounted(() => {
       }
 
       .mode-icon {
-        width: 80px;
-        height: 64px;
-        margin: 0 auto 8px;
+        width: 144px;
+        height: 108px;
+        margin: 0 auto 12px;
         display: flex;
         align-items: center;
         justify-content: center;
 
         img {
-          max-width: 100%;
-          max-height: 100%;
+          width: 100%;
+          height: 100%;
           object-fit: contain;
         }
       }

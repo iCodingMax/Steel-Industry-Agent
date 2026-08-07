@@ -474,6 +474,16 @@ watch(
   },
   { deep: true }
 )
+
+// 监听思考过程步骤变化，在执行过程时通知 ChatPanel 滚动
+watch(
+  () => messages.value.map((m) => m.thinkingSteps?.length || 0),
+  () => {
+    nextTick(() => {
+      chatPanelRef.value?.scrollToBottom?.()
+    })
+  }
+)
 </script>
 
 <style lang="scss" scoped>
