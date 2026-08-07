@@ -40,13 +40,13 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/ai-assistant',
     name: 'AiAssistant',
-    component: () => import('@/views/AiAssistantView.vue'),
+    component: () => import('@/views/ChatEmbedView.vue'),
     meta: { title: 'AI智能助手', requiresAuth: false },
   },
   {
     path: '/ai-assistant/:accessHash',
     name: 'AiAssistantByHash',
-    component: () => import('@/views/AiAssistantView.vue'),
+    component: () => import('@/views/ChatEmbedView.vue'),
     meta: { title: 'AI智能助手', requiresAuth: false },
   },
   {

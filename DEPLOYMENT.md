@@ -523,7 +523,7 @@ Oracle数据库的Schema同步通过以下视图获取表结构信息：
 
 在应用管理页面点击"页面嵌入"，可获取嵌入代码。支持两种嵌入模式：
 
-**全屏模式**：通过 iframe 嵌入完整的对话界面
+**嵌入模式**：通过 iframe 嵌入完整的对话界面
 
 ```html
 <script async defer src="http://your-host:port/chat-embed.js?token=YOUR_TOKEN"></script>
@@ -848,7 +848,7 @@ Steel-Industry-Agent/
 │   │       ├── login-logo-dark.png
 │   │       ├── company-logo-dark.png
 │   │       └── company-logo-light.png
-│   ├── chat-embed.js                 # 嵌入脚本（浮窗/全屏模式）
+│   ├── chat-embed.js                 # 嵌入脚本（浮窗/嵌入模式）
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── Dockerfile

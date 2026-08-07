@@ -189,7 +189,7 @@
                         </el-button>
                         <el-button class="action-btn" @click="showEmbedModal = true">
                           <el-icon><Monitor /></el-icon>
-                          <span>嵌入第三方</span>
+                          <span>第三方集成</span>
                         </el-button>
                         <el-button class="action-btn" @click="showAccessModal = true">
                           <el-icon><Setting /></el-icon>
@@ -258,7 +258,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showEmbedModal" title="嵌入第三方" width="700px" destroy-on-close>
+    <el-dialog v-model="showEmbedModal" title="第三方集成" width="700px" destroy-on-close>
       <div class="embed-modal-content">
         <div class="embed-mode-tabs">
           <div 
@@ -274,7 +274,7 @@
                 <rect x="8" y="26" width="20" height="4" rx="1" fill="#cbd5e1"/>
               </svg>
             </div>
-            <div class="mode-name">全屏模式</div>
+            <div class="mode-name">嵌入模式</div>
           </div>
           <div 
             class="embed-mode" 
@@ -462,7 +462,7 @@ const currentEmbedCode = computed(() => {
   const origin = window.location.origin
   
   if (embedMode.value === 'fullscreen') {
-    // 全屏模式：iframe嵌入
+    // 嵌入模式：iframe嵌入
     const baseUrl = `${origin}/chat/${currentApp.value.accessHash}`
     return `<iframe src="${baseUrl}" style="width: 100%; height: 100%;" frameborder="0" allow="microphone"></iframe>`
   } else {
