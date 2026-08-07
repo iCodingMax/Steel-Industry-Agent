@@ -12,7 +12,7 @@
           </svg>
         </div>
         <h1 class="login-title">{{ appName }}</h1>
-        <p class="login-subtitle">请登录以使用智能助手</p>
+        <p class="login-subtitle">请登录以使用工业智能助手</p>
       </div>
 
       <div class="login-tabs">
@@ -89,7 +89,7 @@
       </div>
 
       <div class="login-footer">
-        <span>© {{ currentYear }} 钢铁行业智能助手平台</span>
+        <span>© {{ currentYear }} 工业智能助手平台</span>
       </div>
     </div>
   </div>
@@ -115,7 +115,7 @@ const activeTab = ref('account')
 const isLoading = ref(false)
 const oauthLoading = ref(false)
 const formRef = ref<FormInstance>()
-const appName = ref('智能助手')
+const appName = ref('工业智能助手')
 const oauthEnabled = ref(false)
 const oauthLoginUrl = ref('')
 
@@ -148,32 +148,32 @@ function getRedirectPath(): string {
     try {
       const decoded = decodeURIComponent(redirect)
       // 确保redirect是有效的应用访问路径
-      if (decoded.startsWith('/chat')) {
+      if (decoded.startsWith('/chat') || decoded.startsWith('/ai-assistant')) {
         return decoded
       }
     } catch {
       // 解码失败，可能已经是原始路径
-      if (redirect.startsWith('/chat')) {
+      if (redirect.startsWith('/chat') || redirect.startsWith('/ai-assistant')) {
         return redirect
       }
     }
   }
   
-  // 优先级2: 从sessionStorage获取embed_redirect（适用于嵌入页面场景）
-  const embedRedirect = sessionStorage.getItem('embed_redirect')
-  if (embedRedirect && embedRedirect.startsWith('/chat')) {
+  // 优先级2: 从localStorage获取embed_redirect（持久存储，确保OAuth流程中不丢失）
+  const embedRedirect = localStorage.getItem('embed_redirect')
+  if (embedRedirect && (embedRedirect.startsWith('/chat') || embedRedirect.startsWith('/ai-assistant'))) {
     return embedRedirect
   }
   
-  // 优先级3: 从sessionStorage获取chat_redirect（适用于公开访问链接场景）
-  const chatRedirect = sessionStorage.getItem('chat_redirect')
-  if (chatRedirect && chatRedirect.startsWith('/chat')) {
+  // 优先级3: 从localStorage获取chat_redirect（持久存储）
+  const chatRedirect = localStorage.getItem('chat_redirect')
+  if (chatRedirect && (chatRedirect.startsWith('/chat') || chatRedirect.startsWith('/ai-assistant'))) {
     return chatRedirect
   }
   
-  // 优先级4: 从sessionStorage获取oauth_redirect（适用于OAuth登录场景）
-  const oauthRedirect = sessionStorage.getItem('oauth_redirect')
-  if (oauthRedirect && oauthRedirect.startsWith('/chat')) {
+  // 优先级4: 从localStorage获取oauth_redirect（持久存储）
+  const oauthRedirect = localStorage.getItem('oauth_redirect')
+  if (oauthRedirect && (oauthRedirect.startsWith('/chat') || oauthRedirect.startsWith('/ai-assistant'))) {
     return oauthRedirect
   }
   
@@ -226,16 +226,34 @@ async function handleLogin() {
         // 如果是弹窗模式（从iframe打开），通知父窗口并关闭
         if (isPopupMode.value) {
           ElMessage.success('登录成功')
-          // 通知父窗口（iframe）登录状态
-          try {
-            window.opener?.postMessage({
-              type: 'steel_login_success',
-              token: data.data.token,
-              user: data.data.user
-            }, '*')
-          } catch (e) {
-            console.warn('无法通知父窗口', e)
+          
+          const loginSuccessData = {
+            type: 'steel_login_success',
+            token: data.data.token,
+            user: data.data.user
           }
+          
+          // 方法1: 尝试通过 window.opener 通知
+          let notified = false
+          try {
+            if (window.opener && !window.opener.closed) {
+              window.opener.postMessage(loginSuccessData, '*')
+              notified = true
+            }
+          } catch (e) {
+            console.warn('通过opener通知失败', e)
+          }
+          
+          // 方法2: 使用localStorage广播（作为备选方案）
+          if (!notified) {
+            try {
+              localStorage.setItem('steel_login_result', JSON.stringify(loginSuccessData))
+              window.dispatchEvent(new Event('storage'))
+            } catch (e) {
+              console.warn('通过localStorage通知失败', e)
+            }
+          }
+          
           // 清理弹窗标记
           sessionStorage.removeItem('is_popup')
           // 延迟关闭窗口
@@ -251,6 +269,10 @@ async function handleLogin() {
         
         // 跳转到原页面（使用replace避免在历史记录中留下登录页）
         const redirect = getRedirectPath()
+        // 清理redirect存储，避免残留数据干扰后续登录
+        localStorage.removeItem('oauth_redirect')
+        localStorage.removeItem('chat_redirect')
+        localStorage.removeItem('embed_redirect')
         router.replace(redirect)
       } else {
         ElMessage.error(data.message || '登录失败')
@@ -276,10 +298,10 @@ async function handleOauthLogin() {
     const data = await res.json()
     
     if (data.code === 0 && data.data) {
-      // 保存redirect信息供回调后使用
+      // 保存redirect信息供回调后使用（使用localStorage持久存储）
       const redirect = getRedirectPath()
-      sessionStorage.setItem('oauth_redirect', redirect)
-      sessionStorage.setItem('chat_redirect', redirect)
+      localStorage.setItem('oauth_redirect', redirect)
+      localStorage.setItem('chat_redirect', redirect)
       // 传递弹窗模式标记给OAuth回调页
       if (isPopupMode.value) {
         sessionStorage.setItem('is_popup', '1')

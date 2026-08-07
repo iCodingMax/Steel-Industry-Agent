@@ -76,15 +76,34 @@ async function handleCallback() {
       
       // 如果是弹窗模式，通知父窗口并关闭
       if (isPopupMode.value) {
-        try {
-          window.opener?.postMessage({
-            type: 'steel_login_success',
-            token: data.data.token,
-            user: data.data.user
-          }, '*')
-        } catch (e) {
-          console.warn('无法通知父窗口', e)
+        const loginSuccessData = {
+          type: 'steel_login_success',
+          token: data.data.token,
+          user: data.data.user
         }
+        
+        // 方法1: 尝试通过 window.opener 通知（最可靠）
+        let notified = false
+        try {
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage(loginSuccessData, '*')
+            notified = true
+          }
+        } catch (e) {
+          console.warn('通过opener通知失败', e)
+        }
+        
+        // 方法2: 使用localStorage广播（作为备选方案）
+        if (!notified) {
+          try {
+            localStorage.setItem('steel_login_result', JSON.stringify(loginSuccessData))
+            // 触发storage事件
+            window.dispatchEvent(new Event('storage'))
+          } catch (e) {
+            console.warn('通过localStorage通知失败', e)
+          }
+        }
+        
         // 清理弹窗标记
         sessionStorage.removeItem('is_popup')
         // 尝试关闭窗口
@@ -93,19 +112,35 @@ async function handleCallback() {
         } catch (e) {
           // 如果无法关闭，显示提示
         }
+        
+        // 如果无法关闭窗口，显示返回登录的链接
+        setTimeout(() => {
+          if (!window.closed) {
+            ElMessage.info('登录成功，请返回原页面')
+          }
+        }, 500)
         return
       }
       
       // 获取保存的redirect路径（按优先级获取）
       // 优先级: URL参数 > oauth_redirect > chat_redirect > embed_redirect > 默认/chat
+      // 使用localStorage持久存储，确保OAuth跨页面跳转后redirect不丢失
       const urlRedirect = route.query.redirect as string
-      const oauthRedirect = sessionStorage.getItem('oauth_redirect')
-      const chatRedirect = sessionStorage.getItem('chat_redirect')
-      const embedRedirect = sessionStorage.getItem('embed_redirect')
+      const oauthRedirect = localStorage.getItem('oauth_redirect')
+      const chatRedirect = localStorage.getItem('chat_redirect')
+      const embedRedirect = localStorage.getItem('embed_redirect')
       let redirect = urlRedirect || oauthRedirect || chatRedirect || embedRedirect || '/chat'
+      
+      // 确保redirect是有效的路径（必须以/开头，且是允许的路径前缀）
+      const validPrefixes = ['/chat', '/ai-assistant']
+      if (!redirect.startsWith('/') || !validPrefixes.some(p => redirect.startsWith(p))) {
+        redirect = '/chat'
+      }
 
-      // 清理临时存储
-      sessionStorage.removeItem('oauth_redirect')
+      // 清理临时存储（使用后清除，避免残留数据干扰后续登录）
+      localStorage.removeItem('oauth_redirect')
+      localStorage.removeItem('chat_redirect')
+      localStorage.removeItem('embed_redirect')
 
       // 跳转到原页面
       router.replace(redirect)

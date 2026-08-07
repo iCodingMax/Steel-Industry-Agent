@@ -14,7 +14,7 @@ import json
 import uuid
 from typing import Optional
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, Body, Query
+from fastapi import APIRouter, Depends, Body, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
@@ -74,6 +74,7 @@ async def save_oauth_config(
 
 @router.get("/login-url", summary="获取系统OAuth2授权URL")
 async def get_login_url(
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取系统OAuth2授权URL，用于前端跳转"""
@@ -81,11 +82,14 @@ async def get_login_url(
     if not config or not config.enabled:
         raise BusinessException(code=400, message="系统OAuth2认证未启用")
     
+    # 获取请求来源，用于动态构建回调URL的主机部分
+    origin = request.headers.get("origin", "")
+    
     # 生成state参数防止CSRF
     state = str(uuid.uuid4())
     
-    # 构建授权URL
-    url = oauth_service.build_authorization_url(config, state)
+    # 构建授权URL，使用请求来源动态构建回调URL
+    url = oauth_service.build_authorization_url(config, state, origin)
     
     return success_response(data={
         "loginUrl": url,
@@ -143,6 +147,7 @@ async def oauth_callback(
 
 @router.get("/chat-login-url", summary="获取对话用户OAuth2授权URL")
 async def get_chat_login_url(
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """获取对话用户OAuth2授权URL，用于应用集成"""
@@ -150,11 +155,14 @@ async def get_chat_login_url(
     if not config or not config.enabled:
         raise BusinessException(code=400, message="对话用户OAuth2认证未启用")
     
+    # 获取请求来源，用于动态构建回调URL的主机部分
+    origin = request.headers.get("origin", "")
+    
     # 生成state参数防止CSRF
     state = str(uuid.uuid4())
     
-    # 构建授权URL
-    url = oauth_service.build_authorization_url(config, state)
+    # 构建授权URL，使用请求来源动态构建回调URL
+    url = oauth_service.build_authorization_url(config, state, origin)
     
     return success_response(data={
         "loginUrl": url,

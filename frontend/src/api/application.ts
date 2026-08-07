@@ -15,10 +15,9 @@ export interface Application {
   greetingMessage?: string
   knowledgeBaseIds: number[]
   datasourceIds: number[]
-  iframeAllowedOrigins: string[]
   iframeHeight: number
   iframeWidth: string
-  customDomain?: string
+  requireAuth?: boolean
   apiKey?: string
   maxTokens: number
   temperature: number
@@ -70,10 +69,9 @@ export interface ApplicationUpdateForm {
   greetingMessage?: string
   knowledgeBaseIds?: number[]
   datasourceIds?: number[]
-  iframeAllowedOrigins?: string[]
   iframeHeight?: number
   iframeWidth?: string
-  customDomain?: string
+  requireAuth?: boolean
   maxTokens?: number
   temperature?: number
   topP?: number

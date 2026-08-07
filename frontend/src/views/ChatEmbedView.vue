@@ -64,41 +64,48 @@
       </div>
       <!-- 侧边栏底部用户区域 -->
           <div class="sidebar-footer">
-        <el-dropdown
-          v-if="chatUser"
-          trigger="click"
-          @command="handleUserMenu"
-        >
-          <div class="user-info">
-            <AvatarImage type="user" />
-            <div class="user-detail">
-              <div class="user-name">{{ chatUser.name || chatUser.username }}</div>
-              <div class="user-username">{{ chatUser.username }}</div>
+            <!-- 游客模式：只显示头像，无任何交互 -->
+            <div v-if="isGuestMode" class="user-info guest-mode">
+              <AvatarImage type="user" />
             </div>
-            <el-icon class="user-arrow"><ArrowDown /></el-icon>
-          </div>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item disabled>
-                <div class="dropdown-user-info">
-                  <div class="dropdown-username">用户名: {{ chatUser.username }}</div>
-                  <div v-if="chatUser.name" class="dropdown-name">姓名: {{ chatUser.name }}</div>
+            <!-- 身份验证模式 -->
+            <template v-else>
+              <el-dropdown
+                v-if="chatUser"
+                trigger="click"
+                @command="handleUserMenu"
+              >
+                <div class="user-info">
+                  <AvatarImage type="user" />
+                  <div class="user-detail">
+                    <div class="user-name">{{ chatUser.name || chatUser.username }}</div>
+                    <div class="user-username">{{ chatUser.username }}</div>
+                  </div>
+                  <el-icon class="user-arrow"><ArrowDown /></el-icon>
                 </div>
-              </el-dropdown-item>
-              <el-dropdown-item divided command="logout">
-                <el-icon><SwitchButton /></el-icon>
-                退出登录
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-        <div v-else class="user-info login-prompt" @click="goToLogin">
-          <AvatarImage type="user" />
-          <div class="user-detail">
-            <div class="user-name">点击登录</div>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item disabled>
+                      <div class="dropdown-user-info">
+                        <div class="dropdown-username">用户名: {{ chatUser.username }}</div>
+                        <div v-if="chatUser.name" class="dropdown-name">姓名: {{ chatUser.name }}</div>
+                      </div>
+                    </el-dropdown-item>
+                    <el-dropdown-item divided command="logout">
+                      <el-icon><SwitchButton /></el-icon>
+                      退出登录
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <div v-else class="user-info login-prompt" @click="goToLogin">
+                <AvatarImage type="user" />
+                <div class="user-detail">
+                  <div class="user-name">点击登录</div>
+                </div>
+              </div>
+            </template>
           </div>
-        </div>
-      </div>
     </div>
 
     <div class="chat-main">
@@ -343,33 +350,40 @@ function sendMessageToParent(type: string) {
 function goToLogin() {
   const currentPath = route.fullPath
   
-  // 保存当前路径到sessionStorage，供登录成功后使用
-  sessionStorage.setItem('embed_redirect', currentPath)
-  sessionStorage.setItem('chat_redirect', currentPath)
+  // 保存当前路径到localStorage（持久存储），确保OAuth流程中不会丢失
+  // OAuth跳转会离开当前页面，sessionStorage可能丢失，必须用localStorage兜底
+  localStorage.setItem('embed_redirect', currentPath)
+  localStorage.setItem('chat_redirect', currentPath)
   
-  // 如果在iframe中，需要用window.open打开登录页，避免浏览器阻止本地网络访问
+  // 如果在iframe中，需要用window.open打开登录页
   if (isInIframe.value) {
-    // 弹窗模式的登录URL，添加 popup=1 参数标记为弹窗
-    const loginPath = `/app-login?redirect=${encodeURIComponent(currentPath)}&popup=1`
     // 通过postMessage通知父窗口打开登录页
     window.parent?.postMessage({
       type: 'steel_auth_required',
-      loginUrl: loginPath,
+      loginUrl: '/app-login?redirect=' + encodeURIComponent(currentPath),
       redirect: currentPath
     }, '*')
+    
     // 同时也打开一个新窗口作为备选
-    const loginUrl = window.location.origin + loginPath
-    window.open(loginUrl, '_blank', 'width=480,height=600')
+    const loginUrl = `/app-login?redirect=${encodeURIComponent(currentPath)}&popup=1`
+    const fullLoginUrl = window.location.origin + loginUrl
+    window.open(fullLoginUrl, '_blank', 'width=480,height=600')
     ElMessage.info('请在新窗口中完成登录')
   } else {
     // 非iframe模式（公开访问链接），直接在当前页面跳转
-    const loginPath = `/app-login?redirect=${encodeURIComponent(currentPath)}`
-    router.push(loginPath)
+    // 使用对象形式传递参数，避免URL编码问题
+    router.push({
+      path: '/app-login',
+      query: {
+        redirect: currentPath
+      }
+    })
   }
 }
 
-// 支持两种访问方式：通过appId（/chat/embed/:appId）或通过accessHash（/chat/:accessHash）
-const isHashMode = computed(() => route.name === 'ChatEmbedByHash')
+// 支持两种访问方式：通过appId（/chat/embed/:appId）或通过accessHash（/chat/:accessHash 或 /ai-assistant/:accessHash）
+// 通过判断路由参数中是否存在 accessHash 来识别模式，不依赖具体路由名称
+const isHashMode = computed(() => !!route.params.accessHash)
 const accessHash = computed(() => route.params.accessHash as string)
 const appId = computed(() => {
   if (isHashMode.value && app.value) {
@@ -381,6 +395,9 @@ const appName = ref('工业智能助手平台')
 const greetingMessage = ref('')
 const app = ref<Application | null>(null)
 const llmConfigs = ref<any[]>([])
+
+const requireAuth = computed(() => app.value?.requireAuth ?? true)
+const isGuestMode = computed(() => !requireAuth.value)
 
 async function loadLLMConfigs() {
   try {
@@ -1038,6 +1055,7 @@ async function handleSend(content?: string) {
 
 // 监听来自登录弹窗的消息
 function setupMessageListener() {
+  // 监听 postMessage（主通道）
   window.addEventListener('message', (event) => {
     const data = event.data
     if (!data || typeof data !== 'object') return
@@ -1065,6 +1083,26 @@ function setupMessageListener() {
     if (data.type === 'chat-expanded-exit') {
       isExpandedMode.value = false
       sidebarVisible.value = false
+    }
+  })
+  
+  // 监听 localStorage 变化（备选通道，用于弹窗 postMessage 失败时）
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'steel_login_result' && event.newValue) {
+      try {
+        const data = JSON.parse(event.newValue)
+        if (data.type === 'steel_login_success' && data.token) {
+          localStorage.setItem('chat_token', data.token)
+          localStorage.setItem('chat_user', JSON.stringify(data.user))
+          initChatUser()
+          ElMessage.success('登录成功')
+          loadSessions()
+          // 清理临时存储
+          localStorage.removeItem('steel_login_result')
+        }
+      } catch (e) {
+        console.error('解析登录结果失败', e)
+      }
     }
   })
 }
@@ -1285,6 +1323,25 @@ onMounted(async () => {
   &:hover {
     background: #f0f4ff;
     border-color: #c7d2fe;
+  }
+
+  &.guest-mode {
+    justify-content: flex-start;
+    padding: 10px 12px;
+    cursor: default;
+    border: none;
+    background: #fff;
+    width: 100%;
+    height: auto;
+    min-height: 44px;
+
+    &:hover {
+      background: #fff;
+    }
+
+    .user-detail {
+      display: none;
+    }
   }
 
   &.login-prompt {

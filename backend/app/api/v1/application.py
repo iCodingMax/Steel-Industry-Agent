@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from app.core.database import get_db_session
-from app.models.application import Application, AppPrompt, decode_access_hash
+from app.models.application import Application, AppPrompt, generate_access_hash
 from app.models.user import User
 from app.middlewares.auth_deps import get_current_user
 from app.middlewares.exception_handler import BusinessException, success_response
@@ -50,10 +50,9 @@ class ApplicationUpdate(BaseModel):
     greetingMessage: str = Field(None, description="开场白消息")
     knowledgeBaseIds: List[int] = Field(None, description="关联知识库ID列表")
     datasourceIds: List[int] = Field(None, description="关联数据源ID列表")
-    iframeAllowedOrigins: List[str] = Field(None, description="允许的iframe嵌入源")
     iframeHeight: int = Field(None, description="iframe默认高度")
     iframeWidth: str = Field(None, description="iframe默认宽度")
-    customDomain: str = Field(None, description="自定义域名")
+    requireAuth: bool = Field(None, description="是否需要身份验证")
     maxTokens: int = Field(None, description="最大生成token数")
     temperature: float = Field(None, description="温度参数(0.0-2.0)")
     topP: float = Field(None, description="top_p参数(0.0-1.0)")
@@ -206,10 +205,9 @@ async def update_application(
         'greeting_message': data.greetingMessage,
         'knowledge_base_ids': data.knowledgeBaseIds,
         'datasource_ids': data.datasourceIds,
-        'iframe_allowed_origins': data.iframeAllowedOrigins,
         'iframe_height': data.iframeHeight,
         'iframe_width': data.iframeWidth,
-        'custom_domain': data.customDomain,
+        'require_auth': data.requireAuth,
         'max_tokens': data.maxTokens,
         'temperature': int(data.temperature * 10) if data.temperature is not None else None,
         'top_p': int(data.topP * 10) if data.topP is not None else None,
@@ -386,6 +384,12 @@ async def get_iframe_url(
     if app.status != "active":
         raise BusinessException(status_code=400, detail="应用未启用")
     
+    # 确保access_hash存在
+    if not app.access_hash:
+        app.access_hash = generate_access_hash()
+        await db.commit()
+        await db.refresh(app)
+    
     return success_response({
         "url": f"/chat/{app.access_hash}",
         "embedCode": f'<iframe src="/chat/{app.access_hash}" width="{app.iframe_width}" height="{app.iframe_height}px" frameborder="0"></iframe>',
@@ -398,16 +402,11 @@ async def get_application_by_hash(
     db: AsyncSession = Depends(get_db_session),
 ):
     """通过access_hash获取应用信息，公开接口无需认证"""
-    try:
-        app_id = decode_access_hash(access_hash)
-    except Exception:
-        raise BusinessException(status_code=404, detail="无效的访问链接")
-    
-    result = await db.execute(select(Application).where(Application.id == app_id))
+    result = await db.execute(select(Application).where(Application.access_hash == access_hash))
     app = result.scalar_one_or_none()
     
     if not app:
-        raise BusinessException(status_code=404, detail="应用不存在")
+        raise BusinessException(status_code=404, detail="无效的访问链接")
     
     if app.status != "active":
         raise BusinessException(status_code=400, detail="应用未启用")
@@ -429,11 +428,18 @@ async def regenerate_access_hash(
     db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
-    """重新生成应用的公开访问hash（由于hash基于ID生成，此接口仅用于返回新的访问URL信息）"""
+    """重新生成应用的公开访问hash（生成新的16位随机十六进制hash）"""
     result = await db.execute(select(Application).where(Application.id == app_id))
     app = result.scalar_one_or_none()
     
     if not app:
         raise BusinessException(status_code=404, detail="应用不存在")
     
-    return success_response({"accessHash": app.access_hash})
+    # 生成新的access_hash并更新数据库
+    new_hash = generate_access_hash()
+    app.access_hash = new_hash
+    await db.commit()
+    await db.refresh(app)
+    
+    logger.info(f"应用 {app_id} 的access_hash已重新生成: {new_hash}")
+    return success_response({"accessHash": new_hash})

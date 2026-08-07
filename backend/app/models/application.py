@@ -17,10 +17,9 @@
 - iframe嵌入配置
 - 自定义域名
 - API密钥管理
-- 公开访问链接（通过access_hash生成）
+- 公开访问链接（通过access_hash生成，16位随机十六进制）
 """
-import uuid
-import base64
+import secrets
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
@@ -29,19 +28,9 @@ from sqlalchemy.sql import func
 from app.core.base_model import Base
 
 
-def generate_access_hash(app_id: int) -> str:
-    """根据应用ID生成公开访问用的hash（使用base64编码，可逆）"""
-    return base64.urlsafe_b64encode(str(app_id).encode()).decode().rstrip('=')
-
-
-def decode_access_hash(hash_str: str) -> int:
-    """从公开访问hash解析出应用ID"""
-    # 添加padding
-    padding = 4 - len(hash_str) % 4
-    if padding != 4:
-        hash_str = hash_str + '=' * padding
-    decoded = base64.urlsafe_b64decode(hash_str)
-    return int(decoded.decode())
+def generate_access_hash() -> str:
+    """生成16位随机十六进制访问hash（使用secrets.token_hex(8)）"""
+    return secrets.token_hex(8)
 
 
 class Application(Base):
@@ -65,10 +54,9 @@ class Application(Base):
     greeting_message = Column(Text, nullable=True, comment="开场白消息")
     knowledge_base_ids = Column(JSONB, nullable=True, comment="关联知识库ID列表")
     datasource_ids = Column(JSONB, nullable=True, comment="关联数据源ID列表")
-    iframe_allowed_origins = Column(JSONB, nullable=True, comment="允许的iframe嵌入源")
     iframe_height = Column(Integer, default=600, comment="iframe默认高度")
     iframe_width = Column(String(20), default="100%", comment="iframe默认宽度")
-    custom_domain = Column(String(255), nullable=True, comment="自定义域名")
+    require_auth = Column(Boolean, default=True, comment="是否需要身份验证")
     api_key = Column(String(100), nullable=True, comment="API密钥")
     max_tokens = Column(Integer, default=8192, comment="最大生成token数")
     temperature = Column(Integer, default=7, comment="温度参数(0-20，除以10为实际值)")
@@ -76,17 +64,26 @@ class Application(Base):
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True, comment="创建人ID")
+    access_hash = Column(String(16), unique=True, nullable=True, comment="公开访问hash（16位随机十六进制）")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 自动生成access_hash（如果未提供）
+        if not self.access_hash:
+            self.access_hash = generate_access_hash()
 
     @property
-    def access_hash(self) -> str:
-        """获取公开访问hash，使用base64编码的app_id"""
-        return generate_access_hash(self.id) if self.id else str(uuid.uuid4())
+    def access_hash_display(self) -> str:
+        """获取公开访问hash（如果为空则自动生成）"""
+        if not self.access_hash:
+            self.access_hash = generate_access_hash()
+        return self.access_hash
 
     def to_dict(self) -> dict:
         """转换为字典"""
         return {
             "id": self.id,
-            "accessHash": self.access_hash,
+            "accessHash": self.access_hash_display,
             "name": self.name,
             "description": self.description,
             "icon": self.icon,
@@ -99,10 +96,9 @@ class Application(Base):
             "greetingMessage": self.greeting_message,
             "knowledgeBaseIds": self.knowledge_base_ids if self.knowledge_base_ids else [],
             "datasourceIds": self.datasource_ids if self.datasource_ids else [],
-            "iframeAllowedOrigins": self.iframe_allowed_origins if self.iframe_allowed_origins else [],
             "iframeHeight": self.iframe_height,
             "iframeWidth": self.iframe_width,
-            "customDomain": self.custom_domain,
+            "requireAuth": self.require_auth,
             "apiKey": self.api_key,
             "maxTokens": self.max_tokens,
             "temperature": self.temperature / 10.0,

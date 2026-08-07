@@ -157,6 +157,17 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN applications.datasource_ids IS '关联数据源ID列表'"
                 ))
                 logger.info("已为 applications 表添加 datasource_ids 列")
+            if 'access_hash' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN access_hash VARCHAR(16)"
+                ))
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD CONSTRAINT applications_access_hash_key UNIQUE (access_hash)"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.access_hash IS '公开访问hash（16位随机十六进制）'"
+                ))
+                logger.info("已为 applications 表添加 access_hash 列")
 
         # users 表添加 user_source 字段
         if 'users' in inspector.get_table_names():

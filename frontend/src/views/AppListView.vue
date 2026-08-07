@@ -142,13 +142,13 @@
                     <el-select v-model="appForm.knowledgeBaseIds" multiple placeholder="请选择知识库" style="width: 100%">
                       <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
                     </el-select>
-                    <p class="form-tip">选择后，AI将基于这些知识库的内容进行回答</p>
+                    <p class="form-tip">选择后，智能助手将基于这些知识库的内容进行回答</p>
                   </el-form-item>
                   <el-form-item label="关联数据库">
                     <el-select v-model="appForm.datasourceIds" multiple placeholder="请选择数据源" style="width: 100%">
                       <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
                     </el-select>
-                    <p class="form-tip">选择后，AI将基于数据库中的数据进行问答</p>
+                    <p class="form-tip">选择后，智能助手将基于数据库中的数据进行问答</p>
                   </el-form-item>
                 </el-card>
 
@@ -191,11 +191,23 @@
                           <el-icon><Monitor /></el-icon>
                           <span>第三方集成</span>
                         </el-button>
-                        <el-button class="action-btn" @click="showAccessModal = true">
-                          <el-icon><Setting /></el-icon>
-                          <span>访问限制</span>
-                        </el-button>
                       </div>
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="身份验证">
+                    <div class="auth-config">
+                      <el-switch
+                        v-model="authConfig.requireAuth"
+                        active-text="开启"
+                        inactive-text="关闭"
+                        @change="handleAuthToggle"
+                      />
+                      <p class="form-tip" v-if="authConfig.requireAuth">
+                        开启后，应用发布的智能助手支持账号登录
+                      </p>
+                      <p class="form-tip" v-else>
+                        关闭后，应用发布的智能助手支持访客模式
+                      </p>
                     </div>
                   </el-form-item>
                 </el-card>
@@ -274,7 +286,7 @@
                 <rect x="8" y="26" width="20" height="4" rx="1" fill="#cbd5e1"/>
               </svg>
             </div>
-            <div class="mode-name">嵌入模式</div>
+            <div class="mode-name">网页嵌入</div>
           </div>
           <div 
             class="embed-mode" 
@@ -290,7 +302,7 @@
                 <path d="M42 40 Q42 32 36 32" stroke="#8b5cf6" stroke-width="2" fill="none"/>
               </svg>
             </div>
-            <div class="mode-name">浮窗模式</div>
+            <div class="mode-name">浮窗助手</div>
           </div>
         </div>
 
@@ -315,22 +327,7 @@
       </div>
     </el-dialog>
 
-    <el-dialog v-model="showAccessModal" title="访问限制" width="500px" destroy-on-close>
-      <el-form :model="integrationForm" label-width="120px">
-        <el-form-item label="允许的来源">
-          <el-input v-model="allowedOriginsText" type="textarea" :rows="3" placeholder="输入允许嵌入的域名，每行一个，如：https://example.com" />
-          <p class="form-tip">留空则允许所有来源，建议限制为具体域名以提高安全性</p>
-        </el-form-item>
-        <el-form-item label="自定义域名">
-          <el-input v-model="integrationForm.customDomain" placeholder="如：https://chat.example.com" />
-          <p class="form-tip">设置后可使用自定义域名访问嵌入页面</p>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showAccessModal = false">取消</el-button>
-        <el-button type="primary" @click="handleSaveAccessSettings">保存设置</el-button>
-      </template>
-    </el-dialog>
+    
   </div>
 </template>
 
@@ -438,19 +435,13 @@ const createRules: FormRules = {
   name: [{ required: true, message: '请输入应用名称', trigger: 'blur' }],
 }
 
-const integrationForm = reactive({
-  iframeWidth: '400px',
-  iframeHeight: '600px',
-  iframeBorder: '0',
-  customDomain: '',
-})
-
-const allowedOriginsText = ref('')
-
 const publicAccessEnabled = ref(true)
 const showEmbedModal = ref(false)
-const showAccessModal = ref(false)
 const embedMode = ref<'fullscreen' | 'floating'>('fullscreen')
+
+const authConfig = reactive({
+  requireAuth: true,
+})
 
 const publicAccessUrl = computed(() => {
   if (!currentApp.value) return ''
@@ -805,10 +796,7 @@ function handleDetail(app: Application) {
     temperature: app.temperature,
     topP: app.topP,
   })
-  integrationForm.iframeWidth = app.iframeWidth || '400px'
-  integrationForm.iframeHeight = String(app.iframeHeight) || '600px'
-  integrationForm.customDomain = app.customDomain || ''
-  allowedOriginsText.value = (app.iframeAllowedOrigins || []).join('\n')
+  authConfig.requireAuth = app.requireAuth ?? true
   // 检测系统提示词是否溢出
   checkPromptOverflow()
 }
@@ -907,16 +895,10 @@ async function handleSaveIntegration() {
   if (!currentApp.value) return
   saving.value = true
   try {
-    const allowedOrigins = allowedOriginsText.value
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line)
-
     await updateApplication(currentApp.value.id, {
-      iframeWidth: integrationForm.iframeWidth,
-      iframeHeight: parseInt(integrationForm.iframeHeight) || 600,
-      iframeAllowedOrigins: allowedOrigins,
-      customDomain: integrationForm.customDomain,
+      iframeWidth: '100%',
+      iframeHeight: 600,
+      requireAuth: authConfig.requireAuth,
     })
     ElMessage.success('集成设置已保存')
   } catch (error) {
@@ -924,6 +906,15 @@ async function handleSaveIntegration() {
   } finally {
     saving.value = false
   }
+}
+
+function handleAuthToggle(val: boolean) {
+  if (!currentApp.value) return
+  updateApplication(currentApp.value.id, {
+    requireAuth: val,
+  }).catch(() => {
+    ElMessage.error('保存失败')
+  })
 }
 
 function openChat() {
@@ -939,28 +930,6 @@ async function copyPublicLink() {
 function openPublicLink() {
   if (!currentApp.value) return
   window.open(publicAccessUrl.value, '_blank')
-}
-
-async function handleSaveAccessSettings() {
-  if (!currentApp.value) return
-  saving.value = true
-  try {
-    const allowedOrigins = allowedOriginsText.value
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line)
-
-    await updateApplication(currentApp.value.id, {
-      iframeAllowedOrigins: allowedOrigins,
-      customDomain: integrationForm.customDomain,
-    })
-    showAccessModal.value = false
-    ElMessage.success('访问限制已保存')
-  } catch (error) {
-    ElMessage.error('保存失败')
-  } finally {
-    saving.value = false
-  }
 }
 
 function scrollToBottom() {

@@ -120,18 +120,31 @@ class OAuthService:
         return config is not None and config.enabled
 
     @staticmethod
-    def build_authorization_url(config: OAuthConfig, state: str = "") -> str:
+    def build_authorization_url(config: OAuthConfig, state: str = "", origin: str = "") -> str:
         """
         构建OAuth2授权URL
         
         :param config: OAuth2配置
         :param state: 状态参数（用于防止CSRF）
+        :param origin: 请求来源（用于动态构建回调URL的主机部分）
         :return: 授权URL
         """
+        # 根据请求来源动态构建回调URL的主机部分
+        redirect_url = config.redirect_url
+        if origin and config.redirect_url:
+            # 从配置的redirect_url中提取路径部分
+            from urllib.parse import urlparse
+            parsed = urlparse(config.redirect_url)
+            if parsed.path:
+                # 使用请求的origin替换配置中的主机部分
+                redirect_url = f"{origin}{parsed.path}"
+                if parsed.query:
+                    redirect_url += f"?{parsed.query}"
+        
         params = {
             "response_type": "code",
             "client_id": config.client_id,
-            "redirect_uri": config.redirect_url,
+            "redirect_uri": redirect_url,
             "scope": config.scope,
         }
         if state:

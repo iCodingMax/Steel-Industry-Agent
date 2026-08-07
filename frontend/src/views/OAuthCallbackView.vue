@@ -66,14 +66,26 @@ async function processCallback() {
       message.value = '认证成功，正在跳转...'
       
       // 跳转到目标页面
-      // 优先级: URL参数 > sessionStorage > 默认/app-management
+      // 优先级: URL参数 > localStorage > 默认/app-management
+      // 使用localStorage持久存储，确保OAuth跨页面跳转后redirect不丢失
       setTimeout(() => {
         const urlRedirect = route.query.redirect as string
-        const oauthRedirect = sessionStorage.getItem('oauth_redirect')
-        const chatRedirect = sessionStorage.getItem('chat_redirect')
-        const embedRedirect = sessionStorage.getItem('embed_redirect')
+        const oauthRedirect = localStorage.getItem('oauth_redirect')
+        const chatRedirect = localStorage.getItem('chat_redirect')
+        const embedRedirect = localStorage.getItem('embed_redirect')
         let redirect = urlRedirect || oauthRedirect || chatRedirect || embedRedirect || '/app-management'
-        sessionStorage.removeItem('oauth_redirect')
+        
+        // 确保redirect是有效的路径（必须以/开头，且是允许的路径前缀）
+        const validPrefixes = ['/chat', '/ai-assistant', '/app']
+        if (!redirect.startsWith('/') || !validPrefixes.some(p => redirect.startsWith(p))) {
+          redirect = '/app-management'
+        }
+        
+        // 清理使用后的redirect存储
+        localStorage.removeItem('oauth_redirect')
+        localStorage.removeItem('chat_redirect')
+        localStorage.removeItem('embed_redirect')
+        
         router.replace(redirect)
       }, 1000)
     } else {
