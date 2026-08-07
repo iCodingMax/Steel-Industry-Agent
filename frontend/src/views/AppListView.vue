@@ -279,12 +279,7 @@
             @click="embedMode = 'fullscreen'"
           >
             <div class="mode-icon full-icon">
-              <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="4" y="8" width="40" height="32" rx="4" fill="#f1f5f9" stroke="#e2e8f0" stroke-width="2"/>
-                <rect x="8" y="12" width="32" height="6" rx="2" fill="#cbd5e1"/>
-                <rect x="8" y="22" width="28" height="14" rx="2" fill="#e2e8f0"/>
-                <rect x="8" y="26" width="20" height="4" rx="1" fill="#cbd5e1"/>
-              </svg>
+              <img src="@/assets/embedMode-fullscreen.png" alt="网页嵌入" />
             </div>
             <div class="mode-name">网页嵌入</div>
           </div>
@@ -294,13 +289,7 @@
             @click="embedMode = 'floating'"
           >
             <div class="mode-icon float-icon">
-              <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="24" cy="24" r="16" fill="#8b5cf6"/>
-                <rect x="16" y="18" width="16" height="12" rx="2" fill="white"/>
-                <circle cx="20" cy="24" r="2" fill="#8b5cf6"/>
-                <circle cx="28" cy="24" r="2" fill="#8b5cf6"/>
-                <path d="M42 40 Q42 32 36 32" stroke="#8b5cf6" stroke-width="2" fill="none"/>
-              </svg>
+              <img src="@/assets/embedMode-floating.png" alt="浮窗助手" />
             </div>
             <div class="mode-name">浮窗助手</div>
           </div>
@@ -315,6 +304,12 @@
             </el-button>
           </div>
           <pre class="embed-code-block"><code>{{ currentEmbedCode }}</code></pre>
+          <div class="embed-tip" v-if="embedMode === 'fullscreen'">
+            <p>💡 网页嵌入说明：</p>
+            <ul>
+              <li>将参考代码复制到业务系统前端项目中，作为独立页面路由文件</li>
+            </ul>
+          </div>
           <div class="embed-tip" v-if="embedMode === 'floating'">
             <p>💡 浮窗模式说明：</p>
             <ul>
@@ -451,11 +446,18 @@ const publicAccessUrl = computed(() => {
 const currentEmbedCode = computed(() => {
   if (!currentApp.value) return ''
   const origin = window.location.origin
-  
+
   if (embedMode.value === 'fullscreen') {
-    // 嵌入模式：iframe嵌入
+    // 网页嵌入模式：使用业务系统的 app-iframe 组件嵌入（单行格式）
     const baseUrl = `${origin}/chat/${currentApp.value.accessHash}`
-    return `<iframe src="${baseUrl}" style="width: 100%; height: 100%;" frameborder="0" allow="microphone"></iframe>`
+    return '<route lang="json5">{ meta: { label: \'智能助手\', isSkip403Check: true } }</'
+      + 'route><'
+      + 'script lang="ts" setup>const iframeSrc = `' + baseUrl + '`;</'
+      + 'script><'
+      + 'template> <app-iframe class="app-iframe" :src="iframeSrc" allow="microphone" /> </'
+      + 'template><'
+      + 'style lang="scss"></'
+      + 'style>'
   } else {
     // 浮窗模式：script嵌入
     const token = currentApp.value.accessHash
@@ -1883,16 +1885,17 @@ onMounted(() => {
       }
 
       .mode-icon {
-        width: 64px;
+        width: 80px;
         height: 64px;
-        margin: 0 auto 12px;
+        margin: 0 auto 8px;
         display: flex;
         align-items: center;
         justify-content: center;
 
-        svg {
-          width: 48px;
-          height: 48px;
+        img {
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;
         }
       }
 
