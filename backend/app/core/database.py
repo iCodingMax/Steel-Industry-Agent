@@ -168,6 +168,22 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN applications.access_hash IS '公开访问hash（16位随机十六进制）'"
                 ))
                 logger.info("已为 applications 表添加 access_hash 列")
+            if 'score_threshold' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN score_threshold FLOAT DEFAULT 0.6"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.score_threshold IS '检索相似度阈值(0-1之间)'"
+                ))
+                logger.info("已为 applications 表添加 score_threshold 列")
+            if 'top_k' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN top_k INTEGER DEFAULT 3"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.top_k IS '引用分段数(1-10之间)'"
+                ))
+                logger.info("已为 applications 表添加 top_k 列")
 
         # users 表添加 user_source 字段
         if 'users' in inspector.get_table_names():

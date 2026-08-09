@@ -21,6 +21,40 @@ const chartRef = ref<HTMLElement>()
 let chartInstance: echarts.ECharts | null = null
 let resizeObserver: ResizeObserver | null = null
 
+/**
+ * 导出图表为 base64 图片（直接从页面渲染实例导出，100%还原显示效果）
+ * @param options 导出配置
+ */
+function exportImage(options?: {
+  type?: 'png' | 'jpeg' | 'svg'
+  pixelRatio?: number
+  backgroundColor?: string
+}): string | null {
+  if (!chartInstance) return null
+  try {
+    return chartInstance.getDataURL({
+      type: options?.type || 'png',
+      pixelRatio: options?.pixelRatio || 2,
+      backgroundColor: options?.backgroundColor || '#fff',
+    })
+  } catch (e) {
+    console.error('图表导出失败:', e)
+    return null
+  }
+}
+
+/** 获取 echarts 实例 */
+function getInstance(): echarts.ECharts | null {
+  return chartInstance
+}
+
+/** 暴露方法给父组件调用 */
+defineExpose({
+  exportImage,
+  getInstance,
+  resizeChart,
+})
+
 function initChart() {
   if (!chartRef.value) return
   chartInstance = echarts.init(chartRef.value)

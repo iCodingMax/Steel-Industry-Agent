@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, UploadFile, File, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pathlib import Path
+from loguru import logger
 import os
 import uuid
 

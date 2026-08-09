@@ -294,8 +294,10 @@ const loadingEmbeddingModels = ref(false)
 async function loadEmbeddingModels() {
   loadingEmbeddingModels.value = true
   try {
-    const res = await getLLMConfigs({ type: 'embedding' }) as any
-    const configs = res.data || []
+    const res = await getLLMConfigs({ model_type: 'embedding' }) as any
+    let configs = res.data || []
+    // 双重保险：客户端按modelType再过滤一遍，避免后端缓存等问题混入其他类型
+    configs = configs.filter((c: any) => (c.modelType || c.model_type) === 'embedding')
     embeddingModels.value = configs.map((c: any) => ({ id: c.id, name: c.name }))
     if (embeddingModels.value.length > 0 && !kbSettings.embeddingModel) {
       kbSettings.embeddingModel = String(embeddingModels.value[0].id)

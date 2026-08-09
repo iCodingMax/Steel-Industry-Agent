@@ -129,9 +129,6 @@
                       <div class="textarea-ellipsis" v-if="appForm.systemPrompt && !systemPromptFocused && isPromptOverflow">...</div>
                     </div>
                   </el-form-item>
-                  <el-form-item label="用户提示词模板">
-                    <el-input v-model="appForm.userPromptTemplate" type="textarea" :rows="3" placeholder="用户输入会被填充到这个模板中，例如：请基于以下知识回答问题：{{question}}" />
-                  </el-form-item>
                 </el-card>
 
                 <el-card shadow="never" class="form-card">
@@ -139,9 +136,15 @@
                     <span class="card-title">关联设置</span>
                   </template>
                   <el-form-item label="关联知识库">
-                    <el-select v-model="appForm.knowledgeBaseIds" multiple placeholder="请选择知识库" style="width: 100%">
-                      <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
-                    </el-select>
+                    <div class="kb-row">
+                      <el-select v-model="appForm.knowledgeBaseIds" multiple placeholder="请选择知识库" style="flex: 1">
+                        <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
+                      </el-select>
+                      <el-button type="primary" link @click="retrievalDialogVisible = true">
+                        <el-icon><Setting /></el-icon>
+                        参数设置
+                      </el-button>
+                    </div>
                     <p class="form-tip">选择后，智能助手将基于这些知识库的内容进行回答</p>
                   </el-form-item>
                   <el-form-item label="关联数据库">
@@ -322,12 +325,58 @@
       </div>
     </el-dialog>
 
-    
+    <!-- 检索参数设置弹窗 -->
+    <el-dialog v-model="retrievalDialogVisible" title="检索参数设置" width="480px" destroy-on-close>
+      <div class="retrieval-params-dialog">
+        <div class="param-item">
+          <div class="param-header">
+            <span class="param-label">相似度阈值 Score</span>
+            <el-tag size="small" type="info">{{ retrievalEdit.scoreThreshold.toFixed(2) }}</el-tag>
+          </div>
+          <el-slider
+            v-model="retrievalEdit.scoreThreshold"
+            :min="0"
+            :max="1"
+            :step="0.05"
+          />
+          <p class="form-tip">仅返回相似度高于该阈值的片段，推荐范围 0.5-0.8</p>
+        </div>
+        <div class="param-item">
+          <div class="param-header">
+            <span class="param-label">引用分段数 Top-K</span>
+            <el-tag size="small" type="info">{{ retrievalEdit.topK }}</el-tag>
+          </div>
+          <el-slider
+            v-model="retrievalEdit.topK"
+            :min="1"
+            :max="10"
+            :step="1"
+          />
+          <p class="form-tip">检索后返回最相关的前 K 个文本片段用于生成回答</p>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="retrievalDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="applyRetrievalParams">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- SQL查看弹窗 -->
+    <el-dialog v-model="sqlDialogVisible" title="SQL查询语句" width="70%" top="10vh">
+      <div class="sql-dialog-content">
+        <pre class="sql-dialog-code">{{ currentSql }}</pre>
+      </div>
+      <template #footer>
+        <el-button @click="sqlDialogVisible = false">关闭</el-button>
+        <el-button type="primary" @click="copySql(currentSql)">复制SQL</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import * as XLSX from 'xlsx'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
@@ -370,7 +419,13 @@ const rerankModels = ref<LLMConfigForm[]>([])
 
 const currentApp = ref<Application | null>(null)
 const activeTab = ref('settings')
+// 检索参数设置弹窗
+const retrievalDialogVisible = ref(false)
+const retrievalEdit = reactive({ scoreThreshold: 0.6, topK: 3 })
 const showApiKey = ref(false)
+// SQL查看弹窗
+const sqlDialogVisible = ref(false)
+const currentSql = ref('')
 
 const appFormRef = ref<FormInstance>()
 const appForm = reactive<ApplicationUpdateForm>({
@@ -385,6 +440,8 @@ const appForm = reactive<ApplicationUpdateForm>({
   greetingMessage: '',
   knowledgeBaseIds: [],
   datasourceIds: [],
+  scoreThreshold: 0.6,
+  topK: 3,
   maxTokens: 8192,
   temperature: 0.7,
   topP: 0.9,
@@ -517,8 +574,8 @@ async function copyMessageContent(content: string) {
 }
 
 async function handleSql(sql: string) {
-  const ok = await copyToClipboard(sql)
-  ok ? ElMessage.success('SQL已复制到剪贴板') : ElMessage.error('复制失败，请手动复制')
+  currentSql.value = sql
+  sqlDialogVisible.value = true
 }
 
 function handleReference(_reference: any) {
@@ -611,29 +668,68 @@ function exportToExcel(data: any[], columnMeta?: any[], fileName?: string) {
 }
 
 // 导出图表为图片
-function exportChartToImage(chartOption: any) {
-  if (!chartOption) {
+function exportChartToImage(chartOption: any, msg?: DebugMessage) {
+  // 当chartOption为空但有消息数据时，动态生成图表配置
+  let option = chartOption
+  if (!option && msg && msg.dataResult && msg.dataResult.length > 0) {
+    option = buildChartOption(msg)
+  }
+  if (!option) {
     ElMessage.warning('没有图表可导出')
     return
   }
 
   try {
+    const W = 1200
+    const H = 700
     const canvas = document.createElement('canvas')
-    canvas.width = 800
-    canvas.height = 400
-    canvas.style.display = 'none'
+    canvas.width = W
+    canvas.height = H
+    canvas.style.cssText = `position:fixed;left:-9999px;top:0;width:${W}px;height:${H}px;z-index:-9999;`
     document.body.appendChild(canvas)
 
     const chart = echarts.init(canvas, undefined, {
-      renderer: 'canvas',
+      renderer: 'canvas', width: W, height: H,
     })
-    chart.setOption(chartOption)
+    const clonedOption = JSON.parse(JSON.stringify(option))
+
+    // 修复百分比布局导致的数据点截断
+    clonedOption.animation = false
+    clonedOption.animationDuration = 0
+    clonedOption.animationDurationUpdate = 0
+    if (clonedOption.grid) {
+      const g = Array.isArray(clonedOption.grid) ? clonedOption.grid[0] : clonedOption.grid
+      g.containLabel = false
+      g.left = 70
+      g.right = 40
+      g.top = 50
+      g.bottom = clonedOption.xAxis?.name ? 130 : 120
+    }
+    if (Array.isArray(clonedOption.series)) {
+      clonedOption.series.forEach((s: any) => {
+        if (s.type === 'pie') {
+          s.radius = ['35%', '65%']
+          s.center = ['50%', '52%']
+          if (!s.itemStyle) s.itemStyle = {}
+          s.itemStyle.borderWidth = 2
+        }
+        if ((s.type === 'bar' || s.type === 'line') && clonedOption.xAxis) {
+          clonedOption.xAxis.axisLabel = clonedOption.xAxis.axisLabel || {}
+          clonedOption.xAxis.axisLabel.interval = 0
+          clonedOption.xAxis.boundaryGap = s.type === 'bar' ? true : false
+        }
+      })
+    }
+
+    chart.setOption(clonedOption, true)
+    chart.resize({ width: W, height: H })
 
     setTimeout(() => {
       const url = chart.getDataURL({
         type: 'png',
         pixelRatio: 2,
         backgroundColor: '#fff',
+        excludeComponents: ['toolbox'],
       })
 
       chart.dispose()
@@ -643,7 +739,7 @@ function exportChartToImage(chartOption: any) {
       link.download = `图表导出_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.png`
       link.href = url
       link.click()
-    }, 500)
+    }, 600)
   } catch (error) {
     console.error('图表导出失败:', error)
     ElMessage.error('图表导出失败，请重试')
@@ -655,8 +751,129 @@ function handleDebugExport(cmd: string, msg: DebugMessage, chartOption?: any, da
   if (cmd === 'excel') {
     exportToExcel(msg.dataResult || [], msg.columnMeta)
   } else if (cmd === 'image') {
-    exportChartToImage(chartOption)
+    exportChartToImage(chartOption, msg)
   }
+}
+
+// 根据消息内容动态生成图表配置（用于chartOption未传入的情况）
+function buildChartOption(msg: DebugMessage): any {
+  const data = msg.dataResult
+  if (!data || data.length === 0) return null
+
+  const allKeys = Object.keys(data[0])
+  const numKeys = allKeys.filter((key) => {
+    const val = data[0][key]
+    return typeof val === 'number' || (!isNaN(Number(val)) && val !== null && val !== '')
+  })
+  if (allKeys.length === 0 || numKeys.length === 0) return null
+
+  let chartType = (msg as any).chartType || 'bar'
+  if (!['bar', 'line', 'pie'].includes(chartType)) chartType = 'bar'
+
+  const xField = allKeys[0]
+  const yField = numKeys[0]
+
+  function getAlias(key: string): string {
+    const meta = msg.columnMeta?.find((m: any) => (m.name || m.columnName) === key)
+    return meta?.comment || meta?.columnAlias || key
+  }
+
+  const xLabel = getAlias(xField)
+  const yLabel = getAlias(yField)
+  const dataLength = data.length
+  const needRotate = dataLength > 6
+  const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#6366f1', '#f43f5e', '#84cc16', '#0ea5e9']
+  const barColors = ['#3b82f6', '#2563eb', '#1d4ed8', '#1e40af', '#1e3a8a']
+  const lineColor = '#3b82f6'
+
+  const option: any = {
+    color: colors,
+    tooltip: {
+      trigger: chartType === 'pie' ? 'item' : 'axis',
+      axisPointer: chartType === 'pie' ? undefined : { type: 'shadow' },
+      confine: true,
+      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+      borderColor: '#e2e8f0',
+      borderWidth: 1,
+      textStyle: { color: '#1e293b', fontSize: 11 },
+      padding: [8, 12],
+    },
+  }
+
+  if (chartType === 'bar') {
+    option.grid = { left: '8%', right: '5%', bottom: needRotate ? '20%' : '15%', top: '10%', containLabel: true }
+    option.xAxis = {
+      type: 'category', name: xLabel, nameLocation: 'middle', nameGap: needRotate ? 25 : 15,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { rotate: needRotate ? 45 : 0, fontSize: 11, color: '#64748b', interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0 },
+      axisLine: { lineStyle: { color: '#e2e8f0' } }, axisTick: { show: false },
+      data: data.map((d: any) => d[xField]),
+    }
+    option.yAxis = {
+      type: 'value', name: yLabel, nameLocation: 'middle', nameGap: 35,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { fontSize: 11, color: '#64748b' },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#f1f5f9', type: 'dashed' } },
+    }
+    option.series = [{
+      type: 'bar', barMaxWidth: 40, barMinHeight: 4,
+      data: data.map((d: any, idx: number) => ({
+        value: d[yField],
+        itemStyle: { color: barColors[idx % barColors.length], borderRadius: [4, 4, 0, 0] },
+      })),
+    }]
+  } else if (chartType === 'line') {
+    option.grid = { left: '8%', right: '5%', bottom: needRotate ? '20%' : '15%', top: '10%', containLabel: true }
+    option.xAxis = {
+      type: 'category', name: xLabel, nameLocation: 'middle', nameGap: needRotate ? 25 : 15,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { rotate: needRotate ? 45 : 0, fontSize: 11, color: '#64748b', interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0 },
+      axisLine: { lineStyle: { color: '#e2e8f0' } }, axisTick: { show: false }, boundaryGap: false,
+      data: data.map((d: any) => d[xField]),
+    }
+    option.yAxis = {
+      type: 'value', name: yLabel, nameLocation: 'middle', nameGap: 35,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { fontSize: 11, color: '#64748b' },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#f1f5f9', type: 'dashed' } },
+    }
+    option.series = [{
+      type: 'line',
+      data: data.map((d: any) => d[yField]),
+      smooth: true, showSymbol: dataLength <= 20, symbol: 'circle', symbolSize: 4,
+      lineStyle: { width: 2, color: lineColor }, itemStyle: { color: lineColor },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(59, 130, 246, 0.3)' },
+            { offset: 1, color: 'rgba(59, 130, 246, 0.02)' },
+          ],
+        },
+      },
+    }]
+  } else if (chartType === 'pie') {
+    option.grid = { top: '5%', bottom: '5%', left: '5%', right: '5%' }
+    option.tooltip.formatter = '{b}: {c} ({d}%)'
+    let pieData = data.map((d: any) => ({ name: d[xField], value: d[yField] }))
+    if (pieData.length > 15) {
+      pieData.sort((a: any, b: any) => b.value - a.value)
+      const top = pieData.slice(0, 10)
+      const rest = pieData.slice(10).reduce((s: number, i: any) => s + Number(i.value || 0), 0)
+      if (rest > 0) top.push({ name: '其他', value: rest })
+      pieData = top
+    }
+    option.series = [{
+      type: 'pie', radius: ['40%', '70%'], center: ['50%', '50%'], avoidLabelOverlap: true,
+      itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
+      label: { show: pieData.length <= 10, fontSize: 11, color: '#64748b', formatter: '{b}: {c}' },
+      labelLine: { show: pieData.length <= 10, length: 10, length2: 10, lineStyle: { color: '#e2e8f0' } },
+      data: pieData,
+    }]
+  }
+  return option
 }
 
 const statusText: Record<string, string> = {
@@ -751,6 +968,8 @@ function handleCreate() {
     embeddingModel: 'bge-m3',
     rerankModel: 'bge-reranker-large',
     knowledgeBaseIds: [],
+    scoreThreshold: 0.6,
+    topK: 3,
     maxTokens: 8192,
     temperature: 0.7,
     topP: 0.9,
@@ -794,6 +1013,8 @@ function handleDetail(app: Application) {
     greetingMessage: app.greetingMessage || '',
     knowledgeBaseIds: [...app.knowledgeBaseIds],
     datasourceIds: [...app.datasourceIds],
+    scoreThreshold: app.scoreThreshold ?? 0.6,
+    topK: app.topK ?? 3,
     maxTokens: app.maxTokens,
     temperature: app.temperature,
     topP: app.topP,
@@ -801,6 +1022,22 @@ function handleDetail(app: Application) {
   authConfig.requireAuth = app.requireAuth ?? true
   // 检测系统提示词是否溢出
   checkPromptOverflow()
+}
+
+// 打开检索参数弹窗时同步当前值
+watch(retrievalDialogVisible, (val) => {
+  if (val) {
+    retrievalEdit.scoreThreshold = appForm.scoreThreshold ?? 0.6
+    retrievalEdit.topK = appForm.topK ?? 3
+  }
+})
+
+// 确认应用检索参数
+function applyRetrievalParams() {
+  appForm.scoreThreshold = retrievalEdit.scoreThreshold
+  appForm.topK = retrievalEdit.topK
+  retrievalDialogVisible.value = false
+  ElMessage.success('检索参数已更新，保存后生效')
 }
 
 function backToList() {
@@ -1449,6 +1686,40 @@ onMounted(() => {
   color: #94a3b8;
 }
 
+.kb-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.retrieval-params-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+
+  .param-item {
+    .param-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .param-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: #334155;
+    }
+
+    .form-tip {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+  }
+}
+
 .slider-value {
   font-size: 13px;
   color: #64748b;
@@ -1982,6 +2253,26 @@ onMounted(() => {
   p {
     color: $text-secondary;
     font-size: 14px;
+  }
+}
+
+/* SQL查看弹窗样式 */
+.sql-dialog-content {
+  max-height: 60vh;
+  overflow-y: auto;
+
+  .sql-dialog-code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    color: #e2e8f0;
+    background-color: #0f172a;
+    padding: 16px;
+    border-radius: 8px;
+    line-height: 1.8;
+    margin: 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
   }
 }
 </style>

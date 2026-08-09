@@ -237,7 +237,7 @@
             </div>
             <div v-else class="chart-wrapper">
               <div v-if="chartOption" class="chart-container">
-                <ChartCard :option="chartOption" />
+                <ChartCard ref="chartCardRef" :option="chartOption" />
               </div>
               <div v-else class="chart-placeholder">
                 <el-icon :size="48" color="#cbd5e1">TrendCharts</el-icon>
@@ -329,6 +329,8 @@ const emit = defineEmits<{
 // 思考过程展开状态
 const thinkingExpanded = ref(true);
 const refsExpanded = ref(false);
+// ChartCard 组件引用（用于直接从页面已渲染实例导出图片，避免数据丢失）
+const chartCardRef = ref<InstanceType<typeof ChartCard> | null>(null);
 // 编辑模式
 const isEditing = ref(false);
 const editContent = ref('');
@@ -409,7 +411,26 @@ function handleShowReference(ref: any) {
  emit('reference', ref);
 }
 function handleExport(command: string) {
- emit('export', command, props.message, chartOption.value, dataViewMode.value);
+  // 导出图片：优先从页面上实际渲染的 ChartCard 实例直接导出（100%还原显示效果，无数据丢失）
+  if (command === 'image' && dataViewMode.value === 'chart' && chartCardRef.value) {
+    const base64Data = chartCardRef.value.exportImage({
+      type: 'png',
+      pixelRatio: 2,
+      backgroundColor: '#fff',
+    });
+    if (base64Data) {
+      // 直接下载图片
+      const tableName = getTableName();
+      const link = document.createElement('a');
+      link.download = `图表导出_${tableName || '数据'}_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.png`;
+      link.href = base64Data;
+      link.click();
+      ElMessage.success('图表导出成功');
+      return;
+    }
+  }
+  // 兜底逻辑：Excel 导出 或 图片导出失败时，交给父组件处理（重新渲染canvas）
+  emit('export', command, props.message, chartOption.value, dataViewMode.value);
 }
 function getTableName() {
  if (!props.message.sqlTraces || props.message.sqlTraces.length === 0)
@@ -467,6 +488,7 @@ function getChartTypeName(chartType: string): string {
  bar: '柱状图',
  line: '折线图',
  pie: '饼图',
+ table: '表格',
  };
  return typeMap[chartType] || '柱状图';
 }
@@ -771,11 +793,11 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
     .chart-section {
       .section-header { padding: 6px 8px; }
       .header-left { font-size: 12px; gap: 4px; }
-      .table-name-badge { 
-        max-width: 80px; 
-        overflow: hidden; 
-        text-overflow: ellipsis; 
-        white-space: nowrap; 
+      .table-name-badge {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .view-toggle-group { margin-left: 6px; padding-left: 6px; gap: 2px; }
       .chart-type-btn { padding: 2px 4px; }
@@ -1362,7 +1384,7 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       border-radius: 4px;
       font-size: 11px;
       font-family: 'Courier New', monospace;
-      max-width: 100px;
+      max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;

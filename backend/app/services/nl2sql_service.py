@@ -373,7 +373,7 @@ class NL2SQLEngine:
             # YYYY年MM月DD日
             (r'(\d{4})年(\d{1,2})月(\d{1,2})日', lambda m: (
                 datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))),
-                datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)) + datetime.timedelta(days=1))
+                datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))) + datetime.timedelta(days=1)
             )),
             # YYYY年MM月第N周
             (r'(\d{4})年(\d{1,2})月第([一二三四五六日])周', lambda m: (
@@ -390,7 +390,7 @@ class NL2SQLEngine:
             # MM月DD日
             (r'(\d{1,2})月(\d{1,2})日', lambda m: (
                 datetime.date(current_year, int(m.group(1)), int(m.group(2))),
-                datetime.date(current_year, int(m.group(1)), int(m.group(2)) + datetime.timedelta(days=1))
+                datetime.date(current_year, int(m.group(1)), int(m.group(2))) + datetime.timedelta(days=1)
             )),
             # MM月 (没有年份，使用当前年份)
             (r'(\d{1,2})月(?!.*日)', lambda m: _get_month_range(current_year, int(m.group(1)))),
@@ -484,9 +484,6 @@ class NL2SQLEngine:
             7. ORDER BY子句中使用中文别名排序
             8. 只返回纯SQL语句，不要包含markdown代码块标记
         """
-        today = datetime.date.today()
-        one_week_ago = today - datetime.timedelta(days=7)
-        
         # 使用代码解析时间范围，确保准确性
         time_range = NL2SQLEngine._parse_time_range(question)
         
@@ -499,8 +496,8 @@ class NL2SQLEngine:
    - 在WHERE子句中添加：PRODUCE_DATE >= '{time_range['start']}' AND PRODUCE_DATE < '{time_range['end']}'
 """
         else:
-            time_instruction = f"""4. 时间范围处理：
-   - 用户问题中没有明确的时间范围，默认添加最近一周的数据过滤：PRODUCE_DATE >= '{one_week_ago.strftime("%Y-%m-%d")}'
+            time_instruction = """4. 时间范围处理：
+   - 用户问题中没有明确的时间范围，不要在WHERE子句中添加任何时间过滤条件
 """
         
         return f"""你是一个钢铁行业数据分析SQL专家。请根据用户问题和数据库Schema，生成一个MySQL SELECT查询语句。
@@ -517,7 +514,7 @@ class NL2SQLEngine:
 3. 根据用户问题添加适当的WHERE条件和聚合函数
 {time_instruction}
 5. 限制返回行数不超过{NL2SQLEngine.MAX_ROWS}行（使用LIMIT）
-6. 为每个查询字段和聚合结果添加中文别名（AS子句），别名优先使用字段COMMENT中的中文名称；聚合函数使用语义化中文别名，如SUM(BLOW_COUNT) AS 总吹炼次数
+6. 为每个查询字段和聚合结果添加中文别名（AS子句），别名优先使用字段COMMENT中的中文名称；聚合函数使用语义化中文别名，如SUM(BLOW_COUNT) AS 总吹炼次数。如果别名以数字开头或包含特殊字符（如连字符-），必须用反引号括起来，例如：AS `40-25`、AS `16以上`、AS `10-5`
 7. ORDER BY子句中也使用中文别名排序
 8. 只返回纯SQL语句，不要包含markdown代码块标记或解释文字
 
@@ -625,7 +622,7 @@ class NL2SQLEngine:
             r'(\d{4})年|'  # YYYY年
             r'(\d{1,2})月(\d{1,2})日|'  # MM月DD日
             r'(\d{1,2})月|'  # MM月
-            r'今日|昨日|今天|昨天|本周|本月|本季度|本年|最近|近期|历史)',
+            r'今日|昨日|今天|昨天|本周|本月|本季度|本年|最近|近期|历史',
             question
         ))
         
@@ -650,6 +647,36 @@ class NL2SQLEngine:
             logger.info(f"时间冲突修复后SQL: {sql[:100]}...")
         
         return sql
+
+    @staticmethod
+    def _fix_alias_quoting(sql: str) -> str:
+        """
+        修正SQL中未加引号的别名
+
+        当别名以数字开头或包含特殊字符（如连字符-）时，sqlglot解析会失败。
+        此方法自动为这类别名添加反引号。
+
+        :param sql: SQL语句
+        :return: 修正后的SQL语句
+
+        示例：
+            AS 40-25 → AS `40-25`
+            AS 16以上 → AS `16以上`
+            AS 10-5 → AS `10-5`
+        """
+        # 匹配 AS 后面紧跟的未加引号别名（以数字开头）
+        # 别名持续到遇到空格、逗号、右括号为止
+        # 负向先行断言排除已加引号（反引号或双引号）的情况
+        pattern = re.compile(r'\bAS\s+(?!["`])(\d[^\s,)]*)', re.IGNORECASE)
+
+        def replace_alias(match):
+            alias = match.group(1)
+            return f'AS `{alias}`'
+
+        result = pattern.sub(replace_alias, sql)
+        if result != sql:
+            logger.debug(f"别名引号修正: {sql[:100]}... → {result[:100]}...")
+        return result
 
     @staticmethod
     async def _generate_sql_from_prompt(prompt: str, question: str = "") -> str:
@@ -691,6 +718,9 @@ class NL2SQLEngine:
         # 清理SQL
         sql = SQLSecurityFilter.sanitize(sql)
         logger.info(f"安全清理后SQL: {repr(sql[:100])}...")
+
+        # 修正未加引号的别名（以数字开头或包含特殊字符的别名）
+        sql = NL2SQLEngine._fix_alias_quoting(sql)
 
         # 验证并修正时间范围（关键步骤）
         if question:
@@ -840,7 +870,14 @@ class NL2SQLEngine:
         # 构建Schema描述（包含字段注释，便于LLM生成中文别名）
         schema_desc = []
         for schema in schemas:
-            columns = json.loads(schema.columns) if schema.columns else []
+            # 兼容JSONB自动反序列化(list)和旧数据(JSON字符串)
+            columns_data = schema.columns
+            if isinstance(columns_data, str):
+                columns = json.loads(columns_data) if columns_data else []
+            elif isinstance(columns_data, list):
+                columns = columns_data
+            else:
+                columns = []
             col_info = []
             for col in columns:
                 col_type = col['type']

@@ -15,7 +15,7 @@ from app.schemas.datasource import (
     TableSchemaResponse,
 )
 from app.services.datasource_service import datasource_service
-from app.middlewares.exception_handler import success_response
+from app.middlewares.exception_handler import success_response, error_response
 from app.middlewares.auth_deps import get_current_user
 from app.models.user import User
 from app.models.datasource import DataSource
@@ -114,7 +114,7 @@ async def test_connection(
     result = await datasource_service.test_connection(db, data)
     if result["success"]:
         return success_response(data=result)
-    return success_response(data=result, message="连接失败")
+    return error_response(code=400, message=result.get("message", "连接失败"), data=result)
 
 
 @router.post("/{ds_id}/sync-schema", summary="同步表结构")
@@ -124,8 +124,8 @@ async def sync_schema(
     user: User = Depends(get_current_user),
 ):
     """同步数据源表结构"""
-    tables = await datasource_service.sync_schema(db, ds_id)
-    return success_response(data=[t.to_dict() for t in tables])
+    result = await datasource_service.sync_schema(db, ds_id)
+    return success_response(data=result)
 
 
 @router.get("/{ds_id}/schema", summary="获取表结构")

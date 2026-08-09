@@ -17,7 +17,7 @@ export interface LLMConfigForm {
   status?: string
 }
 
-export function getLLMConfigs(params?: { page?: number; pageSize?: number; type?: string }) {
+export function getLLMConfigs(params?: { page?: number; pageSize?: number; model_type?: string; provider_type?: string }) {
   return request.get<{ list: any[]; total: number }>('/llm-configs', { params })
 }
 

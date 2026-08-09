@@ -239,8 +239,8 @@ class DocumentParserService:
             file_type = document.file_type
             paragraphs = await DocumentParserService.load_document(file_path, file_type)
 
-            # 步骤3：合并所有段落
-            full_text = "\n\n".join(paragraphs)
+            # 步骤3：合并所有段落，清除PostgreSQL不支持的null字节(\x00)
+            full_text = "\n\n".join(paragraphs).replace("\x00", "")
             logger.info(f"文档内容合并完成: 长度={len(full_text)}字符")
 
             # 步骤4：切片（使用知识库配置的参数）

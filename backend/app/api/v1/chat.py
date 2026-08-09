@@ -231,6 +231,19 @@ async def stream_chat(
                 yield f"data: {json.dumps({'type': 'error', 'message': '会话不存在'})}\n\n"
                 return
 
+            # 加载应用配置（获取系统提示词）
+            app_system_prompt = None
+            if hasattr(session, 'application_id') and session.application_id:
+                from app.models.application import Application
+                app_result = await db.execute(
+                    select(Application).where(Application.id == session.application_id)
+                )
+                app_obj = app_result.scalar_one_or_none()
+                if app_obj:
+                    app_system_prompt = app_obj.system_prompt
+                    if app_system_prompt:
+                        logger.debug(f"加载应用系统提示词，长度={len(app_system_prompt)}")
+
             # 发送开始事件
             yield f"data: {json.dumps({'type': 'start', 'sessionId': data.sessionId})}\n\n"
 
@@ -269,6 +282,7 @@ async def stream_chat(
                             knowledgeBaseId=data.knowledgeBaseId,
                             question=data.question,
                             topK=5,
+                            scoreThreshold=0.0,
                         )
                         refs = await VectorIndexService.search(db, query, kb)
 
@@ -312,7 +326,7 @@ async def stream_chat(
 请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
 
                         full_answer = ""
-                        async for chunk in llm_service.chat_stream(prompt, None, None, llm_config_params):
+                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, None, llm_config_params):
                             full_answer += chunk
                             yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
 
@@ -354,7 +368,7 @@ async def stream_chat(
                         }
                     
                     full_answer = ""
-                    async for chunk in llm_service.chat_stream(data.question, None, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt, None, llm_config_params):
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
                     
@@ -418,7 +432,7 @@ async def stream_chat(
                 
                 full_explanation = ""
                 if explanation_prompt:
-                    async for chunk in llm_service.chat_stream(explanation_prompt, None, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, None, llm_config_params):
                         full_explanation += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
                 else:
@@ -480,6 +494,7 @@ async def stream_chat(
                         knowledgeBaseId=data.knowledgeBaseId,
                         question=knowledge_question,
                         topK=3,
+                        scoreThreshold=0.0,
                     )
                     refs = await VectorIndexService.search(db, query, kb)
                     references = [r.model_dump() for r in refs]
@@ -572,7 +587,7 @@ async def stream_chat(
                             data_stream_done.set()
                             return
                         if explanation_prompt:
-                            async for chunk in llm_service.chat_stream(explanation_prompt, None, None, llm_config_params):
+                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, None, llm_config_params):
                                 await data_chunks_queue.put(chunk)
                         elif explanation:
                             await data_chunks_queue.put(explanation)
@@ -592,7 +607,7 @@ async def stream_chat(
                     knowledge_answer = ""
                     data_producer = asyncio.create_task(_produce_data_explanation())
 
-                    async for chunk in llm_service.chat_stream(knowledge_prompt, None, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, None, llm_config_params):
                         chunk = chunk.replace(chr(10) * 2, chr(10))
                         knowledge_answer += chunk
                         full_answer += chunk
@@ -745,6 +760,11 @@ async def embed_chat(
             datasource_id = data.datasourceId
             greeting_message = ""
 
+            # 检索参数（从应用配置获取）
+            app_score_threshold = 0.0
+            app_top_k = 5
+            app_system_prompt = None
+
             # 预解析LLM配置，供各意图分支使用
             resolved_llm_config_params = None
 
@@ -756,10 +776,17 @@ async def embed_chat(
                 app = app_result.scalar_one_or_none()
                 if app:
                     greeting_message = app.greeting_message or ""
+                    app_system_prompt = app.system_prompt
+                    if app_system_prompt:
+                        logger.debug(f"加载应用系统提示词，长度={len(app_system_prompt)}")
                     if app.knowledge_base_ids and len(app.knowledge_base_ids) > 0:
                         knowledge_base_id = app.knowledge_base_ids[0]
                     if app.datasource_ids and len(app.datasource_ids) > 0:
                         datasource_id = app.datasource_ids[0]
+
+                    # 从应用配置获取检索参数
+                    app_score_threshold = app.score_threshold if app.score_threshold is not None else 0.0
+                    app_top_k = app.top_k if app.top_k is not None else 5
 
                     # 从应用配置解析LLM配置：优先使用前端传入的llmConfigId，
                     # 其次根据应用的model_name查找匹配的LLM配置，
@@ -781,7 +808,7 @@ async def embed_chat(
                         llm_config = cfg_result.scalar_one_or_none()
                     if not llm_config:
                         # 回退到系统默认LLM配置
-                        llm_config = await llm_config_service.get_by_model_type(db, 'llm')
+                        llm_config = await llm_config_service.get_default_by_model_type(db, 'llm')
 
                     if llm_config:
                         resolved_llm_config_params = {
@@ -814,7 +841,8 @@ async def embed_chat(
                         query = KnowledgeQuery(
                             knowledgeBaseId=knowledge_base_id,
                             question=data.question,
-                            topK=5,
+                            topK=app_top_k,
+                            scoreThreshold=app_score_threshold,
                         )
                         refs = await VectorIndexService.search(db, query, kb)
 
@@ -839,7 +867,7 @@ async def embed_chat(
 请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
 
                         full_answer = ""
-                        async for chunk in llm_service.chat_stream(prompt, None, None, resolved_llm_config_params):
+                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, None, resolved_llm_config_params):
                             full_answer += chunk
                             yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
 
@@ -849,7 +877,7 @@ async def embed_chat(
 
                     from app.services.llm_service import llm_service
                     full_answer = ""
-                    async for chunk in llm_service.chat_stream(data.question):
+                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt):
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
 
@@ -883,7 +911,7 @@ async def embed_chat(
                 from app.services.llm_service import llm_service
                 full_answer = ""
                 if explanation_prompt:
-                    async for chunk in llm_service.chat_stream(explanation_prompt):
+                    async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt):
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
                 else:
@@ -929,7 +957,8 @@ async def embed_chat(
                     query = KnowledgeQuery(
                         knowledgeBaseId=knowledge_base_id,
                         question=knowledge_question,
-                        topK=3,
+                        topK=app_top_k,
+                        scoreThreshold=app_score_threshold,
                     )
                     refs = await VectorIndexService.search(db, query, kb)
                     references = [r.model_dump() for r in refs]
@@ -1006,7 +1035,7 @@ async def embed_chat(
                             data_stream_done.set()
                             return
                         if explanation_prompt:
-                            async for chunk in llm_service.chat_stream(explanation_prompt, None, None, llm_config_params):
+                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, None, llm_config_params):
                                 await data_chunks_queue.put(chunk)
                         elif explanation:
                             await data_chunks_queue.put(explanation)
@@ -1026,7 +1055,7 @@ async def embed_chat(
                     knowledge_answer = ""
                     data_producer = asyncio.create_task(_produce_data_explanation())
 
-                    async for chunk in llm_service.chat_stream(knowledge_prompt, None, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, None, llm_config_params):
                         chunk = chunk.replace(chr(10) * 2, chr(10))
                         knowledge_answer += chunk
                         full_answer += chunk

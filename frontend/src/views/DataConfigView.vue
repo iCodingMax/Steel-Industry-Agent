@@ -533,6 +533,7 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'elem
 import { Plus, Search, Loading, ArrowDown } from '@element-plus/icons-vue'
 import {
   getDatasources,
+  getDatasource,
   createDatasource,
   updateDatasource,
   deleteDatasource,
@@ -899,6 +900,18 @@ async function handleSaveDatasource() {
 }
 
 async function handleTestConn(row: any) {
+  // 列表接口不返回密码，需先获取数据源详情
+  let password = row.password
+  if (!password) {
+    try {
+      const detail: any = await getDatasource(row.id)
+      if (detail.code === 0 && detail.data?.password) {
+        password = detail.data.password
+      }
+    } catch (e) {
+      console.error('获取数据源详情失败', e)
+    }
+  }
   try {
     const res: any = await testConnection({
       type: row.type,
@@ -906,7 +919,7 @@ async function handleTestConn(row: any) {
       port: row.port,
       database: row.database,
       username: row.username,
-      password: row.password,
+      password: password || '',
     })
     if (res.code === 0) {
       ElMessage.success('连接测试成功')
@@ -923,6 +936,18 @@ async function handleViewSchema(row: any) {
 }
 
 async function handleTestConnFromDialog() {
+  // 编辑模式下若密码为空，先获取已存储的密码用于测试
+  let password = datasourceForm.password
+  if (isEditDatasource.value && editDatasourceId.value && !password) {
+    try {
+      const detail: any = await getDatasource(editDatasourceId.value)
+      if (detail.code === 0 && detail.data?.password) {
+        password = detail.data.password
+      }
+    } catch (e) {
+      console.error('获取数据源详情失败', e)
+    }
+  }
   try {
     const res: any = await testConnection({
       type: datasourceForm.type,
@@ -930,7 +955,7 @@ async function handleTestConnFromDialog() {
       port: datasourceForm.port,
       database: datasourceForm.database,
       username: datasourceForm.username,
-      password: datasourceForm.password,
+      password: password || '',
     })
     if (res.code === 0) {
       ElMessage.success('连接测试成功')
@@ -944,13 +969,15 @@ async function handleSyncSchema(row: any) {
   try {
     const res: any = await syncSchema(row.id)
     if (res.code === 0) {
-      ElMessage.success(`Schema同步完成，共 ${res.data?.length || 0} 张表`)
-    } else {
-      ElMessage.error(res.message || '同步失败')
+      const { total = 0, added = 0, removed = 0, updated = 0 } = res.data || {}
+      if (added === 0 && removed === 0 && updated === 0) {
+        ElMessage.success(`Schema已是最新，共 ${total} 张表`)
+      } else {
+        ElMessage.success(`Schema同步完成，共 ${total} 张表（新增 ${added}，移除 ${removed}，更新 ${updated}）`)
+      }
     }
   } catch (e: any) {
     console.error('Schema同步失败', e)
-    ElMessage.error(e?.response?.data?.message || '同步失败，请检查数据库连接配置')
   }
 }
 

@@ -90,12 +90,25 @@ class LLMConfigService:
         return list(result.scalars().all())
 
     @staticmethod
-    async def get_by_type(db, config_type: str) -> List[LLMConfig]:
+    async def get_by_model_type(db, model_type: str) -> List[LLMConfig]:
         """
-        根据类型获取配置（如 xinference/openai）
+        根据模型类型获取配置（llm/embedding/rerank）
 
         :param db: 数据库会话
-        :param config_type: 配置类型
+        :param model_type: 模型类型（llm/embedding/rerank）
+        :return: 配置列表
+        """
+        stmt = select(LLMConfig).where(LLMConfig.model_type == model_type)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_by_provider_type(db, config_type: str) -> List[LLMConfig]:
+        """
+        根据供应商类型获取配置（如 xinference/openai）
+
+        :param db: 数据库会话
+        :param config_type: 供应商类型
         :return: 配置列表
         """
         stmt = select(LLMConfig).where(LLMConfig.type == config_type)
@@ -103,7 +116,7 @@ class LLMConfigService:
         return list(result.scalars().all())
 
     @staticmethod
-    async def get_by_model_type(db, model_type: str) -> Optional[LLMConfig]:
+    async def get_default_by_model_type(db, model_type: str) -> Optional[LLMConfig]:
         """
         根据模型类型获取默认配置
 

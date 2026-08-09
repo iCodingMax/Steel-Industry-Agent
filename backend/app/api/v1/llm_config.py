@@ -20,13 +20,19 @@ router = APIRouter()
 async def list_llm_configs(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    config_type: str = Query(None, description="配置类型"),
+    model_type: str = Query(None, description="模型类型过滤: llm/embedding/rerank"),
+    provider_type: str = Query(None, description="供应商类型过滤: xinference/openai等"),
     db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
-    """获取所有LLM配置"""
-    if config_type:
-        configs = await llm_config_service.get_by_type(db, config_type)
+    """获取所有LLM配置（同时支持模型类型和供应商类型过滤）"""
+    if model_type:
+        if model_type not in ['llm', 'embedding', 'rerank']:
+            model_type = None
+    if model_type:
+        configs = await llm_config_service.get_by_model_type(db, model_type)
+    elif provider_type:
+        configs = await llm_config_service.get_by_provider_type(db, provider_type)
     else:
         configs = await llm_config_service.get_all(db, skip, limit)
     return success_response(data=[c.to_dict() for c in configs])
@@ -43,7 +49,7 @@ async def get_default_llm_config(
     # 确保model_type是有效的值
     if model_type not in ['llm', 'embedding', 'rerank']:
         model_type = 'llm'
-    config = await llm_config_service.get_by_model_type(db, model_type)
+    config = await llm_config_service.get_default_by_model_type(db, model_type)
     if not config:
         return success_response(data=None, message="未设置默认配置")
     return success_response(data=config.to_dict())
@@ -109,7 +115,7 @@ async def get_default_llm_config(
     # 确保model_type是有效的值
     if model_type not in ['llm', 'embedding', 'rerank']:
         model_type = 'llm'
-    config = await llm_config_service.get_by_model_type(db, model_type)
+    config = await llm_config_service.get_default_by_model_type(db, model_type)
     if not config:
         return success_response(data=None, message="未设置默认配置")
     return success_response(data=config.to_dict())

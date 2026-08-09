@@ -80,6 +80,7 @@ class KnowledgeQuery(BaseModel):
     knowledgeBaseId: int = Field(..., description="知识库ID")
     question: str = Field(..., description="查询问题", min_length=1)
     topK: int = Field(default=5, description="返回结果数量", ge=1, le=20)
+    scoreThreshold: float = Field(default=0.0, description="相似度阈值(0-1)，低于此值的结果将被过滤", ge=0.0, le=1.0)
 
 
 class KnowledgeQueryResult(BaseModel):

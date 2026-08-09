@@ -31,6 +31,8 @@ class ApplicationCreate(BaseModel):
     greetingMessage: str = Field(None, description="开场白消息")
     knowledgeBaseIds: List[int] = Field([], description="关联知识库ID列表")
     datasourceIds: List[int] = Field([], description="关联数据源ID列表")
+    scoreThreshold: float = Field(0.6, description="检索相似度阈值(0-1之间)")
+    topK: int = Field(3, description="引用分段数(1-10之间)")
     maxTokens: int = Field(8192, description="最大生成token数")
     temperature: float = Field(0.7, description="温度参数(0.0-2.0)")
     topP: float = Field(0.9, description="top_p参数(0.0-1.0)")
@@ -50,6 +52,8 @@ class ApplicationUpdate(BaseModel):
     greetingMessage: str = Field(None, description="开场白消息")
     knowledgeBaseIds: List[int] = Field(None, description="关联知识库ID列表")
     datasourceIds: List[int] = Field(None, description="关联数据源ID列表")
+    scoreThreshold: float = Field(None, description="检索相似度阈值(0-1之间)")
+    topK: int = Field(None, description="引用分段数(1-10之间)")
     iframeHeight: int = Field(None, description="iframe默认高度")
     iframeWidth: str = Field(None, description="iframe默认宽度")
     requireAuth: bool = Field(None, description="是否需要身份验证")
@@ -156,6 +160,8 @@ async def create_application(
             greeting_message=data.greetingMessage,
             knowledge_base_ids=data.knowledgeBaseIds,
             datasource_ids=data.datasourceIds,
+            score_threshold=data.scoreThreshold,
+            top_k=data.topK,
             max_tokens=data.maxTokens,
             temperature=int(data.temperature * 10),
             top_p=int(data.topP * 10),
@@ -205,6 +211,8 @@ async def update_application(
         'greeting_message': data.greetingMessage,
         'knowledge_base_ids': data.knowledgeBaseIds,
         'datasource_ids': data.datasourceIds,
+        'score_threshold': data.scoreThreshold,
+        'top_k': data.topK,
         'iframe_height': data.iframeHeight,
         'iframe_width': data.iframeWidth,
         'require_auth': data.requireAuth,

@@ -243,7 +243,14 @@ class VectorIndexService:
                     unique_nodes[segment_id] = node
             logger.info(f"去重后结果数: {len(unique_nodes)}")
 
-            # 步骤5：按分数排序，取前topK
+            # 步骤5：相似度阈值过滤（低于阈值的结果不返回）
+            threshold = query.scoreThreshold if hasattr(query, 'scoreThreshold') else 0.0
+            if threshold > 0:
+                filtered_nodes = {k: v for k, v in unique_nodes.items() if (v.score or 0) >= threshold}
+                logger.info(f"相似度阈值过滤: threshold={threshold}, 过滤前={len(unique_nodes)}, 过滤后={len(filtered_nodes)}")
+                unique_nodes = filtered_nodes
+
+            # 步骤6：按分数排序，取前topK
             sorted_nodes = sorted(unique_nodes.values(), key=lambda n: n.score or 0, reverse=True)[:query.topK]
 
             # 步骤6：转换结果，查询文档名称

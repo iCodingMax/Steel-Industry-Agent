@@ -565,28 +565,66 @@ function exportToExcel(msg: DebugMessage) {
   ElMessage.success('导出成功')
 }
 
-function exportChartToImage(msg: DebugMessage) {
-  const option = (msg as any).chartOption
+function exportChartToImage(msg: DebugMessage, chartOptionParam?: any) {
+  // 优先使用传入的chartOption，其次从msg中获取，最后动态生成
+  let option = chartOptionParam || (msg as any).chartOption
+  if (!option && msg.dataResult && msg.dataResult.length > 0) {
+    option = buildChartOption(msg)
+  }
   if (!option) {
     ElMessage.warning('没有图表可导出')
     return
   }
 
   try {
+    const W = 1200
+    const H = 700
     const canvas = document.createElement('canvas')
-    canvas.width = 800
-    canvas.height = 400
-    canvas.style.display = 'none'
+    canvas.width = W
+    canvas.height = H
+    canvas.style.cssText = `position:fixed;left:-9999px;top:0;width:${W}px;height:${H}px;z-index:-9999;`
     document.body.appendChild(canvas)
 
-    const chart = echarts.init(canvas, undefined, { renderer: 'canvas' })
-    chart.setOption(option)
+    const chart = echarts.init(canvas, undefined, { renderer: 'canvas', width: W, height: H })
+    const clonedOption = JSON.parse(JSON.stringify(option))
+
+    // 修复百分比布局导致的数据点截断
+    clonedOption.animation = false
+    clonedOption.animationDuration = 0
+    clonedOption.animationDurationUpdate = 0
+    if (clonedOption.grid) {
+      const g = Array.isArray(clonedOption.grid) ? clonedOption.grid[0] : clonedOption.grid
+      g.containLabel = false
+      g.left = 70
+      g.right = 40
+      g.top = 50
+      g.bottom = clonedOption.xAxis?.name ? 130 : 120
+    }
+    if (Array.isArray(clonedOption.series)) {
+      clonedOption.series.forEach((s: any) => {
+        if (s.type === 'pie') {
+          s.radius = ['35%', '65%']
+          s.center = ['50%', '52%']
+          if (!s.itemStyle) s.itemStyle = {}
+          s.itemStyle.borderWidth = 2
+        }
+        if ((s.type === 'bar' || s.type === 'line') && clonedOption.xAxis) {
+          clonedOption.xAxis.axisLabel = clonedOption.xAxis.axisLabel || {}
+          clonedOption.xAxis.axisLabel.interval = 0
+          clonedOption.xAxis.boundaryGap = s.type === 'bar' ? true : false
+        }
+      })
+    }
+
+    chart.setOption(clonedOption, true)
+    chart.resize({ width: W, height: H })
 
     setTimeout(() => {
       const url = chart.getDataURL({
         type: 'png',
         pixelRatio: 2,
         backgroundColor: '#fff',
+        excludeComponents: ['toolbox'],
       })
 
       chart.dispose()
@@ -597,19 +635,140 @@ function exportChartToImage(msg: DebugMessage) {
       link.href = url
       link.click()
       ElMessage.success('导出成功')
-    }, 500)
+    }, 600)
   } catch (error) {
     console.error('图表导出失败:', error)
     ElMessage.error('图表导出失败，请重试')
   }
 }
 
-function handleExport(cmd: string, msg: DebugMessage) {
+function handleExport(cmd: string, msg: DebugMessage, chartOption?: any) {
   if (cmd === 'excel') {
     exportToExcel(msg)
   } else if (cmd === 'image') {
-    exportChartToImage(msg)
+    exportChartToImage(msg, chartOption)
   }
+}
+
+// 根据消息内容动态生成图表配置（用于chartOption未传入的情况）
+function buildChartOption(msg: any): any {
+  const data = msg.dataResult
+  if (!data || data.length === 0) return null
+
+  const allKeys = Object.keys(data[0])
+  const numKeys = allKeys.filter((key) => {
+    const val = data[0][key]
+    return typeof val === 'number' || (!isNaN(Number(val)) && val !== null && val !== '')
+  })
+  if (allKeys.length === 0 || numKeys.length === 0) return null
+
+  let chartType = msg.chartType || 'bar'
+  if (!['bar', 'line', 'pie'].includes(chartType)) chartType = 'bar'
+
+  const xField = allKeys[0]
+  const yField = numKeys[0]
+
+  function getAlias(key: string): string {
+    const meta = msg.columnMeta?.find((m: any) => (m.name || m.columnName) === key)
+    return meta?.comment || meta?.columnAlias || key
+  }
+
+  const xLabel = getAlias(xField)
+  const yLabel = getAlias(yField)
+  const dataLength = data.length
+  const needRotate = dataLength > 6
+  const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#6366f1', '#f43f5e', '#84cc16', '#0ea5e9']
+  const barColors = ['#3b82f6', '#2563eb', '#1d4ed8', '#1e40af', '#1e3a8a']
+  const lineColor = '#3b82f6'
+
+  const option: any = {
+    color: colors,
+    tooltip: {
+      trigger: chartType === 'pie' ? 'item' : 'axis',
+      axisPointer: chartType === 'pie' ? undefined : { type: 'shadow' },
+      confine: true,
+      backgroundColor: 'rgba(255, 255, 255, 0.95)',
+      borderColor: '#e2e8f0',
+      borderWidth: 1,
+      textStyle: { color: '#1e293b', fontSize: 11 },
+      padding: [8, 12],
+    },
+  }
+
+  if (chartType === 'bar') {
+    option.grid = { left: '8%', right: '5%', bottom: needRotate ? '20%' : '15%', top: '10%', containLabel: true }
+    option.xAxis = {
+      type: 'category', name: xLabel, nameLocation: 'middle', nameGap: needRotate ? 25 : 15,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { rotate: needRotate ? 45 : 0, fontSize: 11, color: '#64748b', interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0 },
+      axisLine: { lineStyle: { color: '#e2e8f0' } }, axisTick: { show: false },
+      data: data.map((d: any) => d[xField]),
+    }
+    option.yAxis = {
+      type: 'value', name: yLabel, nameLocation: 'middle', nameGap: 35,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { fontSize: 11, color: '#64748b' },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#f1f5f9', type: 'dashed' } },
+    }
+    option.series = [{
+      type: 'bar', barMaxWidth: 40, barMinHeight: 4,
+      data: data.map((d: any, idx: number) => ({
+        value: d[yField],
+        itemStyle: { color: barColors[idx % barColors.length], borderRadius: [4, 4, 0, 0] },
+      })),
+    }]
+  } else if (chartType === 'line') {
+    option.grid = { left: '8%', right: '5%', bottom: needRotate ? '20%' : '15%', top: '10%', containLabel: true }
+    option.xAxis = {
+      type: 'category', name: xLabel, nameLocation: 'middle', nameGap: needRotate ? 25 : 15,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { rotate: needRotate ? 45 : 0, fontSize: 11, color: '#64748b', interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0 },
+      axisLine: { lineStyle: { color: '#e2e8f0' } }, axisTick: { show: false }, boundaryGap: false,
+      data: data.map((d: any) => d[xField]),
+    }
+    option.yAxis = {
+      type: 'value', name: yLabel, nameLocation: 'middle', nameGap: 35,
+      nameTextStyle: { fontSize: 12, color: '#64748b' },
+      axisLabel: { fontSize: 11, color: '#64748b' },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#f1f5f9', type: 'dashed' } },
+    }
+    option.series = [{
+      type: 'line',
+      data: data.map((d: any) => d[yField]),
+      smooth: true, showSymbol: dataLength <= 20, symbol: 'circle', symbolSize: 4,
+      lineStyle: { width: 2, color: lineColor }, itemStyle: { color: lineColor },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(59, 130, 246, 0.3)' },
+            { offset: 1, color: 'rgba(59, 130, 246, 0.02)' },
+          ],
+        },
+      },
+    }]
+  } else if (chartType === 'pie') {
+    option.grid = { top: '5%', bottom: '5%', left: '5%', right: '5%' }
+    option.tooltip.formatter = '{b}: {c} ({d}%)'
+    let pieData = data.map((d: any) => ({ name: d[xField], value: d[yField] }))
+    if (pieData.length > 15) {
+      pieData.sort((a: any, b: any) => b.value - a.value)
+      const top = pieData.slice(0, 10)
+      const rest = pieData.slice(10).reduce((s: number, i: any) => s + Number(i.value || 0), 0)
+      if (rest > 0) top.push({ name: '其他', value: rest })
+      pieData = top
+    }
+    option.series = [{
+      type: 'pie', radius: ['40%', '70%'], center: ['50%', '50%'], avoidLabelOverlap: true,
+      itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
+      label: { show: pieData.length <= 10, fontSize: 11, color: '#64748b', formatter: '{b}: {c}' },
+      labelLine: { show: pieData.length <= 10, length: 10, length2: 10, lineStyle: { color: '#e2e8f0' } },
+      data: pieData,
+    }]
+  }
+  return option
 }
 
 async function copySql(sql: string) {

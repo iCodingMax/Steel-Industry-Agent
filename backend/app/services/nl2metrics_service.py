@@ -28,6 +28,7 @@ from app.models.dimension import Dimension
 from app.models.term import Term
 from app.models.datasource import DataSource, TableSchema
 from app.services.llm_service import llm_service
+from app.services.nl2sql_service import NL2SQLEngine
 
 
 class NL2MetricsEngine:
@@ -63,9 +64,9 @@ class NL2MetricsEngine:
             logger.debug("没有找到活跃指标")
             return []
 
-        # 构建指标列表文本，用于LLM匹配
+        # 构建指标列表文本，包含查询表名，用于LLM语义匹配
         metric_list = "\n".join([
-            f"- {m.name}: {m.description} (分组: {m.group_name})"
+            f"- {m.name}: {m.description} (分组: {m.group_name}, 查询表: {NL2MetricsEngine._extract_table_name(m.sql_expression)})"
             for m in metrics
         ])
 
@@ -82,11 +83,20 @@ class NL2MetricsEngine:
 指标名称2
 指标名称3
 
-只返回指标名称，不要返回其他内容。"""
+重要：请结合指标的"查询表"和"描述"进行判断，确保匹配的指标所查询的数据表与用户问题语义一致。
+例如：用户问"矿石化验数据"时，应匹配查询表包含"lab_ingredient"的指标，而非查询"condition_result"表的指标。
+
+如果没有任何指标与用户问题相关，请返回"无匹配"。
+只返回指标名称或"无匹配"，不要返回其他内容。"""
 
         # 调用LLM进行匹配
         response = await llm_service.chat(prompt)
         matched_names = [line.strip() for line in response.strip().split("\n") if line.strip()]
+
+        # 检查是否无匹配
+        if matched_names and "无匹配" in matched_names[0]:
+            logger.info(f"LLM判断无匹配指标: 问题={question[:50]}...")
+            return []
 
         # 将匹配名称映射到指标对象
         results = []
@@ -98,6 +108,22 @@ class NL2MetricsEngine:
 
         logger.info(f"指标匹配完成: 问题={question[:50]}..., 匹配数={len(results)}")
         return results
+
+    @staticmethod
+    def _extract_table_name(sql: str) -> str:
+        """
+        从SQL表达式中提取主表名
+
+        :param sql: SQL表达式
+        :return: 表名（提取失败返回空字符串）
+        """
+        if not sql:
+            return ""
+        import re
+        match = re.search(r'\bFROM\s+(\w+)', sql, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return ""
 
     @staticmethod
     async def extract_dimensions(
@@ -170,10 +196,84 @@ class NL2MetricsEngine:
         return filters
 
     @staticmethod
+    def _remove_time_filter_from_template(sql: str) -> str:
+        """
+        从SQL模板中移除时间过滤条件（包含{start_date}和{end_date}占位符的条件）
+
+        当用户未指定时间范围时，移除模板中的时间过滤条件，避免默认添加时间限制。
+
+        :param sql: 包含{start_date}和{end_date}占位符的SQL模板
+        :return: 移除时间过滤条件后的SQL语句
+
+        处理模式：
+            1. AND field >= '{start_date}' AND field < '{end_date}'（前面有其他WHERE条件）
+            2. WHERE field >= '{start_date}' AND field < '{end_date}' AND（后面有其他条件）
+            3. WHERE field >= '{start_date}' AND field < '{end_date}'（唯一的WHERE条件）
+            4. BETWEEN '{start_date}' AND '{end_date}' 模式
+            5. 兜底：无法匹配时使用极宽日期范围（1900~2999）
+        """
+        # 模式1: 移除 AND 连接的时间条件（前面有其他WHERE条件）
+        sql = re.sub(
+            r"\s+AND\s+\w+\s*>=?\s*['\"]?\{start_date\}['\"]?\s+AND\s+\w+\s*<=?\s*['\"]?\{end_date\}['\"]?",
+            "",
+            sql,
+            flags=re.IGNORECASE
+        )
+
+        # 模式2: 移除 WHERE + 时间条件 + AND（后面有其他条件）
+        sql = re.sub(
+            r"\s+WHERE\s+\w+\s*>=?\s*['\"]?\{start_date\}['\"]?\s+AND\s+\w+\s*<=?\s*['\"]?\{end_date\}['\"]?\s+AND\b",
+            " WHERE",
+            sql,
+            flags=re.IGNORECASE
+        )
+
+        # 模式3: 移除 WHERE + 时间条件（唯一的WHERE条件）
+        sql = re.sub(
+            r"\s+WHERE\s+\w+\s*>=?\s*['\"]?\{start_date\}['\"]?\s+AND\s+\w+\s*<=?\s*['\"]?\{end_date\}['\"]?",
+            "",
+            sql,
+            flags=re.IGNORECASE
+        )
+
+        # 模式4: 处理 BETWEEN 模式
+        sql = re.sub(
+            r"\s+AND\s+\w+\s+BETWEEN\s*['\"]?\{start_date\}['\"]?\s+AND\s+['\"]?\{end_date\}['\"]?",
+            "",
+            sql,
+            flags=re.IGNORECASE
+        )
+        sql = re.sub(
+            r"\s+WHERE\s+\w+\s+BETWEEN\s*['\"]?\{start_date\}['\"]?\s+AND\s+['\"]?\{end_date\}['\"]?\s+AND\b",
+            " WHERE",
+            sql,
+            flags=re.IGNORECASE
+        )
+        sql = re.sub(
+            r"\s+WHERE\s+\w+\s+BETWEEN\s*['\"]?\{start_date\}['\"]?\s+AND\s+['\"]?\{end_date\}['\"]?",
+            "",
+            sql,
+            flags=re.IGNORECASE
+        )
+
+        # 清理残留语法（空WHERE、WHERE AND等）
+        sql = re.sub(r"\s+WHERE\s+(ORDER|GROUP|LIMIT|;|$)", r" \1", sql, flags=re.IGNORECASE)
+        sql = re.sub(r"\s+WHERE\s+AND\b", " WHERE", sql, flags=re.IGNORECASE)
+
+        # 兜底：如果仍有残留占位符，使用极宽日期范围
+        if "{start_date}" in sql or "{end_date}" in sql:
+            logger.warning("无法完全移除时间过滤条件，使用极宽日期范围兜底")
+            sql = sql.replace("{start_date}", "1900-01-01").replace("{end_date}", "2999-12-31")
+
+        sql = " ".join(sql.split())
+        return sql
+
+    @staticmethod
     async def generate_sql(
         db: AsyncSession,
         metric: Metric,
         dimensions: List[Tuple[Dimension, str]],
+        question: str = "",
     ) -> str:
         """
         生成指标查询SQL
@@ -182,6 +282,7 @@ class NL2MetricsEngine:
         :param db: 数据库会话
         :param metric: 目标指标（包含SQL模板）
         :param dimensions: 维度过滤条件列表
+        :param question: 用户原始问题（用于时间范围解析）
         :return: 完整的SQL语句
         :raises ValueError: 数据源不存在时抛出
         """
@@ -211,7 +312,6 @@ class NL2MetricsEngine:
         logger.debug(f"日期维度: {len(date_dims)}, 非日期维度: {len(other_dims)}")
 
         # 日期解析工具函数
-        from datetime import datetime, timedelta
         import re as _re
 
         def fix_chinese_date(s: str) -> str:
@@ -268,25 +368,32 @@ class NL2MetricsEngine:
             return None, None
 
         # 处理日期维度
-        if date_dims:
-            # 使用用户指定的时间范围
+        # 优先从原始问题解析时间范围（比LLM维度提取更准确）
+        question_time_range = NL2SQLEngine._parse_time_range(question) if question else None
+
+        if question_time_range:
+            # 从原始问题成功解析时间范围
+            start_date = question_time_range["start"]
+            end_date = question_time_range["end"]
+            base_sql = base_sql.replace("{start_date}", start_date).replace("{end_date}", end_date)
+            logger.debug(f"从问题解析时间范围: {start_date} ~ {end_date}")
+        elif date_dims:
+            # 回退到维度提取的日期值
             _, date_val = date_dims[0]
             start_date, end_date = parse_date_value(date_val)
             if start_date and end_date:
                 base_sql = base_sql.replace("{start_date}", start_date).replace("{end_date}", end_date)
                 logger.debug(f"日期替换完成: {start_date} ~ {end_date}")
             else:
-                # 解析失败，使用默认最近30天
-                base_sql = base_sql.replace("{start_date}", (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")).replace("{end_date}", datetime.now().strftime("%Y-%m-%d"))
+                # 解析失败，移除时间过滤条件
+                base_sql = NL2MetricsEngine._remove_time_filter_from_template(base_sql)
                 # 将日期维度作为普通条件追加
                 other_dims.extend(date_dims)
-                logger.debug("日期解析失败，使用默认时间范围")
+                logger.debug("日期解析失败，已移除时间过滤条件")
         else:
-            # 没有用户指定时间，使用默认最近30天
-            end_date = datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-            base_sql = base_sql.replace("{start_date}", start_date).replace("{end_date}", end_date)
-            logger.debug(f"使用默认时间范围: {start_date} ~ {end_date}")
+            # 没有用户指定时间，移除SQL模板中的时间过滤条件
+            base_sql = NL2MetricsEngine._remove_time_filter_from_template(base_sql)
+            logger.debug("用户未指定时间，已移除时间过滤条件")
 
         # 添加非日期维度的WHERE条件
         where_clauses = []
@@ -339,7 +446,7 @@ class NL2MetricsEngine:
             logger.debug(f"提取到维度条件: {len(dimensions)}个")
 
             # 步骤3：生成SQL语句
-            sql = await NL2MetricsEngine.generate_sql(db, metric, dimensions)
+            sql = await NL2MetricsEngine.generate_sql(db, metric, dimensions, question)
 
             # 步骤4：生成结果解释
             explanation = f"根据您的查询，已匹配指标「{metric.name}」，查询条件：{question}"

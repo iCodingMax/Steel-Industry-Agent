@@ -15,6 +15,8 @@ export interface Application {
   greetingMessage?: string
   knowledgeBaseIds: number[]
   datasourceIds: number[]
+  scoreThreshold: number
+  topK: number
   iframeHeight: number
   iframeWidth: string
   requireAuth?: boolean
@@ -51,6 +53,8 @@ export interface ApplicationCreateForm {
   greetingMessage?: string
   knowledgeBaseIds?: number[]
   datasourceIds?: number[]
+  scoreThreshold?: number
+  topK?: number
   maxTokens?: number
   temperature?: number
   topP?: number
@@ -69,6 +73,8 @@ export interface ApplicationUpdateForm {
   greetingMessage?: string
   knowledgeBaseIds?: number[]
   datasourceIds?: number[]
+  scoreThreshold?: number
+  topK?: number
   iframeHeight?: number
   iframeWidth?: string
   requireAuth?: boolean

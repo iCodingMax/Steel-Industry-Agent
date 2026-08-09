@@ -21,7 +21,7 @@
 """
 import secrets
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean, Float
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
@@ -54,6 +54,8 @@ class Application(Base):
     greeting_message = Column(Text, nullable=True, comment="开场白消息")
     knowledge_base_ids = Column(JSONB, nullable=True, comment="关联知识库ID列表")
     datasource_ids = Column(JSONB, nullable=True, comment="关联数据源ID列表")
+    score_threshold = Column(Float, default=0.6, comment="检索相似度阈值(0-1之间)")
+    top_k = Column(Integer, default=3, comment="引用分段数(1-10之间)")
     iframe_height = Column(Integer, default=600, comment="iframe默认高度")
     iframe_width = Column(String(20), default="100%", comment="iframe默认宽度")
     require_auth = Column(Boolean, default=True, comment="是否需要身份验证")
@@ -96,6 +98,8 @@ class Application(Base):
             "greetingMessage": self.greeting_message,
             "knowledgeBaseIds": self.knowledge_base_ids if self.knowledge_base_ids else [],
             "datasourceIds": self.datasource_ids if self.datasource_ids else [],
+            "scoreThreshold": self.score_threshold if self.score_threshold is not None else 0.6,
+            "topK": self.top_k if self.top_k is not None else 3,
             "iframeHeight": self.iframe_height,
             "iframeWidth": self.iframe_width,
             "requireAuth": self.require_auth,

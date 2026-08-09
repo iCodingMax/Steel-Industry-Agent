@@ -184,21 +184,41 @@ class DataSourceService:
             return {"success": False, "message": str(e)}
 
     @staticmethod
-    async def sync_schema(db: AsyncSession, ds_id: int) -> List[TableSchema]:
+    def _normalize_columns(columns_data) -> str:
+        """
+        将列信息标准化为可比较的JSON字符串
+        用于对比表结构是否发生变化
+
+        :param columns_data: 列信息（JSONB、字符串或列表）
+        :return: 标准化后的JSON字符串
+        """
+        if isinstance(columns_data, str):
+            try:
+                columns_data = json.loads(columns_data)
+            except (json.JSONDecodeError, TypeError):
+                columns_data = []
+        if not isinstance(columns_data, list):
+            columns_data = []
+        return json.dumps(columns_data, sort_keys=True, ensure_ascii=False)
+
+    @staticmethod
+    async def sync_schema(db: AsyncSession, ds_id: int) -> dict:
         """
         同步数据源表结构
         从业务数据库读取所有表结构信息，同步到系统数据库的table_schemas表
 
         同步流程：
         1. 获取数据源配置
-        2. 清除该数据源的旧表结构记录（避免重复）
-        3. 重置PostgreSQL序列（避免主键冲突）
-        4. 根据数据库类型读取表和字段信息
-        5. 将表结构数据写入系统数据库
+        2. 获取已存在的表结构，用于后续对比变更
+        3. 清除该数据源的旧表结构记录（避免重复）
+        4. 重置PostgreSQL序列（避免主键冲突）
+        5. 根据数据库类型读取表和字段信息
+        6. 将表结构数据写入系统数据库
+        7. 对比新旧表结构，返回变更统计信息
 
         :param db: 数据库会话
         :param ds_id: 数据源ID
-        :return: 同步后的表结构列表
+        :return: 包含表结构列表和变更统计的字典
         :raises BusinessException: 数据源不存在或同步失败时抛出
         """
         ds = await DataSourceService.get_by_id(db, ds_id)
@@ -208,7 +228,18 @@ class DataSourceService:
         logger.info(f"开始同步数据源表结构: ID={ds_id}, name={ds.name}, type={ds.type}")
 
         try:
-            # 步骤1：清除该数据源的旧表结构记录
+            # 步骤1：获取已存在的表结构，用于后续对比变更
+            existing_stmt = select(TableSchema).where(TableSchema.datasource_id == ds_id)
+            existing_result = await db.execute(existing_stmt)
+            existing_tables = {}
+            for t in existing_result.scalars().all():
+                existing_tables[t.table_name] = DataSourceService._normalize_columns(t.columns)
+            logger.debug(f"已存在 {len(existing_tables)} 张表的表结构记录")
+
+            # 收集新表结构信息，用于对比变更
+            new_tables_info = {}
+
+            # 步骤2：清除该数据源的旧表结构记录
             await db.execute(sa_delete(TableSchema).where(TableSchema.datasource_id == ds_id))
             await db.commit()
             logger.debug("已清除旧表结构记录")
@@ -273,6 +304,9 @@ class DataSourceService:
                                 "comment": col[5] or "",
                             })
 
+                        # 记录新表结构信息，用于对比变更
+                        new_tables_info[table_name] = columns
+
                         # 创建表结构记录
                         table_schema = TableSchema(
                             datasource_id=ds_id,
@@ -317,6 +351,9 @@ class DataSourceService:
                             "nullable": col['is_nullable'] == 'YES',
                             "default": col['column_default'],
                         })
+                    # 记录新表结构信息，用于对比变更
+                    new_tables_info[table_name] = columns
+
                     table_schema = TableSchema(
                         datasource_id=ds_id,
                         table_name=table_name,
@@ -376,6 +413,9 @@ class DataSourceService:
                             "default": col[3],
                             "comment": "",
                         })
+                    # 记录新表结构信息，用于对比变更
+                    new_tables_info[table_name] = columns
+
                     table_schema = TableSchema(
                         datasource_id=ds_id,
                         table_name=table_name,
@@ -393,8 +433,28 @@ class DataSourceService:
             for t in tables:
                 await db.refresh(t)
 
-            logger.info(f"同步数据源表结构完成: {ds.name}, 共{len(tables)}张表")
-            return tables
+            # 步骤6：对比新旧表结构，计算变更数量
+            new_names = set(new_tables_info.keys())
+            existing_names = set(existing_tables.keys())
+            added_count = len(new_names - existing_names)
+            removed_count = len(existing_names - new_names)
+            updated_count = 0
+            for name in (existing_names & new_names):
+                new_cols = DataSourceService._normalize_columns(new_tables_info[name])
+                if existing_tables[name] != new_cols:
+                    updated_count += 1
+
+            logger.info(
+                f"同步数据源表结构完成: {ds.name}, 共{len(tables)}张表 "
+                f"(新增{added_count}, 移除{removed_count}, 更新{updated_count})"
+            )
+            return {
+                "tables": [t.to_dict() for t in tables],
+                "total": len(tables),
+                "added": added_count,
+                "removed": removed_count,
+                "updated": updated_count,
+            }
 
         except Exception as e:
             await db.rollback()

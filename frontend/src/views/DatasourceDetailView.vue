@@ -192,14 +192,16 @@ async function handleSync() {
   try {
     const res: any = await syncSchema(dsId)
     if (res.code === 0) {
-      ElMessage.success(`同步完成，共 ${res.data?.length || 0} 张表`)
+      const { total = 0, added = 0, removed = 0, updated = 0 } = res.data || {}
+      if (added === 0 && removed === 0 && updated === 0) {
+        ElMessage.success(`Schema已是最新，共 ${total} 张表`)
+      } else {
+        ElMessage.success(`同步完成，共 ${total} 张表（新增 ${added}，移除 ${removed}，更新 ${updated}）`)
+      }
       await loadSchema()
-    } else {
-      ElMessage.error(res.message || '同步失败')
     }
   } catch (e: any) {
     console.error('Schema同步失败', e)
-    ElMessage.error(e?.response?.data?.message || '同步失败，请检查数据库连接配置')
   } finally {
     syncing.value = false
   }
