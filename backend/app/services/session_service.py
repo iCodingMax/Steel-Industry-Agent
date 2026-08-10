@@ -155,6 +155,8 @@ class MessageService:
         column_meta: Optional[List[dict]] = None,
         chart_type: Optional[str] = None,
         thinking_steps: Optional[List[dict]] = None,
+        tool_calls: Optional[List[dict]] = None,
+        tool_results: Optional[List[dict]] = None,
         query_time: Optional[int] = None,
     ) -> Message:
         """
@@ -164,13 +166,15 @@ class MessageService:
         :param session_id: 会话ID
         :param role: 角色（user/assistant）
         :param content: 消息内容
-        :param intent: 意图分类（knowledge/data/hybrid）
+        :param intent: 意图分类（knowledge/data/mcp/skill/hybrid）
         :param references: 知识引用列表（RAG检索结果）
         :param sql_traces: SQL查询追踪列表（NL2SQL生成的SQL）
         :param data_result: 数据查询结果（JSON格式）
         :param column_meta: 字段元数据（字段名、注释等）
         :param chart_type: 推荐图表类型（line/bar/pie/table）
         :param thinking_steps: 思考过程步骤列表
+        :param tool_calls: 工具调用信息列表
+        :param tool_results: 工具调用结果列表
         :param query_time: 查询耗时（毫秒）
         :return: 创建的消息对象
         """
@@ -186,6 +190,8 @@ class MessageService:
             column_meta=column_meta,
             chart_type=chart_type,
             thinking_steps=thinking_steps,
+            tool_calls=tool_calls,
+            tool_results=tool_results,
             query_time=query_time,
         )
         db.add(message)
@@ -220,23 +226,48 @@ class MessageService:
     async def get_history(
         db: AsyncSession,
         session_id: int,
-        window_size: int = 10,
+        window_size: int = None,
     ) -> List[dict]:
         """
-        获取对话历史（用于LLM上下文）
+        获取对话历史（用于LLM多轮对话上下文）
+
+        从最近的消息开始向前回溯，截取指定条数的历史消息，
+        并对每条消息内容做长度截断，避免超出LLM上下文窗口。
 
         :param db: 数据库会话
         :param session_id: 会话ID
-        :param window_size: 返回最近的消息条数（默认10）
+        :param window_size: 返回最近的消息条数，None时从配置读取CHAT_HISTORY_LIMIT
         :return: 对话历史列表，格式为 [{"role": "user/assistant", "content": "文本"}]
         """
-        messages = await MessageService.get_by_session(db, session_id, limit=window_size)
-        history = []
-        for msg in messages:
-            history.append({
-                "role": msg.role,
-                "content": msg.content,
-            })
+        from app.core.config import settings
+
+        if window_size is None:
+            window_size = settings.CHAT_HISTORY_LIMIT
+
+        if not session_id or session_id <= 0:
+            return []
+
+        # 先取最近 window_size 条消息（按id倒序取，再正序返回）
+        from sqlalchemy import desc as sql_desc
+        stmt = (
+            select(Message)
+            .where(Message.session_id == session_id)
+            .order_by(sql_desc(Message.id))
+            .limit(window_size)
+        )
+        result = await db.execute(stmt)
+        recent_msgs = list(reversed(list(result.scalars().all())))
+
+        history: List[dict] = []
+        for msg in recent_msgs:
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            # 单条消息内容过长时截断，避免占用过多token
+            if len(content) > 800:
+                content = content[:800] + "..."
+            history.append({"role": msg.role, "content": content})
+
         logger.debug(f"获取对话历史: session_id={session_id}, 数量={len(history)}")
         return history
 

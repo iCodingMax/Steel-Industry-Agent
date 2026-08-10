@@ -2,7 +2,7 @@
 对话API
 功能：会话管理、消息发送、SSE流式响应
 """
-from typing import List, Optional
+from typing import List, Optional, Dict
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ class ChatRequest(BaseModel):
     knowledgeBaseId: Optional[int] = Field(None, description="知识库ID")
     datasourceId: Optional[int] = Field(None, description="数据源ID")
     llmConfigId: Optional[int] = Field(None, description="LLM配置ID")
+    toolConfigIds: Optional[List[int]] = Field(None, description="工具配置ID列表(MCP/Skills)")
     
     model_config = {'extra': 'allow'}
 
@@ -156,12 +157,28 @@ async def send_message(
         content=data.question,
     )
 
-    # 调用路由分发
+    # 获取工具配置ID列表
+    tool_config_ids = data.toolConfigIds or []
+    
+    # 如果请求中没有toolConfigIds，尝试从应用配置获取
+    if not tool_config_ids and hasattr(session, 'application_id') and session.application_id:
+        from app.models.application import Application
+        app_result = await db.execute(
+            select(Application).where(Application.id == session.application_id)
+        )
+        app_obj = app_result.scalar_one_or_none()
+        if app_obj and app_obj.tool_config_ids:
+            tool_config_ids = app_obj.tool_config_ids
+
+    # 调用路由分发（传入多轮对话历史）
+    chat_history: List[Dict[str, str]] = await message_service.get_history(db, data.sessionId)
     answer, references, sql_traces, query_time, data_result, column_meta, chart_type = await router_service.route(
         db,
         data.question,
         data.knowledgeBaseId,
         data.datasourceId,
+        tool_config_ids,
+        history=chat_history,
     )
 
     # 保存AI回复
@@ -231,8 +248,9 @@ async def stream_chat(
                 yield f"data: {json.dumps({'type': 'error', 'message': '会话不存在'})}\n\n"
                 return
 
-            # 加载应用配置（获取系统提示词）
+            # 加载应用配置（获取系统提示词和工具配置）
             app_system_prompt = None
+            tool_config_ids: List[int] = list(data.toolConfigIds) if data.toolConfigIds else []
             if hasattr(session, 'application_id') and session.application_id:
                 from app.models.application import Application
                 app_result = await db.execute(
@@ -243,6 +261,9 @@ async def stream_chat(
                     app_system_prompt = app_obj.system_prompt
                     if app_system_prompt:
                         logger.debug(f"加载应用系统提示词，长度={len(app_system_prompt)}")
+                    # 从应用配置获取工具配置ID（如果请求中未指定）
+                    if not tool_config_ids and app_obj.tool_config_ids:
+                        tool_config_ids = list(app_obj.tool_config_ids)
 
             # 发送开始事件
             yield f"data: {json.dumps({'type': 'start', 'sessionId': data.sessionId})}\n\n"
@@ -257,9 +278,15 @@ async def stream_chat(
 
             yield f"data: {json.dumps({'type': 'user_message', 'messageId': user_msg.id})}\n\n"
 
-            # 调用路由分发（获取意图）
+            # 加载多轮对话历史（在用户消息保存后，获取之前的历史，不含当前消息）
+            chat_history: List[Dict[str, str]] = await message_service.get_history(db, data.sessionId)
+            # 注意：get_history会取最近N条消息（含刚保存的user消息），需排除最后一条当前用户消息
+            if chat_history and chat_history[-1].get("content") == data.question:
+                chat_history = chat_history[:-1]
+
+            # 调用意图分类（传入db和tool_config_ids，以便LLM参考工具管理中的MCP/Skills名称和描述）
             from app.services.router_service import intent_classifier
-            intent = await intent_classifier.classify(data.question)
+            intent = await intent_classifier.classify(data.question, db, tool_config_ids)
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
 
@@ -326,7 +353,7 @@ async def stream_chat(
 请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
 
                         full_answer = ""
-                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, None, llm_config_params):
+                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, chat_history, llm_config_params):
                             full_answer += chunk
                             yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
 
@@ -368,7 +395,7 @@ async def stream_chat(
                         }
                     
                     full_answer = ""
-                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt, chat_history, llm_config_params):
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
                     
@@ -432,7 +459,7 @@ async def stream_chat(
                 
                 full_explanation = ""
                 if explanation_prompt:
-                    async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, chat_history, llm_config_params):
                         full_explanation += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
                 else:
@@ -453,6 +480,131 @@ async def stream_chat(
                     thinking_steps=collected_thinking_steps,
                     query_time=int(query_time * 1000),
                 )
+
+            elif intent == "mcp":
+                # MCP工具调用模式
+                from app.services.mcp_client_service import mcp_client_service
+                from app.services.router_service import RouterService
+
+                # 筛选mcp类型的工具ID
+                mcp_tool_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "mcp")
+
+                if mcp_tool_ids:
+                    total_steps = 4
+                    yield emit_thinking(1, total_steps, '意图分析', '识别用户需要调用MCP工具的意图...')
+
+                    yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(mcp_tool_ids)} 个MCP工具配置...')
+
+                    # 加载工具列表
+                    mcp_tools = await mcp_client_service.load_mcp_tools(db, mcp_tool_ids)
+                    yield emit_thinking(3, total_steps, '工具调用', f'调用 {len(mcp_tools)} 个可用MCP工具处理用户问题...')
+
+                    # 执行工具调用
+                    tool_result = await mcp_client_service.execute_tool_calls(
+                        db=db,
+                        tool_config_ids=mcp_tool_ids,
+                        question=data.question,
+                        system_prompt=app_system_prompt,
+                    )
+
+                    # 发送工具调用结果
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'data': tool_result.get('tool_calls', [])})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_results', 'data': tool_result.get('tool_results', [])})}\n\n"
+
+                    yield emit_thinking(4, total_steps, '生成回答', '整合MCP工具调用结果，生成自然语言回答...')
+
+                    # 流式输出最终回答
+                    full_answer = tool_result.get('answer', 'MCP工具调用失败')
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    # 保存AI回复（包含工具调用信息）
+                    await message_service.create(
+                        db,
+                        session_id=data.sessionId,
+                        role="assistant",
+                        content=full_answer,
+                        intent="mcp",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=tool_result.get('tool_calls', []),
+                        tool_results=tool_result.get('tool_results', []),
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
+                else:
+                    full_answer = "抱歉，当前应用未配置MCP工具。请先在应用设置中添加MCP工具。"
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    await message_service.create(
+                        db,
+                        session_id=data.sessionId,
+                        role="assistant",
+                        content=full_answer,
+                        intent="mcp",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=[],
+                        tool_results=[],
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
+
+            elif intent == "skill":
+                # Skill工具调用模式
+                from app.services.router_service import RouterService
+
+                # 筛选skill类型的工具ID
+                skill_tool_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "skill")
+
+                if skill_tool_ids:
+                    total_steps = 4
+                    yield emit_thinking(1, total_steps, '意图分析', '识别用户需要调用Skill工具的意图...')
+
+                    yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(skill_tool_ids)} 个Skill工具配置...')
+
+                    yield emit_thinking(3, total_steps, '工具分析', f'分析 {len(skill_tool_ids)} 个Skill工具匹配度...')
+
+                    # 执行Skill调用分析
+                    skill_result = await RouterService._execute_skill(
+                        db=db,
+                        tool_config_ids=skill_tool_ids,
+                        question=data.question,
+                        system_prompt=app_system_prompt,
+                    )
+
+                    # 发送工具调用结果
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'data': skill_result.get('tool_calls', [])})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_results', 'data': skill_result.get('tool_results', [])})}\n\n"
+
+                    yield emit_thinking(4, total_steps, '生成回答', '整合Skill工具分析结果，生成自然语言回答...')
+
+                    # 输出最终回答
+                    full_answer = skill_result.get('answer', 'Skill工具调用失败')
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    # 保存AI回复
+                    await message_service.create(
+                        db,
+                        session_id=data.sessionId,
+                        role="assistant",
+                        content=full_answer,
+                        intent="skill",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=skill_result.get('tool_calls', []),
+                        tool_results=skill_result.get('tool_results', []),
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
+                else:
+                    full_answer = "抱歉，当前应用未配置Skills工具。请先在应用设置中添加Skills工具。"
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    await message_service.create(
+                        db,
+                        session_id=data.sessionId,
+                        role="assistant",
+                        content=full_answer,
+                        intent="skill",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=[],
+                        tool_results=[],
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
 
             else:
                 # 混合模式：分步骤展示融合推理过程
@@ -587,7 +739,7 @@ async def stream_chat(
                             data_stream_done.set()
                             return
                         if explanation_prompt:
-                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, None, llm_config_params):
+                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, chat_history, llm_config_params):
                                 await data_chunks_queue.put(chunk)
                         elif explanation:
                             await data_chunks_queue.put(explanation)
@@ -607,7 +759,7 @@ async def stream_chat(
                     knowledge_answer = ""
                     data_producer = asyncio.create_task(_produce_data_explanation())
 
-                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, chat_history, llm_config_params):
                         chunk = chunk.replace(chr(10) * 2, chr(10))
                         knowledge_answer += chunk
                         full_answer += chunk
@@ -754,7 +906,71 @@ async def embed_chat(
             # 初始化data_producer，避免finally块中引用未定义变量
             data_producer: Optional[asyncio.Task] = None
 
-            yield f"data: {json.dumps({'type': 'start', 'sessionId': data.sessionId})}\n\n"
+            # ==================== 处理会话ID：将字符串sessionId映射为真实数据库session ====================
+            # 前端传入的sessionId格式：debug-${appId}-${timestamp}（字符串）
+            # 数据库sessions表使用INTEGER自增主键，需要创建真实session或查找对应session
+            real_session_id: int = 0
+            try:
+                # 首先尝试直接转换整数（兼容正常整数会话ID）
+                real_session_id = int(data.sessionId)
+                # 校验session是否存在
+                exist_session = await session_service.get_by_id(db, real_session_id)
+                if not exist_session:
+                    # 不存在则继续走创建逻辑
+                    raise ValueError("session not found")
+            except (ValueError, TypeError):
+                # 非数字格式（debug模式），需要创建真实数据库会话
+                # 优先使用chatUserId对应的chat_user作为用户，如果没有则查找默认系统用户
+                from app.models.chat_user import ChatUser
+                from app.models.user import User
+
+                embed_user_id: int = 0
+                embed_title = data.question[:30] if data.question else "嵌入对话"
+
+                if data.chatUserId:
+                    # 如果指定了对话用户ID，使用chat_user的id作为session用户
+                    chat_user = await db.get(ChatUser, data.chatUserId)
+                    if chat_user:
+                        embed_user_id = chat_user.id
+                        embed_title = f"{chat_user.name or chat_user.username} - {embed_title}"
+
+                # 如果没有chatUserId或chat_user不存在，尝试找默认系统用户
+                if embed_user_id == 0:
+                    # 查找第一个管理员用户，或者id=1的用户
+                    default_user_stmt = select(User).order_by(User.id.asc()).limit(1)
+                    default_user_result = await db.execute(default_user_stmt)
+                    default_user = default_user_result.scalar_one_or_none()
+                    if default_user:
+                        embed_user_id = default_user.id
+                    else:
+                        # 极端情况没有用户，抛错
+                        raise BusinessException(code=500, message="系统中未创建用户，请先初始化用户")
+
+                # 创建真实数据库会话
+                new_session = await session_service.create(
+                    db=db,
+                    user_id=embed_user_id,
+                    title=embed_title
+                )
+                real_session_id = new_session.id
+                logger.info(f"[embed_chat] 创建嵌入会话成功: 前端key={data.sessionId}, 真实session_id={real_session_id}")
+
+            # 发送start事件，带上真实的sessionId（前端如果需要可以更新）
+            yield f"data: {json.dumps({'type': 'start', 'sessionId': real_session_id, 'clientSessionId': data.sessionId})}\n\n"
+
+            # 保存用户消息（之前缺失，必须在意图分支之前保存）
+            await message_service.create(
+                db,
+                session_id=real_session_id,
+                role="user",
+                content=data.question,
+            )
+            # ==============================================================================================
+
+            # 加载多轮对话历史（排除当前刚保存的用户消息）
+            chat_history: List[Dict[str, str]] = await message_service.get_history(db, real_session_id)
+            if chat_history and chat_history[-1].get("content") == data.question:
+                chat_history = chat_history[:-1]
 
             knowledge_base_id = data.knowledgeBaseId
             datasource_id = data.datasourceId
@@ -764,6 +980,9 @@ async def embed_chat(
             app_score_threshold = 0.0
             app_top_k = 5
             app_system_prompt = None
+
+            # 工具配置ID列表（从应用配置获取）
+            tool_config_ids: List[int] = []
 
             # 预解析LLM配置，供各意图分支使用
             resolved_llm_config_params = None
@@ -783,6 +1002,9 @@ async def embed_chat(
                         knowledge_base_id = app.knowledge_base_ids[0]
                     if app.datasource_ids and len(app.datasource_ids) > 0:
                         datasource_id = app.datasource_ids[0]
+                    # 从应用配置获取工具配置ID列表
+                    if app.tool_config_ids:
+                        tool_config_ids = list(app.tool_config_ids)
 
                     # 从应用配置获取检索参数
                     app_score_threshold = app.score_threshold if app.score_threshold is not None else 0.0
@@ -820,7 +1042,7 @@ async def embed_chat(
                         }
 
             from app.services.router_service import intent_classifier
-            intent = await intent_classifier.classify(data.question)
+            intent = await intent_classifier.classify(data.question, db, tool_config_ids)
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
 
@@ -867,9 +1089,21 @@ async def embed_chat(
 请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
 
                         full_answer = ""
-                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, None, resolved_llm_config_params):
+                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, chat_history, resolved_llm_config_params):
                             full_answer += chunk
                             yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                        # 保存AI回复（知识问答-带引用）
+                        await message_service.create(
+                            db,
+                            session_id=real_session_id,
+                            role="assistant",
+                            content=full_answer,
+                            intent="knowledge",
+                            references=[r.model_dump() for r in refs],
+                            thinking_steps=collected_thinking_steps,
+                            query_time=int((time.time() - stream_start_time) * 1000),
+                        )
 
                 else:
                     # 没有指定知识库，直接调用LLM回答
@@ -877,9 +1111,21 @@ async def embed_chat(
 
                     from app.services.llm_service import llm_service
                     full_answer = ""
-                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt):
+                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt, chat_history):
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                    # 保存AI回复（知识问答-无引用）
+                    await message_service.create(
+                        db,
+                        session_id=real_session_id,
+                        role="assistant",
+                        content=full_answer,
+                        intent="knowledge",
+                        references=[],
+                        thinking_steps=collected_thinking_steps,
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
 
             elif intent == "data":
                 # 数据查询
@@ -911,12 +1157,152 @@ async def embed_chat(
                 from app.services.llm_service import llm_service
                 full_answer = ""
                 if explanation_prompt:
-                    async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt):
+                    async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, chat_history):
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
                 else:
                     full_answer = explanation
                     yield f"data: {json.dumps({'type': 'content', 'content': explanation})}\n\n"
+
+                # 保存AI回复（数据查询）
+                await message_service.create(
+                    db,
+                    session_id=real_session_id,
+                    role="assistant",
+                    content=full_answer,
+                    intent="data",
+                    sql_traces=traces,
+                    data_result=results,
+                    column_meta=column_meta,
+                    chart_type=chart_type,
+                    thinking_steps=collected_thinking_steps,
+                    query_time=int(query_time * 1000),
+                )
+
+            elif intent == "mcp":
+                # MCP工具调用模式
+                from app.services.mcp_client_service import mcp_client_service
+                from app.services.router_service import RouterService
+
+                # 筛选mcp类型的工具ID
+                mcp_tool_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "mcp")
+
+                if mcp_tool_ids:
+                    total_steps = 4
+                    yield emit_thinking(1, total_steps, '意图分析', '识别用户需要调用MCP工具的意图...')
+
+                    yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(mcp_tool_ids)} 个MCP工具配置...')
+
+                    # 加载工具列表
+                    mcp_tools = await mcp_client_service.load_mcp_tools(db, mcp_tool_ids)
+                    yield emit_thinking(3, total_steps, '工具调用', f'调用 {len(mcp_tools)} 个可用MCP工具处理用户问题...')
+
+                    # 执行工具调用
+                    tool_result = await mcp_client_service.execute_tool_calls(
+                        db=db,
+                        tool_config_ids=mcp_tool_ids,
+                        question=data.question,
+                        system_prompt=app_system_prompt,
+                    )
+
+                    # 发送工具调用结果
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'data': tool_result.get('tool_calls', [])})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_results', 'data': tool_result.get('tool_results', [])})}\n\n"
+
+                    yield emit_thinking(4, total_steps, '生成回答', '整合MCP工具调用结果，生成自然语言回答...')
+
+                    # 输出最终回答
+                    full_answer = tool_result.get('answer', 'MCP工具调用失败')
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    # 保存AI回复
+                    await message_service.create(
+                        db,
+                        session_id=real_session_id,
+                        role="assistant",
+                        content=full_answer,
+                        intent="mcp",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=tool_result.get('tool_calls', []),
+                        tool_results=tool_result.get('tool_results', []),
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
+                else:
+                    full_answer = "抱歉，当前应用未配置MCP工具。请先在应用设置中添加MCP工具。"
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    await message_service.create(
+                        db,
+                        session_id=real_session_id,
+                        role="assistant",
+                        content=full_answer,
+                        intent="mcp",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=[],
+                        tool_results=[],
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
+
+            elif intent == "skill":
+                # Skill工具调用模式
+                from app.services.router_service import RouterService
+
+                # 筛选skill类型的工具ID
+                skill_tool_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "skill")
+
+                if skill_tool_ids:
+                    total_steps = 4
+                    yield emit_thinking(1, total_steps, '意图分析', '识别用户需要调用Skill工具的意图...')
+
+                    yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(skill_tool_ids)} 个Skill工具配置...')
+
+                    yield emit_thinking(3, total_steps, '工具分析', f'分析 {len(skill_tool_ids)} 个Skill工具匹配度...')
+
+                    # 执行Skill调用分析
+                    skill_result = await RouterService._execute_skill(
+                        db=db,
+                        tool_config_ids=skill_tool_ids,
+                        question=data.question,
+                        system_prompt=app_system_prompt,
+                    )
+
+                    # 发送工具调用结果
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'data': skill_result.get('tool_calls', [])})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_results', 'data': skill_result.get('tool_results', [])})}\n\n"
+
+                    yield emit_thinking(4, total_steps, '生成回答', '整合Skill工具分析结果，生成自然语言回答...')
+
+                    # 输出最终回答
+                    full_answer = skill_result.get('answer', 'Skill工具调用失败')
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    # 保存AI回复
+                    await message_service.create(
+                        db,
+                        session_id=real_session_id,
+                        role="assistant",
+                        content=full_answer,
+                        intent="skill",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=skill_result.get('tool_calls', []),
+                        tool_results=skill_result.get('tool_results', []),
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
+                else:
+                    full_answer = "抱歉，当前应用未配置Skills工具。请先在应用设置中添加Skills工具。"
+                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                    await message_service.create(
+                        db,
+                        session_id=real_session_id,
+                        role="assistant",
+                        content=full_answer,
+                        intent="skill",
+                        thinking_steps=collected_thinking_steps,
+                        tool_calls=[],
+                        tool_results=[],
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
 
             else:
                 # 混合模式：分步骤展示融合推理过程
@@ -1035,7 +1421,7 @@ async def embed_chat(
                             data_stream_done.set()
                             return
                         if explanation_prompt:
-                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, None, llm_config_params):
+                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, chat_history, llm_config_params):
                                 await data_chunks_queue.put(chunk)
                         elif explanation:
                             await data_chunks_queue.put(explanation)
@@ -1055,7 +1441,7 @@ async def embed_chat(
                     knowledge_answer = ""
                     data_producer = asyncio.create_task(_produce_data_explanation())
 
-                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, None, llm_config_params):
+                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, chat_history, llm_config_params):
                         chunk = chunk.replace(chr(10) * 2, chr(10))
                         knowledge_answer += chunk
                         full_answer += chunk
@@ -1090,6 +1476,22 @@ async def embed_chat(
                 if not full_answer.strip():
                     full_answer = "抱歉，无法找到相关信息或数据。"
                     yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
+
+                # 保存AI回复（混合模式）
+                await message_service.create(
+                    db,
+                    session_id=real_session_id,
+                    role="assistant",
+                    content=full_answer,
+                    intent="hybrid",
+                    references=references,
+                    sql_traces=sql_traces,
+                    data_result=data_result,
+                    column_meta=column_meta,
+                    chart_type=chart_type,
+                    thinking_steps=collected_thinking_steps,
+                    query_time=int((time.time() - stream_start_time) * 1000),
+                )
 
             await db.commit()
 

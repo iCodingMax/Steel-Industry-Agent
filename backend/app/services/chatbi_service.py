@@ -95,6 +95,7 @@ class ChatBIService:
         db: AsyncSession,
         question: str,
         datasource_id: Optional[int] = None,
+        history: Optional[List[dict]] = None,
     ) -> Tuple[str, Optional[List[dict]], List[dict], float, Optional[str], Optional[List[dict]], str]:
         """
         智能问数流程
@@ -104,6 +105,7 @@ class ChatBIService:
         :param db: 数据库会话
         :param question: 用户问题
         :param datasource_id: 数据源ID（可选）
+        :param history: 对话历史（多轮对话上下文）
         :return: (结果解释, 数据结果, SQL溯源, 查询耗时, 解释prompt, 字段元信息, 推荐图表类型)
 
         返回值说明：
@@ -122,7 +124,7 @@ class ChatBIService:
                - 匹配成功：执行指标SQL，获取结果
                - 匹配失败：进入NL2SQL兜底
             4. NL2SQL兜底：生成SQL并执行
-            5. 构建结果解释Prompt（用于流式生成）
+            5. 构建结果解释Prompt（用于流式生成，传入历史上下文）
             6. 返回查询结果
         """
         start_time = time.time()
@@ -281,6 +283,7 @@ class ChatBIService:
         question: str,
         sql: str,
         results: List[dict],
+        history: Optional[List[dict]] = None,
     ) -> str:
         """
         生成结果解释
@@ -290,6 +293,7 @@ class ChatBIService:
         :param question: 用户问题
         :param sql: 执行的SQL
         :param results: 查询结果
+        :param history: 对话历史（多轮对话上下文）
         :return: 自然语言解释
 
         使用场景：非流式响应时，直接生成完整的结果解释。
@@ -317,7 +321,7 @@ class ChatBIService:
 
 解释内容："""
 
-        explanation = await llm_service.chat(prompt)
+        explanation = await llm_service.chat(prompt, history=history)
         logger.info(f"结果解释生成完成: 长度={len(explanation)}")
         return explanation
 

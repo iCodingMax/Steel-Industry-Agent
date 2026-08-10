@@ -19,6 +19,7 @@ from app.api.v1.chatbi import router as chatbi_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.health import router as health_router
 from app.api.v1.audit_log import router as audit_log_router
+from app.api.v1.tool import router as tool_router
 
 api_router = APIRouter()
 
@@ -38,3 +39,4 @@ api_router.include_router(chatbi_router, prefix="/chatbi", tags=["智能问数"]
 api_router.include_router(chat_router, prefix="/sessions", tags=["对话管理"])
 api_router.include_router(audit_log_router, prefix="/audit-logs", tags=["审计日志"])
 api_router.include_router(health_router, prefix="/health", tags=["健康检查"])
+api_router.include_router(tool_router, tags=["工具管理"])

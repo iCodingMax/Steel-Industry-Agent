@@ -31,6 +31,7 @@ class ApplicationCreate(BaseModel):
     greetingMessage: str = Field(None, description="开场白消息")
     knowledgeBaseIds: List[int] = Field([], description="关联知识库ID列表")
     datasourceIds: List[int] = Field([], description="关联数据源ID列表")
+    toolConfigIds: List[int] = Field([], description="关联工具配置ID列表(MCP/Skills)")
     scoreThreshold: float = Field(0.6, description="检索相似度阈值(0-1之间)")
     topK: int = Field(3, description="引用分段数(1-10之间)")
     maxTokens: int = Field(8192, description="最大生成token数")
@@ -52,6 +53,7 @@ class ApplicationUpdate(BaseModel):
     greetingMessage: str = Field(None, description="开场白消息")
     knowledgeBaseIds: List[int] = Field(None, description="关联知识库ID列表")
     datasourceIds: List[int] = Field(None, description="关联数据源ID列表")
+    toolConfigIds: List[int] = Field(None, description="关联工具配置ID列表(MCP/Skills)")
     scoreThreshold: float = Field(None, description="检索相似度阈值(0-1之间)")
     topK: int = Field(None, description="引用分段数(1-10之间)")
     iframeHeight: int = Field(None, description="iframe默认高度")
@@ -160,6 +162,7 @@ async def create_application(
             greeting_message=data.greetingMessage,
             knowledge_base_ids=data.knowledgeBaseIds,
             datasource_ids=data.datasourceIds,
+            tool_config_ids=data.toolConfigIds,
             score_threshold=data.scoreThreshold,
             top_k=data.topK,
             max_tokens=data.maxTokens,
@@ -211,6 +214,7 @@ async def update_application(
         'greeting_message': data.greetingMessage,
         'knowledge_base_ids': data.knowledgeBaseIds,
         'datasource_ids': data.datasourceIds,
+        'tool_config_ids': data.toolConfigIds,
         'score_threshold': data.scoreThreshold,
         'top_k': data.topK,
         'iframe_height': data.iframeHeight,

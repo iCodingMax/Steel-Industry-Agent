@@ -15,7 +15,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: Date
-  type?: 'text' | 'knowledge' | 'data' | 'chart' | 'sql'
+  type?: 'text' | 'knowledge' | 'data' | 'chart' | 'sql' | 'tool' | 'mcp' | 'skill'
   isStreaming?: boolean
   references?: any[]
   sqlTraces?: any[]
@@ -25,6 +25,8 @@ export interface ChatMessage {
   columnMeta?: any[]  // 字段元信息（注释、类型等）
   chartType?: string  // 推荐图表类型
   thinkingSteps?: ThinkingStep[]  // 思考过程步骤
+  toolCalls?: any[]  // 工具调用信息（MCP/Skill通用）
+  toolResults?: any[]  // 工具调用结果（MCP/Skill通用）
 }
 
 export interface ChatSession {
@@ -165,7 +167,10 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role,
           content: m.content,
           timestamp: new Date(m.createdAt),
-          type: (m.intent === 'data' || m.intent === 'hybrid') && m.dataResult ? 'data' : 'text',
+          type: (m.intent === 'data' || m.intent === 'hybrid') && m.dataResult ? 'data'
+              : (m.intent === 'mcp' ? 'mcp'
+              : (m.intent === 'skill' ? 'skill'
+              : (m.intent === 'tool' ? 'tool' : 'text'))),
           isStreaming: false,
           references: m.references,
           sqlTraces: m.sqlTraces,
@@ -175,6 +180,8 @@ export const useChatStore = defineStore('chat', () => {
           queryTime: m.queryTime,
           intent: m.intent,
           thinkingSteps: (m as any).thinkingSteps || [],
+          toolCalls: (m as any).toolCalls || [],
+          toolResults: (m as any).toolResults || [],
         }))
       }
     } catch (e) {
@@ -304,6 +311,15 @@ export const useChatStore = defineStore('chat', () => {
                 msg.chartType = event.chartType
               }
               msg.type = 'data'
+              break
+            case 'tool_calls':
+              // 工具调用信息（MCP/Skill通用，根据intent区分类型）
+              msg.toolCalls = event.data
+              msg.type = msg.intent === 'skill' ? 'skill' : (msg.intent === 'mcp' ? 'mcp' : 'tool')
+              break
+            case 'tool_results':
+              // 工具调用结果
+              msg.toolResults = event.data
               break
             case 'content':
               // 流式内容，逐字追加

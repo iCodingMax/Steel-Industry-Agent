@@ -12,6 +12,7 @@ from app.models.knowledge import KnowledgeBase, Document, DocumentSegment
 from app.models.application import Application, AppPrompt
 from app.models.session import Session, Message, Trace
 from app.models.audit_log import AuditLog
+from app.models.tool_config import ToolConfig
 
 __all__ = [
     "User",
@@ -30,4 +31,5 @@ __all__ = [
     "Message",
     "Trace",
     "AuditLog",
+    "ToolConfig",
 ]

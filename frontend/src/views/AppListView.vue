@@ -157,6 +157,44 @@
 
                 <el-card shadow="never" class="form-card">
                   <template #header>
+                    <span class="card-title">工具设置</span>
+                  </template>
+                  <el-form-item label="关联MCP">
+                    <el-select v-model="appForm.mcpIds" multiple placeholder="请选择MCP" style="width: 100%">
+                      <el-option
+                        v-for="tool in mcpTools"
+                        :key="tool.id"
+                        :label="tool.name"
+                        :value="tool.id"
+                      >
+                        <span style="display: flex; align-items: center; gap: 8px;">
+                          <span class="tool-badge mcp" style="font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; color: #fff; background: #6366f1;">MCP</span>
+                          <span>{{ tool.name }}</span>
+                        </span>
+                      </el-option>
+                    </el-select>
+                    <p class="form-tip">选择后，智能助手可调用MCP工具完成外部操作</p>
+                  </el-form-item>
+                  <el-form-item label="关联Skills">
+                    <el-select v-model="appForm.skillIds" multiple placeholder="请选择Skill" style="width: 100%">
+                      <el-option
+                        v-for="tool in skillTools"
+                        :key="tool.id"
+                        :label="tool.name"
+                        :value="tool.id"
+                      >
+                        <span style="display: flex; align-items: center; gap: 8px;">
+                          <span class="tool-badge skill" style="font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; color: #fff; background: #10b981;">Skill</span>
+                          <span>{{ tool.name }}</span>
+                        </span>
+                      </el-option>
+                    </el-select>
+                    <p class="form-tip">选择后，智能助手可调用Skills完成特定任务</p>
+                  </el-form-item>
+                </el-card>
+
+                <el-card shadow="never" class="form-card">
+                  <template #header>
                     <span class="card-title">开场白设置</span>
                   </template>
                   <el-form-item label="开场白消息">
@@ -392,6 +430,7 @@ import {
   ArrowLeft,
   View,
   Message,
+  Check,
 } from '@element-plus/icons-vue'
 import {
   getApplications,
@@ -406,6 +445,7 @@ import {
 import { getKnowledgeBases } from '@/api/knowledge'
 import { getLLMConfigs, type LLMConfigForm } from '@/api/llmConfig'
 import { getDatasources } from '@/api/datasource'
+import { getTools } from '@/api/tool'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -416,6 +456,8 @@ const datasources = ref<any[]>([])
 const llmModels = ref<LLMConfigForm[]>([])
 const embeddingModels = ref<LLMConfigForm[]>([])
 const rerankModels = ref<LLMConfigForm[]>([])
+const mcpTools = ref<any[]>([])
+const skillTools = ref<any[]>([])
 
 const currentApp = ref<Application | null>(null)
 const activeTab = ref('settings')
@@ -428,7 +470,7 @@ const sqlDialogVisible = ref(false)
 const currentSql = ref('')
 
 const appFormRef = ref<FormInstance>()
-const appForm = reactive<ApplicationUpdateForm>({
+const appForm = reactive<ApplicationUpdateForm & { mcpIds: number[], skillIds: number[] }>({
   name: '',
   description: '',
   status: 'active',
@@ -440,6 +482,9 @@ const appForm = reactive<ApplicationUpdateForm>({
   greetingMessage: '',
   knowledgeBaseIds: [],
   datasourceIds: [],
+  toolConfigIds: [],
+  mcpIds: [],
+  skillIds: [],
   scoreThreshold: 0.6,
   topK: 3,
   maxTokens: 8192,
@@ -478,6 +523,8 @@ const createForm = reactive<ApplicationCreateForm>({
   embeddingModel: 'bge-m3',
   rerankModel: 'bge-reranker-large',
   knowledgeBaseIds: [],
+  datasourceIds: [],
+  toolConfigIds: [],
   maxTokens: 8192,
   temperature: 0.7,
   topP: 0.9,
@@ -960,6 +1007,30 @@ async function loadModels() {
   }
 }
 
+async function loadTools() {
+  try {
+    const res = await getTools() as any
+    if (res.code === 0) {
+      const tools = res.data || []
+      mcpTools.value = tools.filter((t: any) => t.tool_type === 'mcp' && t.status === 'active')
+      skillTools.value = tools.filter((t: any) => t.tool_type === 'skill' && t.status === 'active')
+    }
+  } catch (error) {
+    console.error('加载工具列表失败', error)
+    mcpTools.value = []
+    skillTools.value = []
+  }
+}
+
+function toggleTool(toolId: number) {
+  const index = appForm.toolConfigIds.indexOf(toolId)
+  if (index > -1) {
+    appForm.toolConfigIds.splice(index, 1)
+  } else {
+    appForm.toolConfigIds.push(toolId)
+  }
+}
+
 function handleCreate() {
   Object.assign(createForm, {
     name: '',
@@ -968,6 +1039,8 @@ function handleCreate() {
     embeddingModel: 'bge-m3',
     rerankModel: 'bge-reranker-large',
     knowledgeBaseIds: [],
+    datasourceIds: [],
+    toolConfigIds: [],
     scoreThreshold: 0.6,
     topK: 3,
     maxTokens: 8192,
@@ -1001,27 +1074,36 @@ async function handleSubmitCreate() {
 function handleDetail(app: Application) {
   currentApp.value = app
   activeTab.value = 'settings'
-  Object.assign(appForm, {
-    name: app.name,
-    description: app.description || '',
-    status: app.status,
-    modelName: app.modelName,
-    embeddingModel: app.embeddingModel,
-    rerankModel: app.rerankModel,
-    systemPrompt: app.systemPrompt || '',
-    userPromptTemplate: app.userPromptTemplate || '',
-    greetingMessage: app.greetingMessage || '',
-    knowledgeBaseIds: [...app.knowledgeBaseIds],
-    datasourceIds: [...app.datasourceIds],
-    scoreThreshold: app.scoreThreshold ?? 0.6,
-    topK: app.topK ?? 3,
-    maxTokens: app.maxTokens,
-    temperature: app.temperature,
-    topP: app.topP,
+  // 加载工具列表，然后拆分toolConfigIds
+  loadTools().then(() => {
+    const toolIds = app.toolConfigIds || []
+    const mcpIds = toolIds.filter((id: number) => mcpTools.value.some(t => t.id === id))
+    const skillIds = toolIds.filter((id: number) => skillTools.value.some(t => t.id === id))
+    Object.assign(appForm, {
+      name: app.name,
+      description: app.description || '',
+      status: app.status,
+      modelName: app.modelName,
+      embeddingModel: app.embeddingModel,
+      rerankModel: app.rerankModel,
+      systemPrompt: app.systemPrompt || '',
+      userPromptTemplate: app.userPromptTemplate || '',
+      greetingMessage: app.greetingMessage || '',
+      knowledgeBaseIds: [...app.knowledgeBaseIds],
+      datasourceIds: [...app.datasourceIds],
+      toolConfigIds: [...toolIds],
+      mcpIds,
+      skillIds,
+      scoreThreshold: app.scoreThreshold ?? 0.6,
+      topK: app.topK ?? 3,
+      maxTokens: app.maxTokens,
+      temperature: app.temperature,
+      topP: app.topP,
+    })
+    authConfig.requireAuth = app.requireAuth ?? true
+    // 检测系统提示词是否溢出
+    checkPromptOverflow()
   })
-  authConfig.requireAuth = app.requireAuth ?? true
-  // 检测系统提示词是否溢出
-  checkPromptOverflow()
 }
 
 // 打开检索参数弹窗时同步当前值
@@ -1056,7 +1138,9 @@ async function handleSave() {
 
   saving.value = true
   try {
-    await updateApplication(currentApp.value.id, { ...appForm })
+    // 合并mcpIds和skillIds到toolConfigIds
+    const toolConfigIds = [...appForm.mcpIds, ...appForm.skillIds]
+    await updateApplication(currentApp.value.id, { ...appForm, toolConfigIds })
     ElMessage.success('应用保存成功')
     await loadApplications()
   } catch (error: any) {
@@ -1077,7 +1161,9 @@ async function handlePublish() {
   appForm.status = 'active'
   saving.value = true
   try {
-    await updateApplication(currentApp.value.id, { ...appForm })
+    // 合并mcpIds和skillIds到toolConfigIds
+    const toolConfigIds = [...appForm.mcpIds, ...appForm.skillIds]
+    await updateApplication(currentApp.value.id, { ...appForm, toolConfigIds })
     ElMessage.success('应用已发布')
     await loadApplications()
   } catch (error: any) {
@@ -1691,6 +1777,109 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   width: 100%;
+}
+
+.tool-selection {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+
+.tool-group {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tool-group-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.tool-group-count {
+  font-size: 12px;
+  color: #64748b;
+  background: #e2e8f0;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.tool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+}
+
+.tool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: #fff;
+}
+
+.tool-item:hover {
+  border-color: #3b82f6;
+  background: #f0f9ff;
+}
+
+.tool-item.active {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+
+.tool-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #fff;
+}
+
+.tool-badge.mcp {
+  background: #6366f1;
+}
+
+.tool-badge.skill {
+  background: #10b981;
+}
+
+.tool-name {
+  font-size: 13px;
+  color: #334155;
+}
+
+.tool-item.active .tool-name {
+  color: #1e40af;
+  font-weight: 500;
+}
+
+.check-icon {
+  color: #3b82f6;
+  font-size: 14px;
+}
+
+.tool-empty {
+  padding: 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
 }
 
 .retrieval-params-dialog {

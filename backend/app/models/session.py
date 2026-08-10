@@ -75,7 +75,7 @@ class Message(Base):
     """
     消息表
     存储对话中的每条消息，包括用户输入和助手回复
-    消息包含丰富的元数据，支持知识引用、SQL溯源、图表推荐等功能
+    消息包含丰富的元数据，支持知识引用、SQL溯源、图表推荐、工具调用等功能
     """
 
     __tablename__ = "messages"
@@ -84,13 +84,15 @@ class Message(Base):
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False, index=True, comment="会话ID")
     role = Column(String(20), nullable=False, comment="角色: user/assistant")
     content = Column(Text, nullable=False, comment="消息内容")
-    intent = Column(String(20), nullable=True, comment="消息意图: knowledge/data/hybrid")
+    intent = Column(String(20), nullable=True, comment="消息意图: knowledge/data/mcp/skill/hybrid")
     references = Column(JSONB, nullable=True, comment="引用信息(JSON)")
     sql_traces = Column(JSONB, nullable=True, comment="SQL溯源(JSON)")
     data_result = Column(JSONB, nullable=True, comment="查询结果数据(JSON)")
     column_meta = Column(JSONB, nullable=True, comment="字段元信息(JSON)")
     chart_type = Column(String(20), nullable=True, comment="推荐图表类型")
     thinking_steps = Column(JSONB, nullable=True, comment="思考过程步骤(JSON)")
+    tool_calls = Column(JSONB, nullable=True, comment="工具调用信息(JSON)")
+    tool_results = Column(JSONB, nullable=True, comment="工具调用结果(JSON)")
     query_time = Column(Integer, nullable=True, comment="查询耗时(毫秒)")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
 
@@ -108,6 +110,8 @@ class Message(Base):
             "columnMeta": self.column_meta,
             "chartType": self.chart_type,
             "thinkingSteps": self.thinking_steps,
+            "toolCalls": self.tool_calls,
+            "toolResults": self.tool_results,
             "queryTime": self.query_time,
             "createdAt": _to_cst_iso(self.created_at),
         }

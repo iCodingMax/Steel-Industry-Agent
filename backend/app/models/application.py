@@ -54,6 +54,7 @@ class Application(Base):
     greeting_message = Column(Text, nullable=True, comment="开场白消息")
     knowledge_base_ids = Column(JSONB, nullable=True, comment="关联知识库ID列表")
     datasource_ids = Column(JSONB, nullable=True, comment="关联数据源ID列表")
+    tool_config_ids = Column(JSONB, nullable=True, comment="关联工具配置ID列表(MCP/Skills)")
     score_threshold = Column(Float, default=0.6, comment="检索相似度阈值(0-1之间)")
     top_k = Column(Integer, default=3, comment="引用分段数(1-10之间)")
     iframe_height = Column(Integer, default=600, comment="iframe默认高度")
@@ -98,6 +99,7 @@ class Application(Base):
             "greetingMessage": self.greeting_message,
             "knowledgeBaseIds": self.knowledge_base_ids if self.knowledge_base_ids else [],
             "datasourceIds": self.datasource_ids if self.datasource_ids else [],
+            "toolConfigIds": self.tool_config_ids if self.tool_config_ids else [],
             "scoreThreshold": self.score_threshold if self.score_threshold is not None else 0.6,
             "topK": self.top_k if self.top_k is not None else 3,
             "iframeHeight": self.iframe_height,

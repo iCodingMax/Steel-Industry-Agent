@@ -90,6 +90,7 @@ async def init_db() -> None:
     import app.models.knowledge  # noqa: F401
     import app.models.session  # noqa: F401
     import app.models.audit_log  # noqa: F401
+    import app.models.tool_config  # noqa: F401
 
     try:
         async with system_engine.begin() as conn:
@@ -146,6 +147,22 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN messages.thinking_steps IS '思考过程步骤(JSON)'"
                 ))
                 logger.info("已为 messages 表添加 thinking_steps 列")
+            if 'tool_calls' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE messages ADD COLUMN tool_calls JSONB DEFAULT NULL"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN messages.tool_calls IS '工具调用信息(JSON)'"
+                ))
+                logger.info("已为 messages 表添加 tool_calls 列")
+            if 'tool_results' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE messages ADD COLUMN tool_results JSONB DEFAULT NULL"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN messages.tool_results IS '工具调用结果(JSON)'"
+                ))
+                logger.info("已为 messages 表添加 tool_results 列")
 
         if 'applications' in inspector.get_table_names():
             existing_cols = {col['name'] for col in inspector.get_columns('applications')}
@@ -157,6 +174,14 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN applications.datasource_ids IS '关联数据源ID列表'"
                 ))
                 logger.info("已为 applications 表添加 datasource_ids 列")
+            if 'tool_config_ids' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN tool_config_ids JSONB DEFAULT '[]'::jsonb"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.tool_config_ids IS '关联工具配置ID列表(MCP/Skills)'"
+                ))
+                logger.info("已为 applications 表添加 tool_config_ids 列")
             if 'access_hash' not in existing_cols:
                 sync_conn.execute(text(
                     "ALTER TABLE applications ADD COLUMN access_hash VARCHAR(16)"

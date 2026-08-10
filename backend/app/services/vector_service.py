@@ -325,6 +325,7 @@ class KnowledgeQAService:
         db: AsyncSession,
         query: KnowledgeQuery,
         knowledge_base: KnowledgeBase,
+        history: Optional[List[dict]] = None,
     ) -> tuple[str, List[KnowledgeQueryResult], float]:
         """
         知识问答
@@ -334,13 +335,14 @@ class KnowledgeQAService:
         :param db: 数据库会话
         :param query: 查询请求对象，包含问题和检索参数
         :param knowledge_base: 知识库配置对象
+        :param history: 对话历史（多轮对话上下文）
         :return: (回答内容, 引用列表, 查询耗时)
 
         流程步骤：
             1. 调用向量检索获取相关知识片段
             2. 内容去重：相同内容的引用只保留第一个
             3. 构建上下文文本（按文档编号组织）
-            4. 构建Prompt并调用LLM生成回答
+            4. 构建Prompt并调用LLM生成回答（传入历史上下文）
             5. 返回回答、引用列表和耗时
         """
         import time
@@ -388,7 +390,7 @@ class KnowledgeQAService:
 
 请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
 
-            answer = await llm_service.chat(prompt)
+            answer = await llm_service.chat(prompt, history=history)
             logger.info(f"LLM生成回答完成: 回答长度={len(answer)}")
 
             # 步骤5：计算耗时并返回结果

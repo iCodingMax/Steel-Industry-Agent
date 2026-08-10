@@ -224,6 +224,8 @@ class LLMService:
         self,
         question: str,
         system_prompt: Optional[str] = None,
+        mcp_tools: Optional[List[Dict[str, str]]] = None,
+        skill_tools: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """
         意图分类
@@ -231,41 +233,112 @@ class LLMService:
 
         :param question: 用户输入的问题
         :param system_prompt: 自定义分类提示词，为空时使用默认提示词
-        :return: 分类结果，取值为 knowledge/data/hybrid
+        :param mcp_tools: 可用MCP工具列表 [{"name": ..., "description": ...}]，
+                          参考工具管理中已配置的MCP名称与描述
+        :param skill_tools: 可用Skill工具列表 [{"name": ..., "description": ..., "file_name": ...}]，
+                            参考工具管理中已配置的Skills名称、描述与文件
+        :return: 分类结果，取值为 knowledge/data/mcp/skill/hybrid
                  - knowledge: 知识问答通道（工艺知识、技术规范、问候语等）
                  - data: 数据查询通道（生产数据、指标统计、图表展示等）
-                 - hybrid: 混合分析通道（同时包含知识和数据意图）
+                 - mcp: MCP工具调用通道（外部服务，如地图、天气等）
+                 - skill: Skill工具调用通道（本地技能脚本执行）
+                 - hybrid: 混合分析通道（仅包含知识问答+数据查询的组合）
         """
-        # 默认意图分类提示词
-        # 设计原则：
-        # 1. 简单问候语（hello、你好、hi）归类为knowledge，避免触发NL2SQL流程
-        # 2. 纯数据查询归类为data，直接走NL2SQL或NL2Metrics
-        # 3. 同时包含数据和知识要素的归类为hybrid，需要拆分处理
-        default_prompt = """你是一个意图分类助手，请根据用户问题判断其意图类型。
+        # 构建MCP工具描述信息（参考工具管理中已配置的MCP名称与描述）
+        if mcp_tools:
+            mcp_tools_desc = "\n".join([
+                f"- {t.get('name', '')}: {t.get('description', '无描述')}"
+                for t in mcp_tools
+            ])
+        else:
+            mcp_tools_desc = "(暂无配置MCP工具)"
 
-分类规则：
-- knowledge: 用户仅询问工艺知识、技术规范、操作规程、概念解释、操作建议等文档类问题，以及问候语、闲聊等通用对话
-- data: 用户仅查询生产数据、指标数值、统计报表、图表展示等数据类问题
-- hybrid: 用户问题同时包含知识查询和数据查询两部分意图
+        # 构建Skill工具描述信息（参考工具管理中已配置的Skills名称、描述与文件）
+        if skill_tools:
+            skill_tools_desc = "\n".join([
+                f"- {t.get('name', '')}: {t.get('description', '无描述')}"
+                + (f" (文件: {t['file_name']})" if t.get('file_name') else "")
+                for t in skill_tools
+            ])
+        else:
+            skill_tools_desc = "(暂无配置Skill工具)"
 
-判断要点：
-- 如果问题中包含分号";"、问号"?"、或逗号","分隔的多个子问题，检查是否同时涉及数据查询和知识问答
-- 如果问题前半部分涉及"展示"、"查询"、"统计"、"次数"、"数量"等数据相关关键词，后半部分涉及"如何"、"应该"、"解释"、"什么是"、"原理"、"调整"等知识相关关键词，则属于hybrid
-- 包含"并且"、"同时"、"另外"、"以及"、"？"等连接词连接不同类型的问题时，通常属于hybrid
-- 只要问题中有一部分涉及数据查询（如展示数据、统计数值），另一部分涉及知识问答（如操作建议、工艺解释），就是hybrid
-- 简单问候语（如hello、你好、hi等）属于knowledge意图
+        # 默认意图分类提示词（五种意图类型）
+        default_prompt = f"""你是一个智能意图分类助手，负责将用户问题归类为以下五种类型之一。
 
-示例：
+## 当前可用工具（参考工具管理中的配置）
+
+### MCP工具（通过MCP协议调用的外部服务）
+{mcp_tools_desc}
+
+### Skill工具（本地技能脚本）
+{skill_tools_desc}
+
+## 分类规则（按优先级排序）
+
+### 1. mcp（MCP工具调用）
+当用户问题需要调用上述MCP工具来获取实时信息或执行特定操作时，归类为mcp：
+- 地理位置相关：地点查询、路线规划、导航、距离计算、地址解析
+- 实时信息：天气查询、新闻、股票价格、汇率、实时数据
+- 外部服务：地图服务、搜索服务、翻译服务、计算服务
+- 关键词特征：地图、路线、天气、位置、地点、查询位置、怎么走、在哪里、导航、定位
+- **重要**：如果用户问题与上述MCP工具的名称或描述在语义上匹配，应归类为mcp
+
+### 2. skill（Skill工具调用）
+**仅当用户明确要求执行技能时**，归类为skill：
+- 用户明确说"高炉炉况诊断"、"执行高炉炉况诊断"、"执行炉况诊断技能"
+- 用户明确说"使用技能"、"调用技能"、"运行技能"
+- **重要**：普通的炉况相关问题（如"风压波动怎么回事"、"铁水硅高了"、"炉况不顺"等）
+  **不归类为skill**，应归类为knowledge（知识问答），因为这些是知识咨询而非技能调用
+- 只有用户明确表达"执行技能"意图时才归类为skill
+
+### 3. data（数据查询）
+当用户需要查询数据库中的业务数据时，归类为data：
+- 生产数据：产量、合格率、能耗、设备状态、工艺参数
+- 统计分析：报表、趋势、对比、排名、汇总
+- 关键词特征：展示、查询、统计、多少、次数、数量、产量、合格率、能耗、报表、图表、趋势
+
+### 4. hybrid（混合意图）
+当用户问题同时包含知识问答和数据查询两种意图时，归类为hybrid：
+- 注意：混合意图仅包含知识问答+数据查询的组合
+- 不包含MCP/Skill与其他意图的组合（此类情况应优先判定为mcp或skill）
+- 用"并且"、"同时"、"另外"、"以及"等连接词连接不同类型的问题
+
+### 5. knowledge（知识问答）
+当用户问题只涉及知识问答或闲聊时，归类为knowledge：
+- 工艺知识：炼铁原理、炼钢工艺、轧钢流程
+- 技术规范：操作规程、安全规范、技术标准
+- 概念解释：什么是、如何理解、解释一下
+- 通用对话：问候语、闲聊、感谢
+
+## 判断要点（重要）
+1. 优先判断mcp/skill：如果问题涉及外部工具调用或技能执行，优先归类为mcp或skill
+2. **工具语义匹配**：仔细比对用户问题与可用工具列表中的名称和描述，
+   如果问题语义与某个工具的描述场景匹配，应归类为对应的mcp或skill
+3. 数据查询中的"查询"指的是查询内部数据库数据，不是外部服务
+4. 简单问候语（hello、你好、hi、谢谢等）属于knowledge
+5. 混合意图仅限知识问答+数据查询的组合
+
+## 示例
 - "高炉炼铁的还原过程是什么" → knowledge
-- "hello" → knowledge
-- "你好" → knowledge
+- "hello"、"你好"、"谢谢" → knowledge
 - "展示2023年8月的每日吹炼次数" → data
-- "展示2023年8月的每日吹炼次数，并且解释什么是高炉炼铁的还原过程" → hybrid
-- "转炉炼钢的吹炼制度有哪些？上个月吹炼次数是多少" → hybrid
-- "什么是铁水预处理？同时统计一下近一周的钢水产量" → hybrid
-- "使用折线图展示2025年9月第一周的炉况报告打分值；当前压差不稳，炉料质量不是很好，应该如何调整以减少炉况波动?" → hybrid
+- "查询上个月的合格率" → data
+- "查询武汉市的天气" → mcp
+- "从北京到上海怎么走" → mcp
+- "深圳南山区的位置在哪里" → mcp
+- "帮我导航到最近的加油站" → mcp
+- "执行Python脚本计算平均值" → skill
+- "高炉炉况诊断" → skill
+- "执行高炉炉况诊断技能" → skill
+- "使用技能分析炉况" → skill
+- "诊断炉况"、"炉况分析"、"分析高炉数据" → knowledge
+- "炉子是不是不顺"、"风压波动怎么回事" → knowledge
+- "铁水硅高了"、"要不要调风"、"料速慢了" → knowledge
+- "展示2023年8月的每日吹炼次数，并且解释什么是高炉炼铁" → hybrid
+- "当前压差不稳应该如何调整？同时展示近期产量数据" → hybrid
 
-请直接返回分类结果（knowledge/data/hybrid），不要返回其他内容。"""
+请直接返回分类结果（knowledge/data/mcp/skill/hybrid），不要返回任何解释或额外内容。"""
 
         # 调用LLM进行分类
         result = await self.chat(
@@ -275,7 +348,8 @@ class LLMService:
 
         # 清理并验证分类结果
         intent = result.strip().lower()
-        if intent not in ["knowledge", "data", "hybrid"]:
+        valid_intents = ["knowledge", "data", "mcp", "skill", "hybrid"]
+        if intent not in valid_intents:
             logger.warning(f"意图分类结果异常: {result}，使用默认值 hybrid")
             intent = "hybrid"
 

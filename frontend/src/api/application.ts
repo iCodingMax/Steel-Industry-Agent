@@ -15,6 +15,7 @@ export interface Application {
   greetingMessage?: string
   knowledgeBaseIds: number[]
   datasourceIds: number[]
+  toolConfigIds: number[]
   scoreThreshold: number
   topK: number
   iframeHeight: number
@@ -53,6 +54,7 @@ export interface ApplicationCreateForm {
   greetingMessage?: string
   knowledgeBaseIds?: number[]
   datasourceIds?: number[]
+  toolConfigIds?: number[]
   scoreThreshold?: number
   topK?: number
   maxTokens?: number
@@ -73,6 +75,7 @@ export interface ApplicationUpdateForm {
   greetingMessage?: string
   knowledgeBaseIds?: number[]
   datasourceIds?: number[]
+  toolConfigIds?: number[]
   scoreThreshold?: number
   topK?: number
   iframeHeight?: number

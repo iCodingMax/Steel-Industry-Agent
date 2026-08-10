@@ -118,6 +118,39 @@
           </div>
         </div>
 
+        <!-- 工具调用（MCP/Skill通用，根据intent显示不同标题） -->
+        <div v-if="message.toolCalls && message.toolCalls.length > 0" class="tool-calls-section">
+          <div class="section-header">
+            <div class="header-left">
+              <el-icon><Tools /></el-icon>
+              <span>{{ message.intent === 'skill' ? 'Skill工具调用' : (message.intent === 'mcp' ? 'MCP工具调用' : '工具调用') }}</span>
+              <span class="tool-calls-count">{{ message.toolCalls.length }} 个工具</span>
+            </div>
+          </div>
+          <div class="tool-calls-content">
+            <div v-for="(call, idx) in message.toolCalls" :key="idx" class="tool-call-item">
+              <div class="tool-call-header">
+                <el-icon class="tool-icon"><Tools /></el-icon>
+                <span class="tool-name">{{ call.tool_name }}</span>
+                <el-tag v-if="message.toolResults && message.toolResults[idx]" 
+                  :type="message.toolResults[idx].success ? 'success' : 'danger'"
+                  size="small"
+                  class="tool-status-tag">
+                  {{ message.toolResults[idx]?.success ? '成功' : '失败' }}
+                </el-tag>
+              </div>
+              <div v-if="call.arguments && Object.keys(call.arguments).length > 0" class="tool-args">
+                <span class="args-label">参数：</span>
+                <span class="args-value">{{ formatToolArgs(call.arguments) }}</span>
+              </div>
+              <div v-if="message.toolResults && message.toolResults[idx]" class="tool-result">
+                <div class="result-label">结果：</div>
+                <div class="result-content">{{ message.toolResults[idx].result }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- SQL查询（仅当没有数据可视化时显示，因为数据可视化区域已有"查看SQL"按钮） -->
         <div v-if="message.sqlTraces && message.sqlTraces.length > 0 && (!message.dataResult || message.dataResult.length === 0)" class="sql-section">
           <div class="section-header">
@@ -267,7 +300,7 @@
 
 <script setup lang="ts">import { ref, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { CopyDocument, Edit, ArrowRight, ArrowDown, List, Loading, CircleCheck, Document, TrendCharts, PieChart, Download, Clock, Refresh } from '@element-plus/icons-vue';
+import { CopyDocument, Edit, ArrowRight, ArrowDown, List, Loading, CircleCheck, Document, TrendCharts, PieChart, Download, Clock, Refresh, Tools } from '@element-plus/icons-vue';
 import * as XLSX from 'xlsx';
 import { marked } from 'marked';
 import katex from 'katex';
@@ -379,6 +412,18 @@ function toggleReferences() {
 }
 function handleCopy(content: string) {
  emit('copy', content);
+}
+function formatToolArgs(args: Record<string, any>): string {
+ if (!args || Object.keys(args).length === 0) {
+ return '无参数';
+ }
+ try {
+ return JSON.stringify(args, null, 2);
+ } catch {
+ return Object.entries(args)
+ .map(([k, v]) => `${k}: ${String(v)}`)
+ .join(', ');
+ }
 }
 async function handleCopySql(sql: string) {
  const ok = await copyToClipboard(sql);
@@ -1309,6 +1354,112 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
+    }
+  }
+
+  // 工具调用
+  .tool-calls-section {
+    margin-top: 8px;
+    background: #f0f9ff;
+    border-radius: 8px;
+    border: 1px solid #bae6fd;
+    overflow: hidden;
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: #e0f2fe;
+      color: #0369a1;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tool-calls-count {
+      background: #0284c7;
+      color: white;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 11px;
+    }
+
+    .tool-calls-content {
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .tool-call-item {
+      background: white;
+      border-radius: 6px;
+      padding: 10px;
+      border: 1px solid #e2e8f0;
+    }
+
+    .tool-call-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .tool-icon {
+      color: #0284c7;
+      font-size: 14px;
+    }
+
+    .tool-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: #1e293b;
+    }
+
+    .tool-status-tag {
+      margin-left: auto;
+    }
+
+    .tool-args {
+      display: flex;
+      gap: 4px;
+      font-size: 12px;
+      margin-bottom: 6px;
+
+      .args-label {
+        color: #64748b;
+        flex-shrink: 0;
+      }
+
+      .args-value {
+        color: #334155;
+        font-family: 'Courier New', monospace;
+        word-break: break-all;
+      }
+    }
+
+    .tool-result {
+      background: #f8fafc;
+      border-radius: 4px;
+      padding: 8px;
+      font-size: 12px;
+
+      .result-label {
+        color: #64748b;
+        margin-bottom: 4px;
+      }
+
+      .result-content {
+        color: #334155;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
     }
   }
 

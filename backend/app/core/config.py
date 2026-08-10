@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 20480
     LLM_TEMPERATURE: float = 0.7
 
+    # 多轮对话：加载到LLM上下文的历史消息条数（10条=5轮对话）
+    CHAT_HISTORY_LIMIT: int = 10
+
     def model_post_init(self, __context) -> None:
         """初始化后处理：PGVECTOR配置默认跟随PG配置"""
         if not self.PGVECTOR_HOST:

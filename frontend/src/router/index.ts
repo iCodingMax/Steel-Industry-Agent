@@ -82,6 +82,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '数据管理', icon: 'DataLine' },
       },
       {
+        path: 'tool-management',
+        name: 'ToolManagement',
+        component: () => import('@/views/ToolManagementView.vue'),
+        meta: { title: '工具管理', icon: 'Tool' },
+      },
+      {
         path: 'datasource/:id',
         name: 'DatasourceDetail',
         component: () => import('@/views/DatasourceDetailView.vue'),

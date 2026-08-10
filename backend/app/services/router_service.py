@@ -5,12 +5,13 @@
 
 主要组件：
 1. IntentClassifier：意图分类器
-   - 使用LLM对用户问题进行意图分类（knowledge/data/hybrid）
+   - 使用关键词预判断 + LLM对用户问题进行意图分类（knowledge/data/mcp/skill/hybrid）
    - 支持混合问题拆分为数据子问题和知识子问题
+   - LLM分类时参考工具管理中已配置的MCP/Skills名称和描述
 
 2. RouterService：路由分发服务
    - 根据意图分类结果将问题分发到对应处理通道
-   - 支持知识问答通道、数据查询通道、混合分析通道
+   - 支持知识问答通道、数据查询通道、MCP工具调用通道、Skill工具调用通道、混合分析通道
    - 融合混合分析的结果，生成统一回答
 
 核心流程：
@@ -19,21 +20,26 @@
         ▼
     IntentClassifier.classify()  → 意图分类
         │
-        ├── knowledge → knowledge_qa_service.answer()  # 知识问答
-        ├── data      → chatbi_service.query()         # 数据查询
-        └── hybrid    → 并行调用两个通道，融合结果
+        ├── knowledge → knowledge_qa_service.answer()         # 知识问答
+        ├── data      → chatbi_service.query()                # 数据查询
+        ├── mcp       → mcp_client_service.execute_tool_calls()  # MCP工具调用
+        ├── skill     → RouterService._execute_skill()        # Skill工具调用
+        └── hybrid    → 并行调用知识+数据通道，融合结果
 """
+import json
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from loguru import logger
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import KnowledgeBase
+from app.models.tool_config import ToolConfig
 from app.services.llm_service import llm_service
 from app.services.vector_service import knowledge_qa_service
 from app.services.chatbi_service import chatbi_service
+from app.services.mcp_client_service import mcp_client_service
 from app.schemas.knowledge import KnowledgeQuery
 
 
@@ -41,39 +47,372 @@ class IntentClassifier:
     """
     意图分类器
 
-    使用LLM对用户问题进行意图分类，支持三种意图类型：
+    使用关键词预判断 + LLM对用户问题进行意图分类，支持五种意图类型：
     - knowledge：知识问答意图（工艺知识、技术规范、概念解释等）
     - data：数据查询意图（生产数据、指标数值、统计报表等）
-    - hybrid：混合意图（同时包含知识查询和数据查询）
+    - mcp：MCP工具调用意图（通过MCP协议调用外部服务，如地图、天气等）
+    - skill：Skill工具调用意图（执行本地技能脚本，如代码执行、文件处理等）
+    - hybrid：混合意图（同时包含知识问答与数据查询两种意图）
 
-    分类依据：
-    - 用户问题中的关键词（"展示"、"查询"、"统计"等表示数据意图）
-    - 用户问题中的连接词（"并且"、"同时"、"以及"等表示混合意图）
-    - 问题结构（问候语、闲聊等表示知识意图）
+    分类依据（优先级从高到低）：
+    1. 强MCP关键词：天气、地图等单个命中即判定为mcp
+    2. 强Skill关键词：执行代码、运行脚本等单个命中即判定为skill
+    3. 混合意图：有连接词且同时包含knowledge和data关键词（仅knowledge+data）
+    4. 单一意图：仅包含一种意图的关键词
+    5. LLM分类：对复杂问题进行深度语义理解（参考工具管理中的MCP/Skills名称与描述）
     """
 
+    # 强MCP关键词：单个命中即判定为mcp意图（最高优先级）
+    STRONG_MCP_KEYWORDS = [
+        # 天气相关
+        '天气', '气温', '下雨', '刮风', '预警',
+        # 地图/导航相关
+        '地图', '导航', '怎么走', '路线规划', '路径规划',
+        '定位', '在哪里', '附近', '周边',
+        '高德', 'amap',
+    ]
+
+    # MCP意图普通关键词（需要调用MCP外部工具的场景）
+    MCP_KEYWORDS = [
+        # 地图/地理相关
+        '路线', '位置', '地点', '地址', '距离',
+        '公交', '地铁', '驾车', '步行', '骑行', '高速',
+        # 实时信息相关
+        '温度', '新闻', '资讯', '实时',
+        '股票', '汇率', '油价', '金价',
+        # 外部服务相关
+        '搜索', '翻译', '换算', '查询位置', '查询地点',
+        '地图查询',
+    ]
+
+    # 强Skill关键词：单个命中即判定为skill意图
+    # 仅当用户明确要求"执行技能"或"高炉炉况诊断"时才触发Skill
+    STRONG_SKILL_KEYWORDS = [
+        # 明确要求执行技能
+        '执行高炉炉况诊断', '执行炉况诊断', '执行技能',
+        '使用技能', '调用技能', '运行技能',
+        '高炉炉况诊断技能', '炉况诊断技能',
+        # 明确要求进行炉况诊断（完整表达）
+        '高炉炉况诊断', '炉况诊断',
+    ]
+
+    # Skill意图普通关键词（需要多个同时命中才判定）
+    # 仅保留"执行技能"相关的弱表达
+    SKILL_KEYWORDS = [
+        '技能', '高炉炉况', '诊断技能',
+    ]
+
+    # data意图关键词（查询内部数据库数据）
+    DATA_KEYWORDS = [
+        '展示', '统计', '多少', '次数', '数量',
+        '产量', '合格率', '能耗', '报表', '图表', '趋势',
+        '排名', '汇总', '对比', '分析',
+        '生产', '指标', '记录', '历史',
+        '吹炼', '熔炼', '轧制', '连铸', '高炉', '转炉',
+    ]
+
+    # knowledge意图关键词（知识问答）
+    KNOWLEDGE_KEYWORDS = [
+        '是什么', '为什么', '怎么', '如何', '原理', '流程',
+        '解释', '说明', '介绍', '定义', '概念',
+        '规范', '标准', '制度', '规程', '操作',
+        'hello', '你好', 'hi', '谢谢', '感谢',
+    ]
+
     @staticmethod
-    async def classify(question: str) -> str:
+    def _quick_classify(question: str) -> Optional[str]:
+        """
+        关键词预判断（快速分类）
+
+        分类优先级：
+        1. 强MCP关键词：天气、地图等单个命中即判定为mcp
+        2. 强Skill关键词：执行代码、运行脚本等单个命中即判定为skill
+        3. 混合意图：有连接词且同时包含knowledge和data关键词（仅knowledge+data）
+        4. 单一意图：仅包含一种意图的关键词
+
+        :param question: 用户问题
+        :return: 预判的意图类型或None（无法通过关键词判断）
+        """
+        question_lower = question.lower()
+
+        # 1. 强MCP关键词检测（最高优先级）
+        for keyword in IntentClassifier.STRONG_MCP_KEYWORDS:
+            if keyword.lower() in question_lower:
+                logger.info(f"关键词预判: mcp (强关键词命中: {keyword})")
+                return "mcp"
+
+        # 2. 强Skill关键词检测
+        for keyword in IntentClassifier.STRONG_SKILL_KEYWORDS:
+            if keyword.lower() in question_lower:
+                logger.info(f"关键词预判: skill (强关键词命中: {keyword})")
+                return "skill"
+
+        # 3. 检查MCP/Skill普通关键词
+        mcp_score = sum(1 for kw in IntentClassifier.MCP_KEYWORDS if kw.lower() in question_lower)
+        skill_score = sum(1 for kw in IntentClassifier.SKILL_KEYWORDS if kw.lower() in question_lower)
+
+        # 2个以上MCP普通关键词，判定为mcp
+        if mcp_score >= 2 and skill_score == 0:
+            logger.info(f"关键词预判: mcp (score={mcp_score})")
+            return "mcp"
+
+        # 2个以上Skill普通关键词，判定为skill
+        if skill_score >= 2 and mcp_score == 0:
+            logger.info(f"关键词预判: skill (score={skill_score})")
+            return "skill"
+
+        # 4. 检查data和knowledge关键词
+        data_score = sum(1 for kw in IntentClassifier.DATA_KEYWORDS if kw.lower() in question_lower)
+        knowledge_score = sum(1 for kw in IntentClassifier.KNOWLEDGE_KEYWORDS if kw.lower() in question_lower)
+
+        # 5. 混合意图：仅当有连接词且同时包含knowledge和data关键词，且无MCP/Skill命中
+        hybrid_connectors = ['并且', '同时', '另外', '以及', '还有', '、', ';', '；']
+        has_connector = any(c in question for c in hybrid_connectors)
+
+        if has_connector and data_score > 0 and knowledge_score > 0 and mcp_score == 0 and skill_score == 0:
+            logger.info(f"关键词预判: hybrid (data={data_score}, knowledge={knowledge_score})")
+            return "hybrid"
+
+        # 6. 单一意图判断
+        if mcp_score > 0 and data_score == 0 and knowledge_score == 0 and skill_score == 0:
+            logger.info(f"关键词预判: mcp (score={mcp_score})")
+            return "mcp"
+
+        if skill_score > 0 and data_score == 0 and knowledge_score == 0 and mcp_score == 0:
+            logger.info(f"关键词预判: skill (score={skill_score})")
+            return "skill"
+
+        if data_score > 0 and mcp_score == 0 and knowledge_score == 0 and skill_score == 0:
+            logger.info(f"关键词预判: data (score={data_score})")
+            return "data"
+
+        if knowledge_score > 0 and mcp_score == 0 and data_score == 0 and skill_score == 0:
+            logger.info(f"关键词预判: knowledge (score={knowledge_score})")
+            return "knowledge"
+
+        # 无法通过关键词判断，返回None让LLM处理
+        return None
+
+    @staticmethod
+    def _extract_keywords(text: str) -> List[str]:
+        """
+        从文本中提取关键词（用于工具描述匹配）
+
+        提取策略：
+        1. 按标点符号和空格分割为短语
+        2. 提取2-6字的中文连续字符片段作为关键词
+        3. 过滤停用词
+
+        :param text: 待提取的文本（如工具名称或描述）
+        :return: 关键词列表
+        """
+        if not text:
+            return []
+
+        import re
+
+        # 停用词（无实际语义的常见词）
+        stop_words = {
+            '的', '了', '是', '在', '和', '与', '或', '也', '都', '但',
+            '可以', '需要', '使用', '通过', '进行', '以及', '如果', '当',
+            '一个', '这个', '那种', '什么', '怎么', '如何', '为', '给',
+            '等', '以下', '上述', '当前', '该', '此', '其',
+        }
+
+        keywords = set()
+
+        # 按标点符号、空格分割
+        segments = re.split(r'[，。；：、,;:\s\n\r（）()\[\]【】「」""\'\"]+', text)
+
+        for seg in segments:
+            seg = seg.strip()
+            if not seg:
+                continue
+
+            # 提取2-6字的中文连续片段
+            cn_matches = re.findall(r'[\u4e00-\u9fa5]{2,6}', seg)
+            for kw in cn_matches:
+                if kw not in stop_words:
+                    keywords.add(kw)
+
+            # 提取英文单词（2字母以上）
+            en_matches = re.findall(r'[a-zA-Z]{2,}', seg)
+            for kw in en_matches:
+                if kw.lower() not in stop_words:
+                    keywords.add(kw.lower())
+
+        return list(keywords)
+
+    @staticmethod
+    async def _tool_based_classify(
+        question: str,
+        db: AsyncSession,
+        tool_config_ids: Optional[List[int]] = None
+    ) -> Optional[str]:
+        """
+        基于工具信息相似度的意图识别
+
+        将用户问题与已配置的MCP/Skill工具的名称和描述进行相似度匹配。
+        如果匹配度超过阈值，直接判定为对应意图，补充关键词预判的不足。
+
+        匹配策略：
+        1. 工具名称直接匹配（用户问题包含完整工具名称）
+        2. 工具名称关键词匹配（工具名称的分词出现在用户问题中）
+        3. 工具描述关键词匹配（从描述中提取关键词，计算与用户问题的重叠度）
+
+        :param question: 用户问题
+        :param db: 数据库会话
+        :param tool_config_ids: 工具配置ID列表
+        :return: 意图类型（mcp/skill）或None（未匹配到工具）
+        """
+        mcp_tools, skill_tools = await IntentClassifier._fetch_tool_descriptions(db, tool_config_ids)
+
+        question_lower = question.lower()
+
+        # --- MCP工具匹配 ---
+        for tool in mcp_tools:
+            name = (tool.get("name") or "").lower()
+            desc = tool.get("description") or ""
+
+            # 1. 工具名称直接匹配
+            if name and len(name) >= 2 and name in question_lower:
+                logger.info(f"工具相似度匹配: mcp (工具名 '{tool['name']}' 直接命中)")
+                return "mcp"
+
+            # 2. 工具名称关键词匹配
+            if name:
+                name_keywords = IntentClassifier._extract_keywords(tool.get("name") or "")
+                matched = [kw for kw in name_keywords if kw in question_lower]
+                if len(matched) >= 1 and len(matched) / max(len(name_keywords), 1) >= 0.5:
+                    logger.info(f"工具相似度匹配: mcp (工具名 '{tool['name']}' 关键词命中: {matched})")
+                    return "mcp"
+
+            # 3. 工具描述关键词匹配
+            if desc:
+                desc_keywords = IntentClassifier._extract_keywords(desc)
+                matched = [kw for kw in desc_keywords if kw in question_lower]
+                # 描述关键词匹配阈值：至少命中2个，或命中率≥30%
+                if len(matched) >= 2 and len(matched) / max(len(desc_keywords), 1) >= 0.3:
+                    logger.info(f"工具相似度匹配: mcp (工具 '{tool['name']}' 描述匹配 {len(matched)} 个关键词: {matched})")
+                    return "mcp"
+
+        # --- Skill工具匹配 ---
+        for tool in skill_tools:
+            name = (tool.get("name") or "").lower()
+            desc = tool.get("description") or ""
+
+            # 1. 工具名称直接匹配（用户问题包含完整工具名称）
+            if name and len(name) >= 2 and name in question_lower:
+                logger.info(f"工具相似度匹配: skill (工具名 '{tool['name']}' 直接命中)")
+                return "skill"
+
+            # 2. 工具名称关键词匹配（要求高命中率，避免普通问题误判）
+            if name:
+                name_keywords = IntentClassifier._extract_keywords(tool.get("name") or "")
+                matched = [kw for kw in name_keywords if kw in question_lower]
+                # 要求命中率≥80%，且至少命中2个关键词
+                if len(matched) >= 2 and len(matched) / max(len(name_keywords), 1) >= 0.8:
+                    logger.info(f"工具相似度匹配: skill (工具名 '{tool['name']}' 关键词命中: {matched})")
+                    return "skill"
+
+            # 3. 工具描述关键词匹配（不使用描述匹配，避免普通炉况问题被误判为skill）
+            # Skill仅通过名称匹配和关键词预判触发，描述匹配过于宽泛
+
+        return None
+
+    @staticmethod
+    async def _fetch_tool_descriptions(
+        db: AsyncSession,
+        tool_config_ids: Optional[List[int]] = None
+    ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+        """
+        从数据库获取MCP和Skills工具的名称和描述
+
+        参考工具管理中已配置的MCP/Skills名称与描述，供LLM意图分类使用。
+
+        :param db: 数据库会话
+        :param tool_config_ids: 指定的工具配置ID列表，为空时获取全部active工具
+        :return: (mcp_tools描述列表, skill_tools描述列表)
+                 每个元素为 {"name": ..., "description": ..., "file_name": ...}
+        """
+        mcp_tools: List[Dict[str, str]] = []
+        skill_tools: List[Dict[str, str]] = []
+
+        try:
+            if tool_config_ids:
+                stmt = select(ToolConfig).where(
+                    ToolConfig.id.in_(tool_config_ids) &
+                    (ToolConfig.status == 'active')
+                )
+            else:
+                stmt = select(ToolConfig).where(ToolConfig.status == 'active')
+
+            result = await db.execute(stmt)
+            tools = list(result.scalars().all())
+
+            for tool in tools:
+                info = {
+                    "name": tool.name or "",
+                    "description": tool.description or "",
+                }
+                # Skill类型额外附带文件名信息
+                if tool.tool_type == "skill" and tool.skill_file_name:
+                    info["file_name"] = tool.skill_file_name
+
+                if tool.tool_type == "mcp":
+                    mcp_tools.append(info)
+                elif tool.tool_type == "skill":
+                    skill_tools.append(info)
+        except Exception as e:
+            logger.warning(f"获取工具描述失败: {e}")
+
+        return mcp_tools, skill_tools
+
+    @staticmethod
+    async def classify(
+        question: str,
+        db: Optional[AsyncSession] = None,
+        tool_config_ids: Optional[List[int]] = None,
+    ) -> str:
         """
         意图分类
 
-        使用LLM对用户问题进行意图分类，返回分类结果。
+        分类优先级（从高到低）：
+        1. 关键词快速预判：强关键词命中即返回
+        2. 工具相似度匹配：用户问题与已配置MCP/Skill工具的名称、描述进行相似度匹配
+        3. LLM深度分类：对复杂问题进行语义理解（参考工具名称和描述）
 
         :param question: 用户问题
-        :return: 意图类型（knowledge/data/hybrid）
-
-        分类规则：
-            - knowledge: 用户仅询问工艺知识、技术规范、操作规程、概念解释等文档类问题，以及问候语、闲聊等通用对话
-            - data: 用户仅查询生产数据、指标数值、统计报表、图表展示等数据类问题
-            - hybrid: 用户问题同时包含知识查询和数据查询两部分意图
-
-        判断要点：
-            - 如果问题中出现"展示"、"查询"、"统计"、"次数"、"数量"等数据相关关键词，同时出现"解释"、"什么是"、"原理"等知识相关关键词，则属于hybrid
-            - 包含"并且"、"同时"、"另外"、"以及"等连接词连接不同类型的问题时，通常属于hybrid
-            - 简单问候语（如hello、你好、hi等）属于knowledge意图
+        :param db: 数据库会话（用于获取工具描述，可选）
+        :param tool_config_ids: 工具配置ID列表（可选，限定工具范围）
+        :return: 意图类型（knowledge/data/mcp/skill/hybrid）
         """
-        intent = await llm_service.classify_intent(question)
-        logger.info(f"意图分类完成: 问题={question[:30]}..., 意图={intent}")
+        # 1. 关键词预判断（快速路径）
+        quick_result = IntentClassifier._quick_classify(question)
+        if quick_result:
+            logger.info(f"意图分类完成(关键词预判): 问题={question[:30]}..., 意图={quick_result}")
+            return quick_result
+
+        # 2. 工具相似度匹配（中间路径，基于已配置工具的名称和描述）
+        if db is not None:
+            tool_result = await IntentClassifier._tool_based_classify(question, db, tool_config_ids)
+            if tool_result:
+                logger.info(f"意图分类完成(工具相似度匹配): 问题={question[:30]}..., 意图={tool_result}")
+                return tool_result
+
+        # 3. 获取工具描述（用于增强LLM分类）
+        mcp_tools_desc: List[Dict[str, str]] = []
+        skill_tools_desc: List[Dict[str, str]] = []
+        if db is not None:
+            mcp_tools_desc, skill_tools_desc = await IntentClassifier._fetch_tool_descriptions(db, tool_config_ids)
+
+        # 4. LLM深度分类（复杂路径，参考工具名称和描述）
+        intent = await llm_service.classify_intent(
+            question=question,
+            mcp_tools=mcp_tools_desc,
+            skill_tools=skill_tools_desc,
+        )
+        logger.info(f"意图分类完成(LLM): 问题={question[:30]}..., 意图={intent}")
         return intent
 
     @staticmethod
@@ -153,13 +492,189 @@ class RouterService:
     路由分发服务
 
     根据用户问题的意图分类结果，将请求分发到对应处理通道。
-    支持三种路由模式：
+    支持五种路由模式：
     1. 知识问答通道（knowledge意图）：调用knowledge_qa_service
     2. 数据查询通道（data意图）：调用chatbi_service
-    3. 混合分析通道（hybrid意图）：并行调用两个通道，融合结果
+    3. MCP工具调用通道（mcp意图）：调用mcp_client_service
+    4. Skill工具调用通道（skill意图）：基于Skill配置生成响应
+    5. 混合分析通道（hybrid意图）：并行调用知识+数据通道，融合结果
 
     返回值统一格式：(回答内容, 知识引用, SQL溯源, 查询耗时, 数据结果, 字段元信息, 推荐图表类型)
     """
+
+    @staticmethod
+    async def _filter_tool_ids_by_type(
+        db: AsyncSession,
+        tool_config_ids: Optional[List[int]],
+        tool_type: str
+    ) -> List[int]:
+        """
+        根据工具类型筛选工具配置ID
+
+        :param db: 数据库会话
+        :param tool_config_ids: 原始工具配置ID列表
+        :param tool_type: 工具类型（mcp/skill）
+        :return: 符合类型的工具配置ID列表
+        """
+        if not tool_config_ids:
+            return []
+        try:
+            stmt = select(ToolConfig.id).where(
+                ToolConfig.id.in_(tool_config_ids) &
+                (ToolConfig.tool_type == tool_type) &
+                (ToolConfig.status == 'active')
+            )
+            result = await db.execute(stmt)
+            return [row[0] for row in result.all()]
+        except Exception as e:
+            logger.warning(f"筛选工具ID失败: {e}")
+            return []
+
+    @staticmethod
+    async def _execute_skill(
+        db: AsyncSession,
+        tool_config_ids: List[int],
+        question: str,
+        system_prompt: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict:
+        """
+        执行Skill工具调用
+
+        参考工具管理中Skill的名称、描述和文件信息，使用LLM分析用户问题
+        并基于Skill配置生成响应。
+
+        :param db: 数据库会话
+        :param tool_config_ids: 工具配置ID列表（将自动筛选skill类型）
+        :param question: 用户问题
+        :param system_prompt: 系统提示词
+        :param history: 对话历史（多轮对话上下文）
+        :return: 工具调用结果，包含 answer, tool_calls, tool_results 等
+        """
+        result = {
+            "answer": "",
+            "tool_calls": [],
+            "tool_results": [],
+            "success": True
+        }
+
+        # 筛选skill类型的工具
+        skill_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "skill")
+
+        if not skill_ids:
+            result["answer"] = "抱歉，当前应用未配置Skills工具。请先在应用设置中添加Skills工具。"
+            result["success"] = False
+            return result
+
+        # 加载Skill工具信息
+        try:
+            stmt = select(ToolConfig).where(
+                ToolConfig.id.in_(skill_ids) &
+                (ToolConfig.status == 'active')
+            )
+            tool_result = await db.execute(stmt)
+            skills = list(tool_result.scalars().all())
+        except Exception as e:
+            logger.error(f"加载Skill工具失败: {e}")
+            result["answer"] = f"加载Skill工具失败: {str(e)}"
+            result["success"] = False
+            return result
+
+        if not skills:
+            result["answer"] = "抱歉，未找到可用的Skill工具。"
+            result["success"] = False
+            return result
+
+        # 构建Skill描述信息
+        skills_description = []
+        for skill in skills:
+            desc = {
+                "name": skill.name,
+                "description": skill.description or "",
+                "file_name": skill.skill_file_name or "",
+            }
+            skills_description.append(desc)
+
+        # ---------- 检测用户是"询问技能列表"还是"要求执行技能" ----------
+        # 询问类表达：用户想了解有哪些技能，而非执行某个技能
+        INQUIRE_SKILL_PATTERNS = [
+            '你有什么技能', '有哪些技能', '技能列表', '技能有哪些',
+            '你都会什么', '你能做什么', '有什么技能', '什么技能',
+            '列出技能', '显示技能', '查看技能', '技能介绍',
+            '你有什么skill', '有什么skill', 'skill列表',
+        ]
+        question_lower = question.strip().lower()
+        is_inquire = any(p in question_lower for p in INQUIRE_SKILL_PATTERNS)
+
+        if is_inquire:
+            # 用户在询问技能列表，返回展示信息而非执行
+            logger.info(f"用户询问技能列表，展示 {len(skills)} 个可用Skill")
+
+            skill_lines = []
+            for idx, s in enumerate(skills_description, 1):
+                name = s["name"]
+                desc = s["description"]
+                skill_lines.append(f"**{idx}. {name}**\n   {desc}")
+
+            answer_text = f"我目前拥有以下 **{len(skills)} 个技能**：\n\n"
+            answer_text += "\n\n".join(skill_lines)
+            answer_text += "\n\n---\n"
+            answer_text += "💡 **使用方式**：直接说出技能名称（如「高炉炉况诊断」）即可触发对应技能。"
+            result["answer"] = answer_text
+            result["success"] = True
+            # 记录工具调用信息（仅展示，未执行）
+            for s in skills_description:
+                result["tool_calls"].append({
+                    "tool_name": s["name"],
+                    "arguments": {"action": "list"}
+                })
+                result["tool_results"].append({
+                    "tool_name": s["name"],
+                    "success": True,
+                    "result": "技能展示（未执行）",
+                })
+            return result
+
+        # ---------- 用户要求执行技能，调用 Skill 执行引擎 ----------
+        from app.services.skill_executor_service import skill_executor_service
+
+        # 记录工具调用信息
+        for skill in skills:
+            result["tool_calls"].append({
+                "tool_name": skill.name,
+                "arguments": {"question": question}
+            })
+
+        try:
+            skill = skills[0]  # 取第一个匹配的 Skill 执行
+            logger.info(f"开始执行Skill [{skill.name}]，文件: {skill.skill_file_path}")
+
+            exec_result = await skill_executor_service.execute_skill(
+                zip_path=skill.skill_file_path,
+                skill_name=skill.name,
+                skill_description=skill.description or "",
+                question=question,
+                history=history,
+            )
+
+            result["answer"] = exec_result.get("answer", "Skill执行未返回结果")
+            result["success"] = exec_result.get("success", False)
+
+            # 记录工具执行结果
+            result["tool_results"].append({
+                "tool_name": skill.name,
+                "success": exec_result.get("success", False),
+                "result": exec_result.get("answer", ""),
+                "skill_files": exec_result.get("skill_files", []),
+            })
+
+            logger.info(f"Skill [{skill.name}] 执行完成: success={result['success']}")
+        except Exception as e:
+            logger.error(f"Skill调用分析异常: {e}", exc_info=True)
+            result["answer"] = f"抱歉，Skill工具调用过程中出现错误：{str(e)}"
+            result["success"] = False
+
+        return result
 
     @staticmethod
     async def route(
@@ -167,6 +682,8 @@ class RouterService:
         question: str,
         knowledge_base_id: Optional[int] = None,
         datasource_id: Optional[int] = None,
+        tool_config_ids: Optional[List[int]] = None,
+        history: Optional[List[Dict[str, str]]] = None,
     ) -> Tuple[str, List[dict], List[dict], float, Optional[List[dict]], Optional[List[dict]], Optional[str]]:
         """
         路由分发
@@ -177,35 +694,31 @@ class RouterService:
         :param question: 用户问题
         :param knowledge_base_id: 知识库ID（可选，知识问答时使用）
         :param datasource_id: 数据源ID（可选，数据查询时使用）
+        :param tool_config_ids: 工具配置ID列表（可选，MCP/Skill工具调用时使用）
+        :param history: 对话历史（多轮对话上下文，格式 [{"role": "user/assistant", "content": "..."}]）
         :return: (回答内容, 知识引用, SQL溯源, 查询耗时, 数据结果, 字段元信息, 推荐图表类型)
 
-        返回值说明：
-            answer: 最终回答内容（字符串）
-            references: 知识引用列表（字典列表，包含文档名、内容、分数等）
-            sql_traces: SQL溯源信息（字典列表，包含SQL语句、来源、行数等）
-            query_time: 查询总耗时（秒，浮点数）
-            data_result: 数据查询结果（字典列表或None）
-            column_meta: 字段元信息（字典列表或None）
-            chart_type: 推荐图表类型（字符串或None）
-
         路由逻辑：
-            1. 调用IntentClassifier进行意图分类
+            1. 调用IntentClassifier进行意图分类（传入db和tool_config_ids以获取工具描述）
             2. 根据意图类型分发到对应通道：
                - knowledge: 调用knowledge_qa_service进行知识问答
                - data: 调用chatbi_service进行数据查询
-               - hybrid: 并行调用两个通道，融合结果
-            3. 返回统一格式的结果
+               - mcp: 调用mcp_client_service进行MCP工具调用
+               - skill: 调用_execute_skill进行Skill工具调用
+               - hybrid: 并行调用知识+数据通道，融合结果
+            3. 各通道均传入history，使LLM能理解多轮对话上下文
+            4. 返回统一格式的结果
         """
         start_time = time.time()
         logger.info(f"开始路由分发: 问题={question[:50]}...")
 
-        # 1. 意图分类
-        intent = await IntentClassifier.classify(question)
+        # 1. 意图分类（传入db和tool_config_ids以便获取工具描述）
+        intent = await IntentClassifier.classify(question, db, tool_config_ids)
         logger.info(f"意图分类结果: {intent}")
 
         # 初始化返回变量
-        references = []
-        sql_traces = []
+        references: List[dict] = []
+        sql_traces: List[dict] = []
         answer = ""
         data_result = None
         column_meta = None
@@ -226,7 +739,7 @@ class RouterService:
                             question=question,
                             topK=5,
                         )
-                        answer, refs, query_time = await knowledge_qa_service.answer(db, query, kb)
+                        answer, refs, query_time = await knowledge_qa_service.answer(db, query, kb, history=history)
                         references = [ref.model_dump() for ref in refs]
                         logger.info(f"知识问答完成: 引用数={len(references)}")
                     else:
@@ -240,15 +753,44 @@ class RouterService:
                 # 数据查询通道
                 logger.info("路由到数据查询通道")
                 explanation, results, traces, query_time, _, column_meta, chart_type = await chatbi_service.query(
-                    db, question, datasource_id
+                    db, question, datasource_id, history=history
                 )
                 answer = explanation
                 data_result = results
                 sql_traces = traces
                 logger.info(f"数据查询完成: 结果数={len(results) if results else 0}")
 
+            elif intent == "mcp":
+                # MCP工具调用通道
+                logger.info("路由到MCP工具调用通道")
+                mcp_tool_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "mcp")
+                if mcp_tool_ids:
+                    tool_result = await mcp_client_service.execute_tool_calls(
+                        db=db,
+                        tool_config_ids=mcp_tool_ids,
+                        question=question,
+                        history=history,
+                    )
+                    answer = tool_result.get("answer", "MCP工具调用失败")
+                    logger.info(f"MCP工具调用完成: 成功={tool_result.get('success')}")
+                else:
+                    answer = "抱歉，当前应用未配置MCP工具。请先在应用设置中添加MCP工具。"
+                    logger.warning("未配置MCP工具，无法进行MCP工具调用")
+
+            elif intent == "skill":
+                # Skill工具调用通道
+                logger.info("路由到Skill工具调用通道")
+                skill_result = await RouterService._execute_skill(
+                    db=db,
+                    tool_config_ids=tool_config_ids or [],
+                    question=question,
+                    history=history,
+                )
+                answer = skill_result.get("answer", "Skill工具调用失败")
+                logger.info(f"Skill工具调用完成: 成功={skill_result.get('success')}")
+
             elif intent == "hybrid":
-                # 混合分析通道：先拆分子问题，再分别路由
+                # 混合分析通道：仅包含知识问答+数据查询，先拆分子问题，再分别路由
                 logger.info("路由到混合分析通道")
                 data_question, knowledge_question = await IntentClassifier.split_hybrid_question(question)
 
@@ -269,7 +811,7 @@ class RouterService:
                             question=knowledge_question,
                             topK=3,
                         )
-                        knowledge_answer, refs, _ = await knowledge_qa_service.answer(db, query, kb)
+                        knowledge_answer, refs, _ = await knowledge_qa_service.answer(db, query, kb, history=history)
                         references = [ref.model_dump() for ref in refs]
                         logger.info(f"混合分析-知识问答完成: 引用数={len(references)}")
 
@@ -277,21 +819,20 @@ class RouterService:
                 if data_question and datasource_id:
                     logger.info("执行混合分析-数据查询部分")
                     explanation, results, traces, _, _, column_meta, chart_type = await chatbi_service.query(
-                        db, data_question, datasource_id
+                        db, data_question, datasource_id, history=history
                     )
                     data_result = results
                     sql_traces = traces
                     logger.info(f"混合分析-数据查询完成: 结果数={len(results) if results else 0}")
 
                 # 融合结果（将知识回答和数据分析整合为统一回答）
-                if knowledge_answer and explanation:
-                    answer = f"【知识解答】\n{knowledge_answer}\n\n【数据分析】\n{explanation}"
-                elif knowledge_answer:
-                    answer = knowledge_answer
-                elif explanation:
-                    answer = explanation
-                else:
-                    answer = "抱歉，无法找到相关信息或数据。"
+                parts = []
+                if knowledge_answer:
+                    parts.append(f"【知识解答】\n{knowledge_answer}")
+                if explanation:
+                    parts.append(f"【数据分析】\n{explanation}")
+
+                answer = "\n\n".join(parts) if parts else "抱歉，无法找到相关信息或数据。"
                 logger.info("混合分析结果融合完成")
 
             else:
