@@ -46,3 +46,6 @@ backend/tests/
 
 # .vite 缓存目录
 frontend/.vite/deps/
+
+# 文档存储目录
+backend/storage/documents/
