@@ -66,17 +66,27 @@ async function processCallback() {
       message.value = '认证成功，正在跳转...'
       
       // 跳转到目标页面
-      // 优先级: URL参数 > localStorage > 默认/app-management
-      // 使用localStorage持久存储，确保OAuth跨页面跳转后redirect不丢失
+      // 优先级: URL参数 > oauth_redirect（主登录流程设置） > 默认/app-management
+      // chat_redirect/embed_redirect 仅在 oauth_redirect 未设置时使用，且必须是chat相关路径
+      // 这样避免之前访问对话页面残留的redirect值干扰主登录流程
       setTimeout(() => {
         const urlRedirect = route.query.redirect as string
         const oauthRedirect = localStorage.getItem('oauth_redirect')
-        const chatRedirect = localStorage.getItem('chat_redirect')
-        const embedRedirect = localStorage.getItem('embed_redirect')
-        let redirect = urlRedirect || oauthRedirect || chatRedirect || embedRedirect || '/app-management'
+        let redirect = urlRedirect || oauthRedirect || '/app-management'
         
+        // 如果 oauth_redirect 未设置，尝试使用 chat/embed_redirect
+        // 但前提是它们必须是有效的chat路径（防止残留的非chat路径被误用）
+        if (!urlRedirect && !oauthRedirect) {
+          const chatRedirect = localStorage.getItem('chat_redirect')
+          const embedRedirect = localStorage.getItem('embed_redirect')
+          const chatOrEmbed = chatRedirect || embedRedirect
+          if (chatOrEmbed && (chatOrEmbed.startsWith('/chat') || chatOrEmbed.startsWith('/ai-assistant'))) {
+            redirect = chatOrEmbed
+          }
+        }
+
         // 确保redirect是有效的路径（必须以/开头，且是允许的路径前缀）
-        const validPrefixes = ['/chat', '/ai-assistant', '/app']
+        const validPrefixes = ['/chat', '/ai-assistant', '/app', '/admin']
         if (!redirect.startsWith('/') || !validPrefixes.some(p => redirect.startsWith(p))) {
           redirect = '/app-management'
         }

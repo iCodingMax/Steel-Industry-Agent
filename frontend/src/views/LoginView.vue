@@ -157,6 +157,17 @@ async function handleOAuthLogin() {
     if (res.code === 0 && res.data) {
       // 存储state到sessionStorage用于回调验证
       sessionStorage.setItem('oauth_state', res.data.state)
+
+      // 计算正确的跳转路径
+      // 从URL参数获取redirect，如果没有则默认为/app-management
+      const redirect = (route.query.redirect as string) || '/app-management'
+      localStorage.setItem('oauth_redirect', redirect)
+
+      // 清除chat_redirect和embed_redirect，避免之前访问对话页面时残留的跳转地址干扰
+      // 这两个值仅在AppLoginView（应用内登录）流程中使用
+      localStorage.removeItem('chat_redirect')
+      localStorage.removeItem('embed_redirect')
+
       // 跳转到OAuth2授权页面
       window.location.href = res.data.loginUrl
     } else {
