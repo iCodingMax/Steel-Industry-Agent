@@ -929,6 +929,49 @@ function loadSessions() {
   }
 }
 
+// 跨 iframe 会话同步防抖定时器
+let sessionSyncTimer: any = null
+
+/**
+ * 从 localStorage 同步会话数据（跨 iframe 实时同步）
+ * 场景：同一应用发布的网页嵌入与浮窗助手在同一个业务系统时，
+ * 各自的对话历史需要保持实时同步
+ * 注意：此函数不调用 saveSessions，避免触发循环同步
+ */
+function syncSessionsFromStorage() {
+  try {
+    const saved = localStorage.getItem(sessionStorageKey.value)
+    if (!saved) return
+
+    const newSessions = JSON.parse(saved)
+    const currentId = currentSessionId.value
+
+    // 如果当前正在流式输出，保留当前会话的消息内容，避免打断流式输出
+    if (isSending.value && currentSession.value) {
+      const currentMessages = [...currentSession.value.messages]
+      sessions.value = newSessions
+      // 恢复当前会话的消息，保留流式输出的实时内容
+      const targetSession = sessions.value.find((s: any) => s.id === currentId)
+      if (targetSession) {
+        targetSession.messages = currentMessages
+      }
+    } else {
+      // 非流式状态，完全同步
+      sessions.value = newSessions
+      // 保留各自 iframe 的当前选中会话（如果还存在）
+      if (currentId && newSessions.find((s: any) => s.id === currentId)) {
+        currentSessionId.value = currentId
+      } else if (newSessions.length > 0) {
+        currentSessionId.value = newSessions[0].id
+      } else {
+        currentSessionId.value = ''
+      }
+    }
+  } catch (e) {
+    console.error('同步会话数据失败', e)
+  }
+}
+
 function handleNewChat() {
   editingSessionId.value = null
   renameValue.value = ''
@@ -1264,6 +1307,18 @@ function setupMessageListener() {
       } catch (e) {
         console.error('解析登录结果失败', e)
       }
+    }
+
+    // 跨 iframe 会话数据同步
+    // 场景：同一应用的网页嵌入与浮窗助手在同一个业务系统时，
+    // 任一 iframe 修改会话数据（发消息、新建会话等），其他 iframe 需要实时感知
+    // 注意：storage 事件只在其他文档修改时触发，不会在当前文档触发，天然避免循环
+    if (event.key === sessionStorageKey.value && event.newValue) {
+      // 防抖处理，避免流式输出期间频繁同步
+      if (sessionSyncTimer) clearTimeout(sessionSyncTimer)
+      sessionSyncTimer = setTimeout(() => {
+        syncSessionsFromStorage()
+      }, 300)
     }
   })
 }
