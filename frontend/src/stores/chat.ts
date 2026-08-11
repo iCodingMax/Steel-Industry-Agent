@@ -102,16 +102,17 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const res = await getSessions() as any
       if (res.code === 0 && res.data) {
-        sessions.value = res.data.map((s: Session) => ({
-          id: String(s.id),
-          title: s.title,
-          lastMessage: '',
-          updatedAt: new Date(s.updatedAt),
-          messageCount: 0,
-          intentType: s.intentType,
-        })).sort((a: ChatSession, b: ChatSession) => 
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-        )
+        // 前端按ID降序排序（ID最大=最新创建的会话排第一），不依赖后端排序
+        sessions.value = res.data
+          .map((s: Session) => ({
+            id: String(s.id),
+            title: s.title,
+            lastMessage: '',
+            updatedAt: new Date(s.updatedAt),
+            messageCount: 0,
+            intentType: s.intentType,
+          }))
+          .sort((a: ChatSession, b: ChatSession) => Number(b.id) - Number(a.id))
       }
     } catch (e) {
       console.error('获取会话列表失败', e)

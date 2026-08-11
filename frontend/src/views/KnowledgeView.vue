@@ -9,7 +9,12 @@
         </el-button>
       </div>
 
-      <div class="kb-grid">
+      <!-- 加载状态：列表加载中时显示loading，避免闪现空列表 -->
+      <div v-if="loading" class="page-loading">
+        <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+      </div>
+
+      <div v-else class="kb-grid">
         <div v-for="kb in knowledgeBases" :key="kb.id" class="kb-card" @click="handleDetail(kb)">
           <div class="kb-icon">
             <el-icon :size="28"><FolderOpened /></el-icon>
@@ -284,6 +289,7 @@ import {
   Upload,
   Search,
   RefreshRight,
+  Loading,
 } from '@element-plus/icons-vue'
 import { getKnowledgeBases, createKnowledgeBase, getDocuments, uploadDocument, deleteDocument, buildIndex, updateKnowledgeBase, getDocumentDetail, getDocumentSegments, type KnowledgeBase, type DocumentDetail, type DocumentSegment } from '@/api/knowledge'
 import { getLLMConfigs } from '@/api/llmConfig'
@@ -316,6 +322,8 @@ async function loadEmbeddingModels() {
 const dialogVisible = ref(false)
 const loadingDocs = ref(false)
 const buildingIndex = ref(false)
+// 知识库列表加载状态：初始为true避免页面加载时闪现空列表
+const loading = ref(true)
 const currentKB = ref<KnowledgeBase | null>(null)
 const activeTab = ref('documents')
 const searchKeyword = ref('')
@@ -378,6 +386,7 @@ const filteredDocuments = computed(() => {
 })
 
 async function loadKnowledgeBases() {
+  loading.value = true
   try {
     const res = await getKnowledgeBases() as any
     if (res.code === 0 && res.data) {
@@ -386,6 +395,8 @@ async function loadKnowledgeBases() {
     }
   } catch (e) {
     console.error('加载知识库列表失败', e)
+  } finally {
+    loading.value = false
   }
 }
 
@@ -615,6 +626,16 @@ onMounted(() => {
     display: flex;
     gap: 8px;
   }
+}
+
+/* 页面级loading样式：居中显示加载图标 */
+.page-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 320px;
+  width: 100%;
+  color: #3b82f6;
 }
 
 // 文档详情统计卡片

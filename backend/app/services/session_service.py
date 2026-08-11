@@ -15,7 +15,7 @@
 from typing import List, Optional
 from loguru import logger
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.session import Session, Message, Trace
@@ -81,9 +81,28 @@ class SessionService:
         :param user_id: 用户ID
         :param skip: 跳过条数（分页参数）
         :param limit: 返回条数（分页参数，默认50）
-        :return: 会话列表（按更新时间降序排列）
+        :return: 会话列表（按最新消息时间降序排列，无消息的会话按更新时间排序）
         """
-        stmt = select(Session).where(Session.user_id == user_id).order_by(Session.updated_at.desc()).offset(skip).limit(limit)
+        # 子查询：每个会话的最新消息时间
+        latest_msg_subq = (
+            select(
+                Message.session_id.label("sid"),
+                func.max(Message.created_at).label("latest_msg_time"),
+            )
+            .group_by(Message.session_id)
+            .subquery()
+        )
+        # 按最新消息时间降序排列，无消息的会话按updated_at排后面
+        stmt = (
+            select(Session)
+            .outerjoin(latest_msg_subq, Session.id == latest_msg_subq.c.sid)
+            .where(Session.user_id == user_id)
+            .order_by(
+                func.coalesce(latest_msg_subq.c.latest_msg_time, Session.updated_at).desc()
+            )
+            .offset(skip)
+            .limit(limit)
+        )
         result = await db.execute(stmt)
         sessions = list(result.scalars().all())
         logger.debug(f"获取用户会话列表: user_id={user_id}, 数量={len(sessions)}")
@@ -195,6 +214,11 @@ class MessageService:
             query_time=query_time,
         )
         db.add(message)
+        # 同步更新会话的updated_at，确保会话列表按最新消息排序
+        from sqlalchemy import update as sql_update
+        await db.execute(
+            sql_update(Session).where(Session.id == session_id).values(updated_at=func.now())
+        )
         await db.commit()
         await db.refresh(message)
         logger.info(f"创建消息成功: 会话={session_id}, 角色={role}, ID={message.id}")

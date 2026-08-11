@@ -9,7 +9,11 @@
         </el-button>
       </div>
 
-      <div class="app-grid">
+      <div v-if="loading" class="page-loading">
+        <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+      </div>
+
+      <div v-else class="app-grid">
         <div v-for="app in applications" :key="app.id" class="app-card" @click="handleDetail(app)">
           <div class="app-icon">
             <el-icon :size="28"><Setting /></el-icon>
@@ -61,7 +65,11 @@
 
       <el-tabs v-model="activeTab" class="app-tabs">
         <el-tab-pane label="应用设置" name="settings">
-          <div class="settings-layout">
+          <!-- 加载状态：配置加载中时显示loading，避免闪现默认配置 -->
+          <div v-if="settingsLoading" class="page-loading">
+            <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+          </div>
+          <div v-else class="settings-layout">
             <div class="settings-left">
               <el-form :model="appForm" label-width="120px" :rules="appRules" ref="appFormRef" class="app-form">
                 <el-card shadow="never" class="form-card">
@@ -431,6 +439,7 @@ import {
   View,
   Message,
   Check,
+  Loading,
 } from '@element-plus/icons-vue'
 import {
   getApplications,
@@ -447,9 +456,11 @@ import { getLLMConfigs, type LLMConfigForm } from '@/api/llmConfig'
 import { getDatasources } from '@/api/datasource'
 import { getTools } from '@/api/tool'
 
-const loading = ref(false)
+const loading = ref(true)
 const saving = ref(false)
 const creating = ref(false)
+// 应用配置加载状态：防止进入配置页时闪现默认配置
+const settingsLoading = ref(false)
 const applications = ref<Application[]>([])
 const knowledgeBases = ref<any[]>([])
 const datasources = ref<any[]>([])
@@ -1072,6 +1083,8 @@ async function handleSubmitCreate() {
 }
 
 function handleDetail(app: Application) {
+  // 进入配置页时立即显示loading，避免闪现默认配置
+  settingsLoading.value = true
   currentApp.value = app
   activeTab.value = 'settings'
   // 加载工具列表，然后拆分toolConfigIds
@@ -1103,6 +1116,9 @@ function handleDetail(app: Application) {
     authConfig.requireAuth = app.requireAuth ?? true
     // 检测系统提示词是否溢出
     checkPromptOverflow()
+  }).finally(() => {
+    // 配置加载完成，关闭loading
+    settingsLoading.value = false
   })
 }
 
@@ -1463,6 +1479,16 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 20px;
+}
+
+/* 页面级loading样式：居中显示加载图标 */
+.page-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 320px;
+  width: 100%;
+  color: #3b82f6;
 }
 
 .app-card {
@@ -2234,12 +2260,14 @@ onMounted(() => {
 
     .settings-right {
       width: 60%;
-      flex-shrink: 0;
+      min-width: 480px;
+      flex-shrink: 1;
       display: flex;
       flex-direction: column;
       min-height: 0;
       overflow: hidden;
       box-sizing: border-box;
+      padding-right: 8px;
     }
 
     .preview-card {
@@ -2394,7 +2422,7 @@ onMounted(() => {
   }
 
   .embed-code-section {
-    background: #f8fafc;
+    background: #ebf0f0;
     border-radius: 12px;
     padding: 16px;
 

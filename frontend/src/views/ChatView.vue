@@ -657,11 +657,12 @@ async function handleDeleteSession(session: any) {
 const editingSessionId = ref<string | null>(null)
 const renameValue = ref('')
 
-onMounted(async () => {
-  // 立即设置loading状态，防止旧消息闪烁
-  chatStore.isLoadingMessages = true
-  chatStore.messages = []
+// 在setup阶段同步清空状态（渲染前执行），防止旧消息闪现
+chatStore.isLoadingMessages = true
+chatStore.messages = []
+chatStore.currentSessionId = ''
 
+onMounted(async () => {
   await chatStore.fetchSessions()
   await loadKnowledgeBases()
   await loadDatasources()

@@ -359,6 +359,7 @@ defineExpose({
   background: #ffffff;
   border-top: 1px solid #e2e8f0;
   flex-shrink: 0;
+  padding-right: 4px;
 
   .input-wrapper {
     display: flex;
@@ -368,6 +369,7 @@ defineExpose({
 
   .chat-input {
     flex: 1;
+    min-width: 0;
 
     :deep(.el-textarea__inner) {
       border-radius: 8px;
@@ -385,12 +387,14 @@ defineExpose({
 
   .input-actions {
     flex-shrink: 0;
+    margin-right: 4px;
   }
 
   .send-btn {
     border-radius: 8px;
     padding: 6px 16px;
     height: 32px;
+    white-space: nowrap;
   }
 }
 </style>

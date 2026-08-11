@@ -232,6 +232,9 @@ const resourceTypeText: Record<string, string> = {
   dimension: '维度',
   term: '术语',
   llm_config: 'LLM配置',
+  application: '应用',
+  tool_config: '工具配置',
+  message: '消息',
 }
 
 const actionTagType = (action: string) => {

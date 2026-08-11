@@ -147,127 +147,186 @@ async def collect_audit_logs(
     db: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ):
-    """从现有业务表中采集审计日志（初始化用）"""
+    """从现有业务表中采集审计日志（全量查重，确保不遗漏）"""
+    from app.models.application import Application
+    from app.models.tool_config import ToolConfig
+    from app.models.session import Message, Session as ChatSessionModel
+    from sqlalchemy import text as sql_text
+
     collected = 0
 
+    # 修复序列：确保audit_logs_id_seq与MAX(id)同步，防止主键冲突
     try:
-        # 采集知识库操作
+        await db.execute(sql_text(
+            "SELECT setval('audit_logs_id_seq', COALESCE((SELECT MAX(id) FROM audit_logs), 1), true)"
+        ))
+    except Exception as seq_err:
+        logger.warning(f"修复audit_logs序列失败（可忽略）: {seq_err}")
+
+    # 预加载所有已采集的 (resource_type, resource_id, action) 集合，避免逐条查询
+    existing_result = await db.execute(
+        select(
+            AuditLog.resource_type,
+            AuditLog.resource_id,
+            AuditLog.action,
+        ).where(AuditLog.username == "系统采集")
+    )
+    existing_set = {(row[0], row[1], row[2]) for row in existing_result.all()}
+
+    def is_collected(resource_type: str, resource_id: int, action: str) -> bool:
+        return (resource_type, resource_id, action) in existing_set
+
+    def add_audit_log(**kwargs):
+        nonlocal collected
+        log = AuditLog(**kwargs)
+        db.add(log)
+        collected += 1
+
+    try:
+        # ---------- 1. 采集应用操作 ----------
+        app_result = await db.execute(select(Application))
+        for app in app_result.scalars().all():
+            if not is_collected("application", app.id, "create"):
+                add_audit_log(
+                    user_id=app.created_by,
+                    username="系统采集",
+                    action="create",
+                    resource_type="application",
+                    resource_id=app.id,
+                    resource_name=app.name,
+                    method="POST",
+                    path="/applications",
+                    status="success",
+                    detail={"modelName": app.model_name, "status": app.status},
+                    created_at=app.created_at,
+                )
+
+        # ---------- 2. 采集知识库操作 ----------
         kb_result = await db.execute(select(KnowledgeBase))
         for kb in kb_result.scalars().all():
-            try:
-                exists = await db.execute(
-                    select(func.count()).select_from(AuditLog).where(
-                        and_(AuditLog.resource_type == "knowledge_base", AuditLog.resource_id == kb.id, AuditLog.action == "create")
-                    )
+            if not is_collected("knowledge_base", kb.id, "create"):
+                add_audit_log(
+                    user_id=kb.created_by,
+                    username="系统采集",
+                    action="create",
+                    resource_type="knowledge_base",
+                    resource_id=kb.id,
+                    resource_name=kb.name,
+                    method="POST",
+                    path="/knowledge-bases",
+                    status="success",
+                    detail={"embeddingModel": kb.embedding_model, "chunkSize": kb.chunk_size},
+                    created_at=kb.created_at,
                 )
-                if (exists.scalar() or 0) == 0:
-                    log = AuditLog(
-                        user_id=kb.created_by,
-                        username="系统采集",
-                        action="create",
-                        resource_type="knowledge_base",
-                        resource_id=kb.id,
-                        resource_name=kb.name,
-                        method="POST",
-                        path="/knowledge-bases",
-                        status="success",
-                        detail={"embeddingModel": kb.embedding_model, "chunkSize": kb.chunk_size},
-                        created_at=kb.created_at,
-                    )
-                    db.add(log)
-                    collected += 1
-            except Exception as e:
-                logger.warning(f"采集知识库日志失败，ID={kb.id}, 错误={str(e)}")
 
-        # 采集文档上传操作
+        # ---------- 3. 采集文档操作 ----------
         doc_result = await db.execute(select(Document))
         for doc in doc_result.scalars().all():
-            try:
-                exists = await db.execute(
-                    select(func.count()).select_from(AuditLog).where(
-                        and_(AuditLog.resource_type == "document", AuditLog.resource_id == doc.id, AuditLog.action == "create")
-                    )
+            if not is_collected("document", doc.id, "create"):
+                add_audit_log(
+                    user_id=None,
+                    username="系统采集",
+                    action="create",
+                    resource_type="document",
+                    resource_id=doc.id,
+                    resource_name=doc.file_name or "未知文档",
+                    method="POST",
+                    path=f"/knowledge-bases/{doc.knowledge_base_id}/documents" if doc.knowledge_base_id else "/documents",
+                    status="success" if doc.status == "completed" else "failed",
+                    error_message=doc.error_message,
+                    detail={"fileType": doc.file_type, "fileSize": doc.file_size, "status": doc.status},
+                    created_at=doc.created_at,
                 )
-                if (exists.scalar() or 0) == 0:
-                    log = AuditLog(
-                        user_id=None,
-                        username="系统采集",
-                        action="create",
-                        resource_type="document",
-                        resource_id=doc.id,
-                        resource_name=doc.file_name or "未知文档",
-                        method="POST",
-                        path=f"/knowledge-bases/{doc.knowledge_base_id}/documents" if doc.knowledge_base_id else "/documents",
-                        status="success" if doc.status == "completed" else "failed",
-                        error_message=doc.error_message,
-                        detail={"fileType": doc.file_type, "fileSize": doc.file_size, "status": doc.status},
-                        created_at=doc.created_at,
-                    )
-                    db.add(log)
-                    collected += 1
-            except Exception as e:
-                logger.warning(f"采集文档日志失败，ID={doc.id}, 错误={str(e)}")
 
-        # 采集数据源操作
+        # ---------- 4. 采集数据源操作 ----------
         ds_result = await db.execute(select(DataSource))
         for ds in ds_result.scalars().all():
-            try:
-                exists = await db.execute(
-                    select(func.count()).select_from(AuditLog).where(
-                        and_(AuditLog.resource_type == "datasource", AuditLog.resource_id == ds.id, AuditLog.action == "create")
-                    )
+            if not is_collected("datasource", ds.id, "create"):
+                add_audit_log(
+                    user_id=ds.created_by,
+                    username="系统采集",
+                    action="create",
+                    resource_type="datasource",
+                    resource_id=ds.id,
+                    resource_name=ds.name,
+                    method="POST",
+                    path="/datasources",
+                    status="success",
+                    detail={"type": ds.type, "host": ds.host, "database": ds.database},
+                    created_at=ds.created_at,
                 )
-                if (exists.scalar() or 0) == 0:
-                    log = AuditLog(
-                        user_id=ds.created_by,
-                        username="系统采集",
-                        action="create",
-                        resource_type="datasource",
-                        resource_id=ds.id,
-                        resource_name=ds.name,
-                        method="POST",
-                        path="/datasources",
-                        status="success",
-                        detail={"type": ds.type, "host": ds.host, "database": ds.database},
-                        created_at=ds.created_at,
-                    )
-                    db.add(log)
-                    collected += 1
-            except Exception as e:
-                logger.warning(f"采集数据源日志失败，ID={ds.id}, 错误={str(e)}")
 
-        # 采集会话操作
+        # ---------- 5. 采集会话操作 ----------
         session_result = await db.execute(select(ChatSession))
         for sess in session_result.scalars().all():
-            try:
-                exists = await db.execute(
-                    select(func.count()).select_from(AuditLog).where(
-                        and_(AuditLog.resource_type == "session", AuditLog.resource_id == sess.id, AuditLog.action == "create")
-                    )
+            if not is_collected("session", sess.id, "create"):
+                add_audit_log(
+                    user_id=sess.user_id,
+                    username="系统采集",
+                    action="create",
+                    resource_type="session",
+                    resource_id=sess.id,
+                    resource_name=sess.title or "新对话",
+                    method="POST",
+                    path="/sessions",
+                    status="success",
+                    detail={"intentType": sess.intent_type},
+                    created_at=sess.created_at,
                 )
-                if (exists.scalar() or 0) == 0:
-                    log = AuditLog(
-                        user_id=sess.user_id,
-                        username="系统采集",
-                        action="create",
-                        resource_type="session",
-                        resource_id=sess.id,
-                        resource_name=sess.title or "新对话",
-                        method="POST",
-                        path="/sessions",
-                        status="success",
-                        detail={"intentType": sess.intent_type},
-                        created_at=sess.created_at,
-                    )
-                    db.add(log)
-                    collected += 1
-            except Exception as e:
-                logger.warning(f"采集会话日志失败，ID={sess.id}, 错误={str(e)}")
 
-        # get_db_session依赖会自动commit，不需要手动调用
+        # ---------- 6. 采集工具配置操作 ----------
+        tool_result = await db.execute(select(ToolConfig))
+        for tool in tool_result.scalars().all():
+            if not is_collected("tool_config", tool.id, "create"):
+                add_audit_log(
+                    user_id=tool.created_by if hasattr(tool, 'created_by') else None,
+                    username="系统采集",
+                    action="create",
+                    resource_type="tool_config",
+                    resource_id=tool.id,
+                    resource_name=tool.name,
+                    method="POST",
+                    path="/tools",
+                    status="success",
+                    detail={"toolType": tool.tool_type, "description": (tool.description or "")[:100]},
+                    created_at=tool.created_at if hasattr(tool, 'created_at') else datetime.now(),
+                )
+
+        # ---------- 7. 采集消息操作（全量查重，不依赖时间过滤） ----------
+        # 预加载会话标题映射，避免逐条查询
+        sess_title_result = await db.execute(
+            select(ChatSessionModel.id, ChatSessionModel.title)
+        )
+        sess_title_map = {row[0]: row[1] for row in sess_title_result.all()}
+
+        msg_result = await db.execute(select(Message).limit(500))
+        for msg in msg_result.scalars().all():
+            if not is_collected("message", msg.id, "create"):
+                session_title = sess_title_map.get(msg.session_id, "会话消息")
+                add_audit_log(
+                    user_id=None,  # Message模型无user_id字段
+                    username="系统采集",
+                    action="create",
+                    resource_type="message",
+                    resource_id=msg.id,
+                    resource_name=(session_title or "会话消息")[:50],
+                    method="POST",
+                    path="/messages",
+                    status="success",
+                    detail={"role": msg.role, "intent": getattr(msg, 'intent', None)},
+                    created_at=msg.created_at,
+                )
+
+        # flush到数据库，让get_db_session的auto-commit完成最终提交
+        if collected > 0:
+            await db.flush()
+
         logger.info(f"审计日志采集完成，共新增 {collected} 条")
-        return success_response(data={"collected": collected}, message=f"采集完成，共新增 {collected} 条审计日志")
+        return success_response(
+            data={"collected": collected},
+            message=f"采集完成，共新增 {collected} 条审计日志"
+        )
 
     except Exception as e:
-        logger.error(f"审计日志采集失败: {str(e)}")
+        logger.error(f"审计日志采集失败: {str(e)}", exc_info=True)
         raise BusinessException(code=500, message=f"采集失败: {str(e)}")
