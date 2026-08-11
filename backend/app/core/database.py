@@ -242,4 +242,23 @@ async def _auto_add_columns(conn) -> None:
                 ))
                 logger.info("已为 chat_users 表添加 force_change_password 列")
 
+        # sessions 表添加 chat_user_id 字段（用于嵌入模式对话用户数据隔离）
+        if 'sessions' in inspector.get_table_names():
+            existing_cols = {col['name'] for col in inspector.get_columns('sessions')}
+            if 'chat_user_id' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE sessions ADD COLUMN chat_user_id INTEGER DEFAULT NULL"
+                ))
+                sync_conn.execute(text(
+                    "ALTER TABLE sessions ADD CONSTRAINT sessions_chat_user_id_fkey "
+                    "FOREIGN KEY (chat_user_id) REFERENCES chat_users(id)"
+                ))
+                sync_conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_sessions_chat_user_id ON sessions (chat_user_id)"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN sessions.chat_user_id IS '对话用户ID(嵌入模式使用，可为空)'"
+                ))
+                logger.info("已为 sessions 表添加 chat_user_id 列")
+
     await conn.run_sync(_add_missing_columns)

@@ -920,36 +920,39 @@ async def embed_chat(
                     raise ValueError("session not found")
             except (ValueError, TypeError):
                 # 非数字格式（debug模式），需要创建真实数据库会话
-                # 优先使用chatUserId对应的chat_user作为用户，如果没有则查找默认系统用户
+                # embed_chat 无需认证，使用系统默认用户创建session满足外键约束
+                # 同时通过 chat_user_id 字段记录实际对话用户，实现数据隔离
                 from app.models.chat_user import ChatUser
                 from app.models.user import User
 
                 embed_user_id: int = 0
+                embed_chat_user_id: Optional[int] = None
                 embed_title = data.question[:30] if data.question else "嵌入对话"
 
+                # 获取对话用户信息：用于标题展示和 chat_user_id 数据隔离
                 if data.chatUserId:
-                    # 如果指定了对话用户ID，使用chat_user的id作为session用户
                     chat_user = await db.get(ChatUser, data.chatUserId)
                     if chat_user:
-                        embed_user_id = chat_user.id
+                        embed_chat_user_id = chat_user.id
                         embed_title = f"{chat_user.name or chat_user.username} - {embed_title}"
 
-                # 如果没有chatUserId或chat_user不存在，尝试找默认系统用户
-                if embed_user_id == 0:
-                    # 查找第一个管理员用户，或者id=1的用户
-                    default_user_stmt = select(User).order_by(User.id.asc()).limit(1)
-                    default_user_result = await db.execute(default_user_stmt)
-                    default_user = default_user_result.scalar_one_or_none()
-                    if default_user:
-                        embed_user_id = default_user.id
-                    else:
-                        # 极端情况没有用户，抛错
-                        raise BusinessException(code=500, message="系统中未创建用户，请先初始化用户")
+                # 使用 users 表的默认系统用户创建 session，满足外键约束
+                default_user_stmt = select(User).order_by(User.id.asc()).limit(1)
+                default_user_result = await db.execute(default_user_stmt)
+                default_user = default_user_result.scalar_one_or_none()
+                if default_user:
+                    embed_user_id = default_user.id
+                else:
+                    # 极端情况没有用户，抛错
+                    raise BusinessException(code=500, message="系统中未创建用户，请先初始化用户")
 
                 # 创建真实数据库会话
+                # user_id: 系统用户（满足外键约束）
+                # chat_user_id: 对话用户（实现数据隔离，可为空）
                 new_session = await session_service.create(
                     db=db,
                     user_id=embed_user_id,
+                    chat_user_id=embed_chat_user_id,
                     title=embed_title
                 )
                 real_session_id = new_session.id

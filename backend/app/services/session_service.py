@@ -34,24 +34,27 @@ class SessionService:
         db: AsyncSession,
         user_id: int,
         title: Optional[str] = None,
+        chat_user_id: Optional[int] = None,
     ) -> Session:
         """
         创建新会话
 
         :param db: 数据库会话
-        :param user_id: 用户ID
+        :param user_id: 系统用户ID（满足外键约束）
         :param title: 会话标题（可选，默认为"新对话"）
+        :param chat_user_id: 对话用户ID（可选，嵌入模式用于数据隔离）
         :return: 创建的会话对象
         """
-        logger.debug(f"创建会话: user_id={user_id}, title={title}")
+        logger.debug(f"创建会话: user_id={user_id}, chat_user_id={chat_user_id}, title={title}")
         session = Session(
             user_id=user_id,
+            chat_user_id=chat_user_id,
             title=title or "新对话",
         )
         db.add(session)
         await db.commit()
         await db.refresh(session)
-        logger.info(f"创建会话成功: ID={session.id}, 用户={user_id}")
+        logger.info(f"创建会话成功: ID={session.id}, 系统用户={user_id}, 对话用户={chat_user_id}")
         return session
 
     @staticmethod

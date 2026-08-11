@@ -386,7 +386,11 @@ const renderedContent = computed(() => {
  // 先渲染LaTeX公式
  const processed = renderLatex(content);
  // 再渲染Markdown
- return marked.parse(processed) as string;
+ let html = marked.parse(processed) as string;
+ // 兜底处理：marked 在某些情况下（流式中间态、特殊字符干扰）可能未正确解析 **text**
+ // 手动将残留的 **text** 替换为 <strong>text</strong>，避免 ** 符号直接显示给用户
+ html = html.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+ return html;
 });
 const elapsedTime = computed(() => {
  // 优先使用queryTime，其次使用elapsedTime

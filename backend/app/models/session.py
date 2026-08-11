@@ -44,12 +44,17 @@ class Session(Base):
     会话表
     存储用户与系统的对话会话信息
     每个会话包含多条消息，支持意图分类和状态管理
+
+    用户关联说明：
+    - user_id: 关联系统用户表(users)，满足外键约束，embed场景使用默认系统用户
+    - chat_user_id: 关联对话用户表(chat_users)，可为空，用于embed场景的对话用户数据隔离
     """
 
     __tablename__ = "sessions"
 
     id = Column(Integer, primary_key=True, index=True, comment="会话ID")
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="用户ID")
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True, comment="系统用户ID")
+    chat_user_id = Column(Integer, ForeignKey("chat_users.id"), nullable=True, index=True, comment="对话用户ID(嵌入模式使用，可为空)")
     title = Column(String(200), nullable=True, comment="会话标题")
     intent_type = Column(String(20), nullable=True, comment="会话意图类型: knowledge/data/hybrid")
     llm_config_id = Column(Integer, nullable=True, comment="LLM配置ID")
@@ -62,6 +67,7 @@ class Session(Base):
         return {
             "id": self.id,
             "userId": self.user_id,
+            "chatUserId": self.chat_user_id,
             "title": self.title,
             "intentType": self.intent_type,
             "llmConfigId": self.llm_config_id,

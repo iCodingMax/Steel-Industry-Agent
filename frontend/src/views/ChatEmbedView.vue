@@ -119,7 +119,7 @@
               <line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
-          <span class="session-title">{{ currentSession?.title || appName }}</span>
+          <span class="session-title">{{ currentSession?.title || (isLoading ? '' : appName) }}</span>
         </div>
         <!-- 浮窗模式控制按钮 -->
         <div class="header-actions" v-if="isFloatingMode">
@@ -1014,7 +1014,9 @@ async function handleSend(content?: string) {
   session.messages.push(userMsg)
   session.updatedAt = new Date().toISOString()
   if (!session.title || session.title === '新对话') {
-    session.title = sendContent.substring(0, 20) + (sendContent.length > 20 ? '...' : '')
+    // 保存完整问题作为标题，由CSS的text-overflow:ellipsis根据容器宽度自适应截断
+    // 设置200字符上限仅作为兜底，防止异常超长标题
+    session.title = sendContent.length > 200 ? sendContent.substring(0, 200) + '...' : sendContent
   }
   saveSessions()
   
@@ -1733,14 +1735,14 @@ onMounted(async () => {
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-shrink: 0;
+    flex: 1;
+    min-width: 0;
 
     .session-title {
       font-size: 14px;
       font-weight: 600;
       color: #fff;
       white-space: nowrap;
-      max-width: 120px;
       overflow: hidden;
       text-overflow: ellipsis;
     }
