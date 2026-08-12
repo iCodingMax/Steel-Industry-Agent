@@ -255,17 +255,19 @@ class SkillExecutorService:
             "success": True,
         }
 
-        # 1. 检查 ZIP 文件是否存在
-        if not os.path.isfile(zip_path):
-            logger.error(f"Skill ZIP文件不存在: {zip_path}")
+        # 1. 检查 ZIP 文件是否存在（兼容相对路径和绝对路径）
+        from app.services.tool_config_service import resolve_skill_path
+        abs_zip_path = resolve_skill_path(zip_path)
+        if not os.path.isfile(abs_zip_path):
+            logger.error(f"Skill ZIP文件不存在: {zip_path} (解析后: {abs_zip_path})")
             result["answer"] = f"Skill文件不存在: {zip_path}"
             result["success"] = False
             return result
 
         # 2. 解压 ZIP，提取文件内容
-        files_content = SkillExecutorService.extract_skill_zip(zip_path)
+        files_content = SkillExecutorService.extract_skill_zip(abs_zip_path)
         if not files_content:
-            logger.error(f"Skill ZIP包为空或解压失败: {zip_path}")
+            logger.error(f"Skill ZIP包为空或解压失败: {abs_zip_path}")
             result["answer"] = "Skill文件包为空或格式错误，无法执行。"
             result["success"] = False
             return result
@@ -277,7 +279,7 @@ class SkillExecutorService:
         parsed = SkillExecutorService._parse_skill_files(files_content)
 
         if not parsed["skill_md"]:
-            logger.warning(f"Skill包中未找到SKILL.md: {zip_path}")
+            logger.warning(f"Skill包中未找到SKILL.md: {abs_zip_path}")
             # 没有 SKILL.md 也能继续，用 description 代替
             parsed["skill_md"] = f"Skill名称: {skill_name}\n描述: {skill_description}"
 

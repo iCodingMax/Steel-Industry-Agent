@@ -15,6 +15,51 @@ from app.schemas.tool import MCPCreate, MCPUpdate, SkillCreate, SkillUpdate
 from app.middlewares.exception_handler import BusinessException
 
 
+# 项目根目录（backend/），基于当前文件位置计算
+# tool_config_service.py 位于 backend/app/services/，向上3层即为 backend/
+from pathlib import Path
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+
+# Skill 文件存储目录（相对项目根目录）
+SKILL_RELATIVE_DIR = os.path.join('uploads', 'skills')
+
+
+def resolve_skill_path(relative_path: str) -> str:
+    """
+    将数据库中存储的相对路径解析为绝对路径
+
+    :param relative_path: 数据库中存储的相对路径（如 "uploads/skills/skill_xxx.zip"）
+    :return: 绝对路径
+    """
+    if not relative_path:
+        return ''
+    # 如果已经是绝对路径，直接返回（兼容旧数据）
+    if os.path.isabs(relative_path):
+        return relative_path
+    return os.path.join(_PROJECT_ROOT, relative_path)
+
+
+def to_relative_path(absolute_path: str) -> str:
+    """
+    将绝对路径转为相对路径，用于存储到数据库
+
+    :param absolute_path: 绝对路径
+    :return: 相对路径（相对于项目根目录）
+    """
+    if not absolute_path:
+        return ''
+    # 尝试转为相对项目根目录的路径
+    try:
+        rel = os.path.relpath(absolute_path, _PROJECT_ROOT)
+        # 如果结果不以 .. 开头，说明在项目根目录内
+        if not rel.startswith('..'):
+            return rel.replace('\\', '/')
+    except ValueError:
+        pass
+    # 回退：如果已经是相对路径，直接返回
+    return absolute_path.replace('\\', '/')
+
+
 class ToolConfigService:
     """工具配置服务类"""
 
@@ -116,9 +161,10 @@ class ToolConfigService:
         # 如果是 Skill，删除关联的文件
         if tool.tool_type == "skill" and tool.skill_file_path:
             try:
-                if os.path.exists(tool.skill_file_path):
-                    os.remove(tool.skill_file_path)
-                    logger.debug(f"删除Skill文件: {tool.skill_file_path}")
+                abs_path = resolve_skill_path(tool.skill_file_path)
+                if os.path.exists(abs_path):
+                    os.remove(abs_path)
+                    logger.debug(f"删除Skill文件: {abs_path}")
             except Exception as e:
                 logger.warning(f"删除Skill文件失败: {e}")
 
@@ -142,27 +188,28 @@ class ToolConfigService:
         if len(file_content) > 100 * 1024 * 1024:  # 100MB
             raise BusinessException(message="Skill文件大小不能超过100MB")
 
-        # 创建存储目录
-        upload_dir = os.path.join(os.getcwd(), "uploads", "skills")
+        # 创建存储目录（使用项目根目录下的相对路径）
+        upload_dir = os.path.join(_PROJECT_ROOT, SKILL_RELATIVE_DIR)
         os.makedirs(upload_dir, exist_ok=True)
 
         # 生成唯一文件名
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         unique_name = f"skill_{timestamp}_{file_name}"
-        file_path = os.path.join(upload_dir, unique_name)
+        abs_path = os.path.join(upload_dir, unique_name)
+        relative_path = to_relative_path(abs_path)
 
         # 保存文件
-        with open(file_path, 'wb') as f:
+        with open(abs_path, 'wb') as f:
             f.write(file_content)
 
         # 验证ZIP文件有效性
         try:
-            with zipfile.ZipFile(file_path, 'r') as zf:
+            with zipfile.ZipFile(abs_path, 'r') as zf:
                 # 检查是否包含必要的文件
                 file_list = zf.namelist()
                 logger.debug(f"Skill ZIP文件内容: {file_list}")
         except zipfile.BadZipFile:
-            os.remove(file_path)
+            os.remove(abs_path)
             raise BusinessException(message="无效的ZIP文件")
 
         tool = ToolConfig(
@@ -170,7 +217,7 @@ class ToolConfigService:
             description=data.description,
             tool_type="skill",
             status="active",
-            skill_file_path=file_path,
+            skill_file_path=relative_path,
             skill_file_name=file_name,
             timeout=30,
             created_by=user_id
@@ -178,7 +225,7 @@ class ToolConfigService:
         db.add(tool)
         await db.commit()
         await db.refresh(tool)
-        logger.info(f"创建Skill成功: {tool.name} (ID: {tool.id})")
+        logger.info(f"创建Skill成功: {tool.name} (ID: {tool.id}), 存储路径: {relative_path}")
         return tool
 
     @staticmethod
@@ -207,12 +254,14 @@ class ToolConfigService:
 
         # 如果需要删除文件
         if need_remove_file and not file_content:
-            if tool.skill_file_path and os.path.exists(tool.skill_file_path):
-                try:
-                    os.remove(tool.skill_file_path)
-                    logger.debug(f"删除Skill文件: {tool.skill_file_path}")
-                except Exception as e:
-                    logger.warning(f"删除Skill文件失败: {e}")
+            if tool.skill_file_path:
+                abs_path = resolve_skill_path(tool.skill_file_path)
+                if abs_path and os.path.exists(abs_path):
+                    try:
+                        os.remove(abs_path)
+                        logger.debug(f"删除Skill文件: {abs_path}")
+                    except Exception as e:
+                        logger.warning(f"删除Skill文件失败: {e}")
             tool.skill_file_path = None
             tool.skill_file_name = None
 
@@ -225,31 +274,33 @@ class ToolConfigService:
                 raise BusinessException(message="Skill文件大小不能超过100MB")
 
             # 删除旧文件
-            if tool.skill_file_path and os.path.exists(tool.skill_file_path):
-                try:
-                    os.remove(tool.skill_file_path)
-                except Exception as e:
-                    logger.warning(f"删除旧Skill文件失败: {e}")
+            if tool.skill_file_path:
+                old_abs_path = resolve_skill_path(tool.skill_file_path)
+                if old_abs_path and os.path.exists(old_abs_path):
+                    try:
+                        os.remove(old_abs_path)
+                    except Exception as e:
+                        logger.warning(f"删除旧Skill文件失败: {e}")
 
             # 保存新文件
-            upload_dir = os.path.join(os.getcwd(), "uploads", "skills")
+            upload_dir = os.path.join(_PROJECT_ROOT, SKILL_RELATIVE_DIR)
             os.makedirs(upload_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             unique_name = f"skill_{timestamp}_{file_name}"
-            file_path = os.path.join(upload_dir, unique_name)
+            abs_path = os.path.join(upload_dir, unique_name)
 
-            with open(file_path, 'wb') as f:
+            with open(abs_path, 'wb') as f:
                 f.write(file_content)
 
             # 验证ZIP文件有效性
             try:
-                with zipfile.ZipFile(file_path, 'r') as zf:
+                with zipfile.ZipFile(abs_path, 'r') as zf:
                     pass
             except zipfile.BadZipFile:
-                os.remove(file_path)
+                os.remove(abs_path)
                 raise BusinessException(message="无效的ZIP文件")
 
-            tool.skill_file_path = file_path
+            tool.skill_file_path = to_relative_path(abs_path)
             tool.skill_file_name = file_name
 
         await db.commit()
@@ -264,8 +315,10 @@ class ToolConfigService:
         if not tool or tool.tool_type != "skill":
             raise BusinessException(message="Skill不存在")
 
-        if tool.skill_file_path and os.path.exists(tool.skill_file_path):
-            os.remove(tool.skill_file_path)
+        if tool.skill_file_path:
+            abs_path = resolve_skill_path(tool.skill_file_path)
+            if abs_path and os.path.exists(abs_path):
+                os.remove(abs_path)
             tool.skill_file_path = None
             tool.skill_file_name = None
             await db.commit()

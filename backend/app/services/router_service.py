@@ -40,6 +40,7 @@ from app.services.llm_service import llm_service
 from app.services.vector_service import knowledge_qa_service
 from app.services.chatbi_service import chatbi_service
 from app.services.mcp_client_service import mcp_client_service
+from app.services.tool_config_service import resolve_skill_path
 from app.schemas.knowledge import KnowledgeQuery
 
 
@@ -647,10 +648,11 @@ class RouterService:
 
         try:
             skill = skills[0]  # 取第一个匹配的 Skill 执行
-            logger.info(f"开始执行Skill [{skill.name}]，文件: {skill.skill_file_path}")
+            skill_zip_path = resolve_skill_path(skill.skill_file_path)
+            logger.info(f"开始执行Skill [{skill.name}]，文件: {skill_zip_path}")
 
             exec_result = await skill_executor_service.execute_skill(
-                zip_path=skill.skill_file_path,
+                zip_path=skill_zip_path,
                 skill_name=skill.name,
                 skill_description=skill.description or "",
                 question=question,

@@ -1,6 +1,7 @@
 """
 数据库连接管理
 """
+import os
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine,
@@ -260,5 +261,29 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN sessions.chat_user_id IS '对话用户ID(嵌入模式使用，可为空)'"
                 ))
                 logger.info("已为 sessions 表添加 chat_user_id 列")
+
+        # tool_configs 表：将绝对路径迁移为相对路径
+        # 旧数据使用 os.getcwd() 存储绝对路径，需转换为相对于项目根目录的路径
+        if 'tool_configs' in inspector.get_table_names():
+            try:
+                result = sync_conn.execute(text(
+                    "SELECT id, skill_file_path FROM tool_configs WHERE skill_file_path IS NOT NULL AND skill_file_path != ''"
+                ))
+                rows = result.fetchall()
+                from app.services.tool_config_service import to_relative_path
+                for row in rows:
+                    old_path = row[1]
+                    if old_path and os.path.isabs(old_path):
+                        new_path = to_relative_path(old_path)
+                        if new_path != old_path:
+                            sync_conn.execute(text(
+                                "UPDATE tool_configs SET skill_file_path = :new_path WHERE id = :tool_id"
+                            ), {"new_path": new_path, "tool_id": row[0]})
+                            logger.info(f"迁移Skill路径: id={row[0]}, {old_path} → {new_path}")
+                if rows:
+                    sync_conn.commit()
+                    logger.info(f"Skill文件路径迁移完成，共处理 {len(rows)} 条记录")
+            except Exception as e:
+                logger.warning(f"Skill文件路径迁移失败: {e}")
 
     await conn.run_sync(_add_missing_columns)
