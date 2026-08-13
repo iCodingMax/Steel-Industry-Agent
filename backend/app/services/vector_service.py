@@ -21,6 +21,7 @@
 """
 import os
 import json
+import asyncio
 from typing import List, Optional
 from loguru import logger
 
@@ -152,8 +153,11 @@ class VectorIndexService:
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
             # 构建索引（向量化并入库）
+            # 注意：VectorStoreIndex.from_documents 是同步阻塞操作（网络请求嵌入模型 + 数据库写入）
+            # 必须放入线程池执行，否则会阻塞 asyncio 事件循环导致整个应用卡死
             logger.info("开始向量化并构建索引...")
-            index = VectorStoreIndex.from_documents(
+            index = await asyncio.to_thread(
+                VectorStoreIndex.from_documents,
                 llama_docs,
                 storage_context=storage_context,
                 embed_model=embed_model,
@@ -225,8 +229,9 @@ class VectorIndexService:
             )
 
             # 执行检索（获取更多结果以便去重，取topK*3）
+            # retriever.retrieve 是同步阻塞操作（嵌入查询 + 向量检索），需放入线程池
             retriever = index.as_retriever(similarity_top_k=query.topK * 3)
-            nodes = retriever.retrieve(query.question)
+            nodes = await asyncio.to_thread(retriever.retrieve, query.question)
             logger.info(f"原始检索结果数: {len(nodes)}")
 
             # 步骤4：去重：基于segment_id，保留分数最高的
