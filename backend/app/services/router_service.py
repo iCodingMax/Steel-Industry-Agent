@@ -5,13 +5,13 @@
 
 主要组件：
 1. IntentClassifier：意图分类器
-   - 使用关键词预判断 + LLM对用户问题进行意图分类（knowledge/data/mcp/skill/hybrid）
+   - 使用关键词预判断 + LLM对用户问题进行意图分类（knowledge/data/mcp/skill/hybrid/chat）
    - 支持混合问题拆分为数据子问题和知识子问题
    - LLM分类时参考工具管理中已配置的MCP/Skills名称和描述
 
 2. RouterService：路由分发服务
    - 根据意图分类结果将问题分发到对应处理通道
-   - 支持知识问答通道、数据查询通道、MCP工具调用通道、Skill工具调用通道、混合分析通道
+   - 支持闲聊对话通道、知识问答通道、数据查询通道、MCP工具调用通道、Skill工具调用通道、混合分析通道
    - 融合混合分析的结果，生成统一回答
 
 核心流程：
@@ -20,6 +20,7 @@
         ▼
     IntentClassifier.classify()  → 意图分类
         │
+        ├── chat      → llm_service.chat()                    # 闲聊对话（直接LLM回答）
         ├── knowledge → knowledge_qa_service.answer()         # 知识问答
         ├── data      → chatbi_service.query()                # 数据查询
         ├── mcp       → mcp_client_service.execute_tool_calls()  # MCP工具调用
@@ -104,20 +105,31 @@ class IntentClassifier:
     ]
 
     # data意图关键词（查询内部数据库数据）
+    # 注意：高炉、转炉等领域名词不应作为data关键词，因为它们在知识问答中也很常见
+    # 数据查询应通过动词/量词（展示、统计、产量等）来识别
     DATA_KEYWORDS = [
         '展示', '统计', '多少', '次数', '数量',
         '产量', '合格率', '能耗', '报表', '图表', '趋势',
         '排名', '汇总', '对比', '分析',
         '生产', '指标', '记录', '历史',
-        '吹炼', '熔炼', '轧制', '连铸', '高炉', '转炉',
+        '吹炼', '熔炼', '轧制', '连铸',
     ]
 
     # knowledge意图关键词（知识问答）
     KNOWLEDGE_KEYWORDS = [
         '是什么', '为什么', '怎么', '如何', '原理', '流程',
-        '解释', '说明', '介绍', '定义', '概念',
+        '解释', '说明', '定义', '概念',
         '规范', '标准', '制度', '规程', '操作',
-        'hello', '你好', 'hi', '谢谢', '感谢',
+        '介绍', '简介', '概述', '概况',
+    ]
+
+    # 强chat关键词：单个命中即判定为chat，不受其他关键词影响
+    # 这些是明确的闲聊/问候/自我介绍表达，不会与知识/数据查询混淆
+    STRONG_CHAT_KEYWORDS = [
+        '你好', '您好', 'hello', 'hi', '嗨',
+        '谢谢', '感谢', '再见', '拜拜',
+        '介绍下自己', '介绍一下自己', '你是谁', '你叫什么',
+        '你能做什么', '你会什么',
     ]
 
     @staticmethod
@@ -126,6 +138,7 @@ class IntentClassifier:
         关键词预判断（快速分类）
 
         分类优先级：
+        0. 强chat关键词：你好、介绍下自己等，单个命中即判定为chat（最高优先级）
         1. 强MCP关键词：天气、地图等单个命中即判定为mcp
         2. 强Skill关键词：执行代码、运行脚本等单个命中即判定为skill
         3. 混合意图：有连接词且同时包含knowledge和data关键词（仅knowledge+data）
@@ -135,6 +148,13 @@ class IntentClassifier:
         :return: 预判的意图类型或None（无法通过关键词判断）
         """
         question_lower = question.lower()
+
+        # 0. 强chat关键词检测（最高优先级，不受其他关键词影响）
+        # "你好"、"介绍下自己"等明确闲聊表达，即使包含"介绍"等knowledge关键词也优先判定为chat
+        for keyword in IntentClassifier.STRONG_CHAT_KEYWORDS:
+            if keyword.lower() in question_lower:
+                logger.info(f"关键词预判: chat (强关键词命中: {keyword})")
+                return "chat"
 
         # 1. 强MCP关键词检测（最高优先级）
         for keyword in IntentClassifier.STRONG_MCP_KEYWORDS:
@@ -386,7 +406,7 @@ class IntentClassifier:
         :param question: 用户问题
         :param db: 数据库会话（用于获取工具描述，可选）
         :param tool_config_ids: 工具配置ID列表（可选，限定工具范围）
-        :return: 意图类型（knowledge/data/mcp/skill/hybrid）
+        :return: 意图类型（knowledge/data/mcp/skill/hybrid/chat）
         """
         # 1. 关键词预判断（快速路径）
         quick_result = IntentClassifier._quick_classify(question)
@@ -686,6 +706,7 @@ class RouterService:
         datasource_id: Optional[int] = None,
         tool_config_ids: Optional[List[int]] = None,
         history: Optional[List[Dict[str, str]]] = None,
+        system_prompt: Optional[str] = None,
     ) -> Tuple[str, List[dict], List[dict], float, Optional[List[dict]], Optional[List[dict]], Optional[str]]:
         """
         路由分发
@@ -698,6 +719,7 @@ class RouterService:
         :param datasource_id: 数据源ID（可选，数据查询时使用）
         :param tool_config_ids: 工具配置ID列表（可选，MCP/Skill工具调用时使用）
         :param history: 对话历史（多轮对话上下文，格式 [{"role": "user/assistant", "content": "..."}]）
+        :param system_prompt: 应用系统提示词（约束LLM行为，闲聊时使用）
         :return: (回答内容, 知识引用, SQL溯源, 查询耗时, 数据结果, 字段元信息, 推荐图表类型)
 
         路由逻辑：
@@ -727,7 +749,15 @@ class RouterService:
         chart_type = None
 
         try:
-            if intent == "knowledge":
+            if intent == "chat":
+                # 闲聊/问候/自我介绍通道
+                logger.info("路由到闲聊对话通道")
+                # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
+                chat_system_prompt = system_prompt or "你是一个智能助手。请用友好、专业的语气回答用户的问题。如果用户是在问候或自我介绍，请简要介绍你的能力范围。"
+                answer = await llm_service.chat(question, system_prompt=chat_system_prompt, history=history)
+                logger.info(f"闲聊对话完成: 回答长度={len(answer)}")
+
+            elif intent == "knowledge":
                 # 知识问答通道
                 logger.info("路由到知识问答通道")
                 if knowledge_base_id:

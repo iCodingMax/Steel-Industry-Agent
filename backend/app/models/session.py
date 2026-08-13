@@ -90,7 +90,7 @@ class Message(Base):
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False, index=True, comment="会话ID")
     role = Column(String(20), nullable=False, comment="角色: user/assistant")
     content = Column(Text, nullable=False, comment="消息内容")
-    intent = Column(String(20), nullable=True, comment="消息意图: knowledge/data/mcp/skill/hybrid")
+    intent = Column(String(20), nullable=True, comment="消息意图: knowledge/data/mcp/skill/hybrid/chat")
     references = Column(JSONB, nullable=True, comment="引用信息(JSON)")
     sql_traces = Column(JSONB, nullable=True, comment="SQL溯源(JSON)")
     data_result = Column(JSONB, nullable=True, comment="查询结果数据(JSON)")

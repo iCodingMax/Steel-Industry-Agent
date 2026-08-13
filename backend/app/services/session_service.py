@@ -188,7 +188,7 @@ class MessageService:
         :param session_id: 会话ID
         :param role: 角色（user/assistant）
         :param content: 消息内容
-        :param intent: 意图分类（knowledge/data/mcp/skill/hybrid）
+        :param intent: 意图分类（knowledge/data/mcp/skill/hybrid/chat）
         :param references: 知识引用列表（RAG检索结果）
         :param sql_traces: SQL查询追踪列表（NL2SQL生成的SQL）
         :param data_result: 数据查询结果（JSON格式）

@@ -350,7 +350,7 @@ async def stream_chat(
 
 用户问题：{data.question}
 
-请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
+请提供准确、简洁的回答。"""
 
                         full_answer = ""
                         async for chunk in llm_service.chat_stream(prompt, app_system_prompt, chat_history, llm_config_params):
@@ -605,6 +605,51 @@ async def stream_chat(
                         tool_results=[],
                         query_time=int((time.time() - stream_start_time) * 1000),
                     )
+
+            elif intent == "chat":
+                # 闲聊/问候/自我介绍通道
+                yield emit_thinking(1, 1, '直接回答', '识别为闲聊对话，直接生成回答...')
+
+                from app.services.llm_service import llm_service
+                from app.services.llm_config_service import llm_config_service
+
+                # 获取LLM配置
+                llm_config = None
+                if data.llmConfigId:
+                    llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
+                elif session.llm_config_id:
+                    llm_config = await llm_config_service.get_by_id(db, session.llm_config_id)
+
+                # 构建配置参数
+                llm_config_params = None
+                if llm_config:
+                    llm_config_params = {
+                        'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                        'api_key': llm_config.api_key or 'not-needed',
+                        'model': llm_config.model_name,
+                        'max_tokens': llm_config.max_tokens,
+                        'temperature': llm_config.temperature,
+                    }
+
+                # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
+                chat_system_prompt = app_system_prompt or "你是一个智能助手。请用友好、专业的语气回答用户的问题。如果用户是在问候或自我介绍，请简要介绍你的能力范围。"
+
+                full_answer = ""
+                async for chunk in llm_service.chat_stream(data.question, chat_system_prompt, chat_history, llm_config_params):
+                    full_answer += chunk
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                # 保存AI回复
+                await message_service.create(
+                    db,
+                    session_id=data.sessionId,
+                    role="assistant",
+                    content=full_answer,
+                    intent="chat",
+                    references=[],
+                    thinking_steps=collected_thinking_steps,
+                    query_time=int((time.time() - stream_start_time) * 1000),
+                )
 
             else:
                 # 混合模式：分步骤展示融合推理过程
@@ -914,8 +959,8 @@ async def embed_chat(
                 # 首先尝试直接转换整数（兼容正常整数会话ID）
                 real_session_id = int(data.sessionId)
                 # 校验session是否存在
-                exist_session = await session_service.get_by_id(db, real_session_id)
-                if not exist_session:
+                session = await session_service.get_by_id(db, real_session_id)
+                if not session:
                     # 不存在则继续走创建逻辑
                     raise ValueError("session not found")
             except (ValueError, TypeError):
@@ -955,6 +1000,7 @@ async def embed_chat(
                     chat_user_id=embed_chat_user_id,
                     title=embed_title
                 )
+                session = new_session
                 real_session_id = new_session.id
                 logger.info(f"[embed_chat] 创建嵌入会话成功: 前端key={data.sessionId}, 真实session_id={real_session_id}")
 
@@ -1089,7 +1135,7 @@ async def embed_chat(
 
 用户问题：{data.question}
 
-请提供准确、简洁的回答，并在回答中标注引用来源（如"根据文档1..."）。"""
+请提供准确、简洁的回答。"""
 
                         full_answer = ""
                         async for chunk in llm_service.chat_stream(prompt, app_system_prompt, chat_history, resolved_llm_config_params):
@@ -1306,6 +1352,51 @@ async def embed_chat(
                         tool_results=[],
                         query_time=int((time.time() - stream_start_time) * 1000),
                     )
+
+            elif intent == "chat":
+                # 闲聊/问候/自我介绍通道
+                yield emit_thinking(1, 1, '直接回答', '识别为闲聊对话，直接生成回答...')
+
+                from app.services.llm_service import llm_service
+                from app.services.llm_config_service import llm_config_service
+
+                # 获取LLM配置
+                llm_config = None
+                if data.llmConfigId:
+                    llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
+                elif session.llm_config_id:
+                    llm_config = await llm_config_service.get_by_id(db, session.llm_config_id)
+
+                # 构建配置参数
+                llm_config_params = None
+                if llm_config:
+                    llm_config_params = {
+                        'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                        'api_key': llm_config.api_key or 'not-needed',
+                        'model': llm_config.model_name,
+                        'max_tokens': llm_config.max_tokens,
+                        'temperature': llm_config.temperature,
+                    }
+
+                # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
+                chat_system_prompt = app_system_prompt or "你是一个智能助手。请用友好、专业的语气回答用户的问题。如果用户是在问候或自我介绍，请简要介绍你的能力范围。"
+
+                full_answer = ""
+                async for chunk in llm_service.chat_stream(data.question, chat_system_prompt, chat_history, llm_config_params):
+                    full_answer += chunk
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                # 保存AI回复
+                await message_service.create(
+                    db,
+                    session_id=real_session_id,
+                    role="assistant",
+                    content=full_answer,
+                    intent="chat",
+                    references=[],
+                    thinking_steps=collected_thinking_steps,
+                    query_time=int((time.time() - stream_start_time) * 1000),
+                )
 
             else:
                 # 混合模式：分步骤展示融合推理过程

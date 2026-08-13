@@ -197,6 +197,52 @@ class DocumentParserService:
         return result
 
     @staticmethod
+    def _is_low_quality_chunk(content: str) -> bool:
+        """
+        检测切片内容是否为低质量内容（纯数字/乱码）
+
+        判断规则：
+        1. 数字和标点符号占比超过 90%
+        2. 有效词汇（中文字符、英文单词）数量少于 5 个
+        3. 内容长度少于 20 个字符
+
+        :param content: 切片内容
+        :return: True 表示是低质量切片，应过滤
+        """
+        import re
+
+        # 1. 检查内容长度
+        if len(content.strip()) < 20:
+            return True
+
+        # 2. 统计有效字符数量（中文字符、英文字母）
+        chinese_chars = re.findall(r'[\u4e00-\u9fa5]', content)  # 中文字符
+        english_chars = re.findall(r'[a-zA-Z]{2,}', content)  # 英文单词（至少2个字母）
+        valid_chars = len(chinese_chars) + len(english_chars)
+
+        # 3. 统计数字和标点符号数量
+        # 移除空白字符后统计
+        non_space_content = re.sub(r'\s+', '', content)
+        digit_count = len(re.findall(r'[0-9]', non_space_content))
+        # 标点符号包括常见的中英文标点
+        punctuation_count = len(re.findall(r'[.,;:!?，。；：！？、；：""''（）()\[\]【】\-—_*#@$%&/\\|+=<>`~]', non_space_content))
+        symbol_count = digit_count + punctuation_count
+
+        # 4. 计算比例
+        total_chars = len(non_space_content)
+        if total_chars == 0:
+            return True
+
+        symbol_ratio = symbol_count / total_chars
+
+        # 5. 判断规则
+        # 如果有效词汇少于5个，或者数字/标点占比超过90%，则认为是低质量
+        if valid_chars < 5 or symbol_ratio > 0.9:
+            return True
+
+        return False
+
+    @staticmethod
     async def process_document(
         db: AsyncSession,
         document: Document,
@@ -239,8 +285,16 @@ class DocumentParserService:
             file_type = document.file_type
             paragraphs = await DocumentParserService.load_document(file_path, file_type)
 
-            # 步骤3：合并所有段落，清除PostgreSQL不支持的null字节(\x00)
-            full_text = "\n\n".join(paragraphs).replace("\x00", "")
+            # 步骤3：合并所有段落，清除PostgreSQL不支持的字符
+            # - null字节(\x00)：PostgreSQL text类型不支持
+            # - 孤立代理对字符(\ud800-\udfff)：UTF-8编码不允许，会导致asyncpg写入失败
+            full_text = "\n\n".join(paragraphs)
+            full_text = full_text.replace("\x00", "")
+            # 移除孤立的Unicode代理对字符（常见于PDF/DOCX中的数学符号、特殊字体）
+            full_text = "".join(
+                ch for ch in full_text
+                if not (0xD800 <= ord(ch) <= 0xDFFF)
+            )
             logger.info(f"文档内容合并完成: 长度={len(full_text)}字符")
 
             # 步骤4：切片（使用知识库配置的参数）
@@ -250,13 +304,21 @@ class DocumentParserService:
                 chunk_overlap=knowledge_base.chunk_overlap,
             )
 
-            # 步骤5：存储切片到数据库
+            # 步骤5：存储切片到数据库（过滤低质量切片）
+            valid_chunk_count = 0
+            filtered_chunk_count = 0
             for idx, (content, start_char, end_char) in enumerate(chunks):
+                # 检测切片内容质量，过滤纯数字/乱码切片
+                if DocumentParserService._is_low_quality_chunk(content):
+                    filtered_chunk_count += 1
+                    logger.debug(f"过滤低质量切片: index={idx}, 长度={len(content)}, 预览={content[:50]}...")
+                    continue
+
                 segment = DocumentSegment(
                     document_id=document.id,
                     knowledge_base_id=knowledge_base.id,
                     content=content,
-                    segment_index=idx,
+                    segment_index=valid_chunk_count,
                     start_char=start_char,
                     end_char=end_char,
                     meta_data=json.dumps({
@@ -265,14 +327,18 @@ class DocumentParserService:
                     }),
                 )
                 db.add(segment)
+                valid_chunk_count += 1
+
+            if filtered_chunk_count > 0:
+                logger.info(f"过滤低质量切片: {filtered_chunk_count} 个 (共 {len(chunks)} 个)")
 
             # 步骤6：更新文档状态和切片数量
             document.status = "completed"
-            document.segment_count = len(chunks)
+            document.segment_count = valid_chunk_count
             await db.commit()
 
-            logger.success(f"文档处理完成: {document.file_name}, 切片数量: {len(chunks)}")
-            return len(chunks)
+            logger.success(f"文档处理完成: {document.file_name}, 有效切片数量: {valid_chunk_count}, 过滤低质量: {filtered_chunk_count}")
+            return valid_chunk_count
 
         except Exception as e:
             # 处理失败，更新状态为failed并记录错误信息

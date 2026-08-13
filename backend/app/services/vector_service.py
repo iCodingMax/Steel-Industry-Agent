@@ -70,6 +70,8 @@ class VectorIndexService:
                 model_name=settings.XINFERENCE_EMBED_MODEL,  # 实际模型名
                 api_base=f"{settings.XINFERENCE_BASE_URL}/v1",
                 api_key="not-needed",
+                timeout=300,  # 增加超时时间至 5 分钟，防止大批量切片处理超时
+                embed_batch_size=32,  # 限制单次发送的文本数量，将大请求拆分为小批次，降低服务端压力
             )
             logger.info(f"嵌入模型初始化完成: {settings.XINFERENCE_EMBED_MODEL} (via Xinference)")
         return cls._embed_model
