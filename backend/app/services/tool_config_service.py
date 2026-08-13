@@ -33,6 +33,12 @@ def resolve_skill_path(relative_path: str) -> str:
     """
     if not relative_path:
         return ''
+    # 修复Windows驱动器路径缺少反斜杠的情况（如 "E:path" → "E:\path"）
+    # 此问题通常由数据库存储时反斜杠丢失导致
+    if len(relative_path) >= 2 and relative_path[1] == ':' and relative_path[0].isalpha():
+        if len(relative_path) > 2 and relative_path[2] not in ('\\', '/'):
+            relative_path = relative_path[0] + ':\\' + relative_path[2:]
+            logger.info(f"修复驱动器路径: {relative_path[:30]}...")
     # 如果已经是绝对路径，直接返回（兼容旧数据）
     if os.path.isabs(relative_path):
         return relative_path

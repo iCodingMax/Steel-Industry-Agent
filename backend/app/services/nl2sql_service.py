@@ -511,7 +511,11 @@ class NL2SQLEngine:
 要求：
 1. 只生成SELECT查询语句，禁止使用INSERT/UPDATE/DELETE/DROP等操作
 2. 严格使用Schema中存在的表名和字段名，不要编造
-3. 根据用户问题添加适当的WHERE条件和聚合函数
+3. WHERE条件规则（非常重要）：
+   - 只在用户问题中明确指定筛选条件时才添加WHERE子句
+   - 不要根据字段名或字段值猜测、推断WHERE条件
+   - 例如：用户问"展示不同班次的炉况报告"，不要自行添加WHERE ITEM_NAME='炉况打分'等未明确要求的过滤条件
+   - 聚合函数（COUNT、AVG、SUM、MAX、MIN等）根据问题语义添加，不受此限制
 {time_instruction}
 5. 限制返回行数不超过{NL2SQLEngine.MAX_ROWS}行（使用LIMIT）
 6. 为每个查询字段和聚合结果添加中文别名（AS子句），别名优先使用字段COMMENT中的中文名称；聚合函数使用语义化中文别名，如SUM(BLOW_COUNT) AS 总吹炼次数。如果别名以数字开头或包含特殊字符（如连字符-），必须用反引号括起来，例如：AS `40-25`、AS `16以上`、AS `10-5`
@@ -1132,15 +1136,29 @@ class NL2SQLEngine:
             if results is None:
                 return False, f"不支持的数据库类型: {datasource.type}", None, None
 
-            # 自动重试：如果无数据且有WHERE条件，移除时间过滤重试
+            # 自动重试：如果无数据且有WHERE条件，逐步放宽条件重试
             if not results and "WHERE" in sql.upper():
+                # 第一步：尝试移除时间过滤条件
                 new_sql = NL2SQLEngine._remove_time_filter(sql)
                 if new_sql != sql:
-                    logger.info(f"一周过滤无数据，尝试移除时间条件重试，新SQL: {new_sql[:80]}...")
+                    logger.info(f"无数据，尝试移除时间条件重试，新SQL: {new_sql[:80]}...")
                     retry_results = await execute_sql(new_sql)
                     if retry_results:
                         logger.info(f"移除时间条件后查询到 {len(retry_results)} 条数据")
                         return True, "（已自动放宽时间范围）", retry_results, column_meta
+                    results = retry_results if retry_results is not None else results
+
+                # 第二步：如果仍无数据，尝试移除整个WHERE子句（处理LLM误加的非时间过滤条件）
+                if not results:
+                    import re as _re2
+                    no_where_sql = _re2.sub(r'\s+WHERE\b.*?(?=\s+GROUP\s+BY|\s+ORDER\s+BY|\s+LIMIT\s|$)', '', new_sql, flags=_re2.IGNORECASE | _re2.DOTALL)
+                    no_where_sql = " ".join(no_where_sql.split())
+                    if no_where_sql != new_sql and no_where_sql != sql:
+                        logger.info(f"无数据，尝试移除WHERE子句重试，新SQL: {no_where_sql[:80]}...")
+                        retry_results = await execute_sql(no_where_sql)
+                        if retry_results:
+                            logger.info(f"移除WHERE子句后查询到 {len(retry_results)} 条数据")
+                            return True, "（已自动移除无效过滤条件）", retry_results, column_meta
 
             return True, "", results, column_meta
 

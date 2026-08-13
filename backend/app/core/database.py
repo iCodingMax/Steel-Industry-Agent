@@ -264,6 +264,7 @@ async def _auto_add_columns(conn) -> None:
 
         # tool_configs 表：将绝对路径迁移为相对路径
         # 旧数据使用 os.getcwd() 存储绝对路径，需转换为相对于项目根目录的路径
+        # 同时修复Windows驱动器路径缺少反斜杠的损坏数据（如 "E:path" → "E:\path"）
         if 'tool_configs' in inspector.get_table_names():
             try:
                 result = sync_conn.execute(text(
@@ -273,8 +274,17 @@ async def _auto_add_columns(conn) -> None:
                 from app.services.tool_config_service import to_relative_path
                 for row in rows:
                     old_path = row[1]
-                    if old_path and os.path.isabs(old_path):
-                        new_path = to_relative_path(old_path)
+                    if not old_path:
+                        continue
+                    # 修复损坏的驱动器路径（E:path → E:\path）
+                    fixed_path = old_path
+                    if len(old_path) >= 2 and old_path[1] == ':' and old_path[0].isalpha():
+                        if len(old_path) > 2 and old_path[2] not in ('\\', '/'):
+                            fixed_path = old_path[0] + ':\\' + old_path[2:]
+                            logger.info(f"修复损坏路径: id={row[0]}, {old_path[:30]}... → {fixed_path[:30]}...")
+                    # 转换绝对路径为相对路径
+                    if fixed_path and os.path.isabs(fixed_path):
+                        new_path = to_relative_path(fixed_path)
                         if new_path != old_path:
                             sync_conn.execute(text(
                                 "UPDATE tool_configs SET skill_file_path = :new_path WHERE id = :tool_id"
