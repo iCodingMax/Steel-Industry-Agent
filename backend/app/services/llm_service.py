@@ -43,14 +43,16 @@ class LLMService:
         prompt: str,
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict]] = None,
+        config: Optional[Dict] = None,
     ) -> str:
         """
         单轮同步对话
-        一次性获取模型完整回复，适用于不需要实时反馈的场景（如意图分类、SQL生成）
+        一次性获取模型完整回复，适用于不需要实时反馈的场景（如意图分类、SQL生成、Skill执行）
 
         :param prompt: 用户输入的问题或指令
         :param system_prompt: 系统提示词，定义模型行为和角色
         :param history: 对话历史列表，格式为 [{"role": "user/assistant", "content": "文本"}]
+        :param config: 应用级LLM配置（base_url, api_key, model, max_tokens, temperature），覆盖默认值
         :return: 模型生成的完整回复内容
         :raises Exception: 调用失败时抛出，包含详细错误信息
         """
@@ -71,28 +73,64 @@ class LLMService:
             # 添加用户当前输入
             messages.append({"role": "user", "content": prompt})
 
+            # 使用配置参数或默认值（支持应用级配置覆盖）
+            # 注意：config 中值为 None 时需 fallback 到默认值，避免传 null 给LLM服务导致500
+            if config:
+                base_url = config.get('base_url') or self.base_url
+                api_key = config.get('api_key') or self.api_key
+                model = config.get('model') or self.model
+                max_tokens = config.get('max_tokens') or self.max_tokens
+                temperature = config.get('temperature')
+                if temperature is None:
+                    temperature = self.temperature
+            else:
+                base_url = self.base_url
+                api_key = self.api_key
+                model = self.model
+                max_tokens = self.max_tokens
+                temperature = self.temperature
+
             # 2. 发起HTTP请求调用LLM
+            # 对qwen3系列模型禁用thinking模式，避免Xinference解析reasoning_content时触发KeyError 'text'
+            request_body = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if "qwen3" in model.lower():
+                request_body["chat_template_kwargs"] = {"enable_thinking": False}
+                logger.debug(f"检测到qwen3模型，已禁用thinking模式: model={model}")
+
             async with httpx.AsyncClient(timeout=300.0) as client:
-                logger.debug(f"发起LLM调用: model={self.model}, prompt长度={len(prompt)}")
+                logger.debug(f"发起LLM调用: model={model}, prompt长度={len(prompt)}")
                 response = await client.post(
-                    f"{self.base_url}/chat/completions",
+                    f"{base_url}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.api_key}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "max_tokens": self.max_tokens,
-                        "temperature": self.temperature,
-                    },
+                    json=request_body,
                 )
-                response.raise_for_status()
+                # 先读取响应体，再解析JSON，最后检查状态码
+                # 这样可以在raise_for_status()之前检测到FastAPI错误响应({"detail":"..."})
                 raw_data = await response.aread()
                 data = json.loads(raw_data)
 
             # 3. 解析返回结果
-            # 检查返回数据格式是否正确
+            # 3a. 检查是否为FastAPI错误响应（如 {"detail": "Model not found"}）
+            #     必须在raise_for_status()之前检查，避免HTTPStatusError处理中触发KeyError
+            if isinstance(data, dict) and "detail" in data and "choices" not in data:
+                error_detail = data["detail"]
+                if isinstance(error_detail, list):
+                    error_detail = "; ".join(str(item) for item in error_detail)
+                logger.error(f"LLM服务返回错误响应: detail={error_detail}, url={base_url}, model={model}")
+                raise Exception(f"大模型服务返回错误: {error_detail} (base_url={base_url}, model={model})")
+
+            # 3b. 检查HTTP状态码（非FastAPI错误的其他HTTP错误）
+            response.raise_for_status()
+
+            # 3c. 检查返回数据格式是否正确
             if (not data 
                 or "choices" not in data 
                 or not isinstance(data.get("choices"), list) 
@@ -106,12 +144,13 @@ class LLMService:
             content = data["choices"][0]["message"].get("content", "")
             if content is None:
                 content = ""
-            logger.info(f"LLM调用完成: 模型={self.model}, 输入长度={len(prompt)}, 输出长度={len(content)}")
+            logger.info(f"LLM调用完成: 模型={model}, 输入长度={len(prompt)}, 输出长度={len(content)}")
             return content
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"LLM调用HTTP错误: status={e.response.status_code}, body={e.response.text[:500]}")
-            raise Exception(f"大模型调用失败(HTTP {e.response.status_code}): 请检查模型配置，base_url={self.base_url}, model={self.model}")
+            error_body = e.response.text[:500] if e.response.text else ""
+            logger.error(f"LLM调用HTTP错误: status={e.response.status_code}, body={error_body}")
+            raise Exception(f"大模型调用失败(HTTP {e.response.status_code}): base_url={base_url}, model={model}, 服务端返回: {error_body}")
         except httpx.ConnectError as e:
             logger.error(f"LLM连接失败: {e}")
             raise Exception(f"大模型服务连接失败: 请检查 {self.base_url} 是否可访问")
@@ -119,8 +158,10 @@ class LLMService:
             logger.error(f"LLM调用超时(300s): {e}")
             raise Exception(f"大模型调用超时(300s): 请检查模型服务状态或网络连接")
         except KeyError as e:
-            logger.error(f"LLM返回格式异常: {e}, raw_data={data if 'data' in dir() else 'N/A'}")
-            raise Exception(f"大模型返回格式异常: {str(e)}")
+            import traceback
+            raw_data_preview = raw_data[:500] if 'raw_data' in dir() and raw_data else 'N/A'
+            logger.error(f"LLM返回格式异常(KeyError): 缺少键={e}, raw_data={raw_data_preview}\n{traceback.format_exc()}")
+            raise Exception(f"大模型返回格式异常: 缺少键 {str(e)}, 响应内容: {raw_data_preview}")
         except Exception as e:
             logger.error(f"LLM调用失败: {e}")
             raise Exception(f"大模型调用失败: {str(e)}")
@@ -156,14 +197,35 @@ class LLMService:
 
             messages.append({"role": "user", "content": prompt})
 
-            # 使用配置参数或默认值
-            base_url = config.get('base_url', self.base_url) if config else self.base_url
-            api_key = config.get('api_key', self.api_key) if config else self.api_key
-            model = config.get('model', self.model) if config else self.model
-            max_tokens = config.get('max_tokens', self.max_tokens) if config else self.max_tokens
-            temperature = config.get('temperature', self.temperature) if config else self.temperature
+            # 使用配置参数或默认值（与 chat 方法一致的 None 值处理）
+            if config:
+                base_url = config.get('base_url') or self.base_url
+                api_key = config.get('api_key') or self.api_key
+                model = config.get('model') or self.model
+                max_tokens = config.get('max_tokens') or self.max_tokens
+                temperature = config.get('temperature')
+                if temperature is None:
+                    temperature = self.temperature
+            else:
+                base_url = self.base_url
+                api_key = self.api_key
+                model = self.model
+                max_tokens = self.max_tokens
+                temperature = self.temperature
 
             # 2. 发起流式HTTP请求
+            # 对qwen3系列模型禁用thinking模式，避免Xinference解析reasoning_content时触发KeyError 'text'
+            request_body = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": True,
+            }
+            if "qwen3" in model.lower():
+                request_body["chat_template_kwargs"] = {"enable_thinking": False}
+                logger.debug(f"检测到qwen3模型，已禁用thinking模式: model={model}")
+
             async with httpx.AsyncClient(timeout=300.0) as client:
                 logger.debug(f"发起LLM流式调用: model={model}, prompt长度={len(prompt)}")
                 async with client.stream(
@@ -173,13 +235,7 @@ class LLMService:
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                        "stream": True,
-                    },
+                    json=request_body,
                 ) as response:
                     response.raise_for_status()
 
@@ -208,8 +264,9 @@ class LLMService:
             logger.info(f"LLM流式调用完成: 模型={self.model}")
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"LLM流式调用HTTP错误: status={e.response.status_code}")
-            raise Exception(f"大模型流式调用失败(HTTP {e.response.status_code}): 请检查模型配置")
+            error_body = e.response.text[:500] if e.response.text else ""
+            logger.error(f"LLM流式调用HTTP错误: status={e.response.status_code}, body={error_body}")
+            raise Exception(f"大模型流式调用失败(HTTP {e.response.status_code}): base_url={base_url}, model={model}, 服务端返回: {error_body}")
         except httpx.ConnectError as e:
             logger.error(f"LLM流式连接失败: {e}")
             raise Exception(f"大模型服务连接失败: 请检查 {self.base_url} 是否可访问")
@@ -217,8 +274,8 @@ class LLMService:
             logger.error(f"LLM流式调用超时(300s): {e}")
             raise Exception(f"大模型流式调用超时: 请检查模型服务状态")
         except Exception as e:
-            logger.error(f"LLM流式调用失败: {e}")
-            raise Exception(f"大模型流式调用失败: {str(e)}")
+            logger.error(f"LLM流式调用失败: {type(e).__name__}: {e}", exc_info=True)
+            raise Exception(f"大模型流式调用失败: {type(e).__name__}: {str(e)}")
 
     async def classify_intent(
         self,

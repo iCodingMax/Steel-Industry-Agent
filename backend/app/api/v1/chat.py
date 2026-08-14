@@ -251,6 +251,8 @@ async def stream_chat(
             # 加载应用配置（获取系统提示词和工具配置）
             app_system_prompt = None
             tool_config_ids: List[int] = list(data.toolConfigIds) if data.toolConfigIds else []
+            # 预解析应用级LLM配置（从应用配置的model_name查找），供各意图分支使用
+            resolved_llm_config_params = None
             if hasattr(session, 'application_id') and session.application_id:
                 from app.models.application import Application
                 app_result = await db.execute(
@@ -264,6 +266,33 @@ async def stream_chat(
                     # 从应用配置获取工具配置ID（如果请求中未指定）
                     if not tool_config_ids and app_obj.tool_config_ids:
                         tool_config_ids = list(app_obj.tool_config_ids)
+
+                    # 从应用配置解析LLM配置：优先前端传入的llmConfigId，
+                    # 其次根据应用的model_name查找匹配的LLM配置，
+                    # 最后回退到系统默认LLM配置
+                    from app.services.llm_config_service import llm_config_service as _llm_cfg_svc
+                    from app.models.llm_config import LLMConfig as _LLMCfgModel
+                    _llm_cfg = None
+                    if data.llmConfigId:
+                        _llm_cfg = await _llm_cfg_svc.get_by_id(db, data.llmConfigId)
+                    if not _llm_cfg and app_obj.model_name:
+                        _stmt = select(_LLMCfgModel).where(
+                            (_LLMCfgModel.model_name == app_obj.model_name) &
+                            (_LLMCfgModel.model_type == 'llm') &
+                            (_LLMCfgModel.status == 'active')
+                        )
+                        _cfg_result = await db.execute(_stmt)
+                        _llm_cfg = _cfg_result.scalar_one_or_none()
+                    if not _llm_cfg:
+                        _llm_cfg = await _llm_cfg_svc.get_default_by_model_type(db, 'llm')
+                    if _llm_cfg:
+                        resolved_llm_config_params = {
+                            'base_url': _llm_cfg.base_url.rstrip('/') + ('' if _llm_cfg.base_url.rstrip('/').endswith('/v1') else '/v1'),
+                            'api_key': _llm_cfg.api_key or 'not-needed',
+                            'model': _llm_cfg.model_name,
+                            'max_tokens': _llm_cfg.max_tokens,
+                            'temperature': _llm_cfg.temperature,
+                        }
 
             # 发送开始事件
             yield f"data: {json.dumps({'type': 'start', 'sessionId': data.sessionId})}\n\n"
@@ -285,8 +314,9 @@ async def stream_chat(
                 chat_history = chat_history[:-1]
 
             # 调用意图分类（传入db和tool_config_ids，以便LLM参考工具管理中的MCP/Skills名称和描述）
+            # 传入chat_history用于上下文感知（如Skill多轮交互保持）
             from app.services.router_service import intent_classifier
-            intent = await intent_classifier.classify(data.question, db, tool_config_ids)
+            intent = await intent_classifier.classify(data.question, db, tool_config_ids, history=chat_history)
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
 
@@ -335,7 +365,7 @@ async def stream_chat(
                         llm_config_params = None
                         if llm_config:
                             llm_config_params = {
-                                'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                                'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
                                 'api_key': llm_config.api_key or 'not-needed',
                                 'model': llm_config.model_name,
                                 'max_tokens': llm_config.max_tokens,
@@ -387,7 +417,7 @@ async def stream_chat(
                     llm_config_params = None
                     if llm_config:
                         llm_config_params = {
-                            'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                            'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
                             'api_key': llm_config.api_key or 'not-needed',
                             'model': llm_config.model_name,
                             'max_tokens': llm_config.max_tokens,
@@ -450,7 +480,7 @@ async def stream_chat(
                 llm_config_params = None
                 if llm_config:
                     llm_config_params = {
-                        'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                        'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
                         'api_key': llm_config.api_key or 'not-needed',
                         'model': llm_config.model_name,
                         'max_tokens': llm_config.max_tokens,
@@ -549,6 +579,14 @@ async def stream_chat(
                 # Skill工具调用模式
                 from app.services.router_service import RouterService
 
+                # 直接使用已解析的应用级LLM配置（resolved_llm_config_params）
+                # 该配置从应用配置的model_name解析而来，确保Skill执行使用应用选择的模型
+                llm_config_params = resolved_llm_config_params
+                if llm_config_params:
+                    logger.debug(f"Skill执行使用应用级LLM配置: model={llm_config_params.get('model')}")
+                else:
+                    logger.warning("Skill执行未找到应用级LLM配置，将使用系统默认配置")
+
                 # 筛选skill类型的工具ID
                 skill_tool_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "skill")
 
@@ -560,12 +598,14 @@ async def stream_chat(
 
                     yield emit_thinking(3, total_steps, '工具分析', f'分析 {len(skill_tool_ids)} 个Skill工具匹配度...')
 
-                    # 执行Skill调用分析
+                    # 执行Skill调用分析（传入应用级LLM配置和对话历史，支持多轮交互）
                     skill_result = await RouterService._execute_skill(
                         db=db,
                         tool_config_ids=skill_tool_ids,
                         question=data.question,
                         system_prompt=app_system_prompt,
+                        llm_config=llm_config_params,
+                        history=chat_history,
                     )
 
                     # 发送工具调用结果
@@ -624,7 +664,7 @@ async def stream_chat(
                 llm_config_params = None
                 if llm_config:
                     llm_config_params = {
-                        'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                        'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
                         'api_key': llm_config.api_key or 'not-needed',
                         'model': llm_config.model_name,
                         'max_tokens': llm_config.max_tokens,
@@ -762,7 +802,7 @@ async def stream_chat(
                 llm_config_params = None
                 if llm_config:
                     llm_config_params = {
-                        'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                        'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
                         'api_key': llm_config.api_key or 'not-needed',
                         'model': llm_config.model_name,
                         'max_tokens': llm_config.max_tokens,
@@ -1083,7 +1123,7 @@ async def embed_chat(
 
                     if llm_config:
                         resolved_llm_config_params = {
-                            'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                            'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
                             'api_key': llm_config.api_key or 'not-needed',
                             'model': llm_config.model_name,
                             'max_tokens': llm_config.max_tokens,
@@ -1091,7 +1131,7 @@ async def embed_chat(
                         }
 
             from app.services.router_service import intent_classifier
-            intent = await intent_classifier.classify(data.question, db, tool_config_ids)
+            intent = await intent_classifier.classify(data.question, db, tool_config_ids, history=chat_history)
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
 
@@ -1296,6 +1336,14 @@ async def embed_chat(
                 # Skill工具调用模式
                 from app.services.router_service import RouterService
 
+                # 直接使用已解析的应用级LLM配置（resolved_llm_config_params）
+                # 该配置从应用配置的model_name解析而来，确保Skill执行使用应用选择的模型
+                llm_config_params = resolved_llm_config_params
+                if llm_config_params:
+                    logger.debug(f"Skill执行使用应用级LLM配置: model={llm_config_params.get('model')}")
+                else:
+                    logger.warning("Skill执行未找到应用级LLM配置，将使用系统默认配置")
+
                 # 筛选skill类型的工具ID
                 skill_tool_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "skill")
 
@@ -1307,12 +1355,14 @@ async def embed_chat(
 
                     yield emit_thinking(3, total_steps, '工具分析', f'分析 {len(skill_tool_ids)} 个Skill工具匹配度...')
 
-                    # 执行Skill调用分析
+                    # 执行Skill调用分析（传入应用级LLM配置和对话历史，支持多轮交互）
                     skill_result = await RouterService._execute_skill(
                         db=db,
                         tool_config_ids=skill_tool_ids,
                         question=data.question,
                         system_prompt=app_system_prompt,
+                        llm_config=llm_config_params,
+                        history=chat_history,
                     )
 
                     # 发送工具调用结果
@@ -1371,7 +1421,7 @@ async def embed_chat(
                 llm_config_params = None
                 if llm_config:
                     llm_config_params = {
-                        'base_url': llm_config.base_url.rstrip('/') + '/v1',
+                        'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
                         'api_key': llm_config.api_key or 'not-needed',
                         'model': llm_config.model_name,
                         'max_tokens': llm_config.max_tokens,

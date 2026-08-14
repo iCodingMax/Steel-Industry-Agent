@@ -618,6 +618,25 @@ const debugInput = ref('')
 const debugSending = ref(false)
 const debugMessages = ref<DebugMessage[]>([])
 
+// 按应用ID存储调试消息，实现不同应用调试预览的数据隔离
+const allDebugMessages = ref<Record<number, DebugMessage[]>>({})
+
+// 按应用ID存储后端返回的真实sessionId，确保多轮对话使用同一会话
+// 没有这个映射，每次发消息都创建新会话，后端无法获取历史记录，上下文感知失效
+const debugSessionIds = ref<Record<number, number>>({})
+
+// 切换应用时自动加载该应用的调试消息，确保不同应用的调试预览历史相互独立
+watch(() => currentApp.value?.id, (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    if (!allDebugMessages.value[newId]) {
+      allDebugMessages.value[newId] = []
+    }
+    debugMessages.value = allDebugMessages.value[newId]
+  } else if (!newId) {
+    debugMessages.value = []
+  }
+}, { immediate: true })
+
 function getFieldAlias(fieldName: string, columnMeta?: any[]): string | null {
   if (!columnMeta || columnMeta.length === 0) return null
   // 兼容不同的字段名格式：name（后端返回）或 columnName（其他来源）
@@ -1283,7 +1302,12 @@ function scrollToBottom() {
 }
 
 function clearMessages() {
-  debugMessages.value = []
+  // 清空当前数组内容，保持引用不变，确保 allDebugMessages 中的引用同步更新
+  debugMessages.value.length = 0
+  // 同时清除该应用的sessionId，下次发消息会创建新会话
+  if (currentApp.value?.id) {
+    delete debugSessionIds.value[currentApp.value.id]
+  }
 }
 
 async function handleDebugSend(content?: string) {
@@ -1317,7 +1341,9 @@ async function handleDebugSend(content?: string) {
     const llmConfigId = llmConfig?.id || null
     
     const requestBody: any = {
-      sessionId: `debug-${currentApp.value.id}-${Date.now()}`,
+      // 优先使用已保存的真实sessionId，确保多轮对话在同一会话中
+      // 后端通过sessionId加载历史记录，实现上下文感知（如Skill多轮交互保持）
+      sessionId: debugSessionIds.value[currentApp.value.id] || `debug-${currentApp.value.id}-${Date.now()}`,
       question: userMsg.content,
       applicationId: currentApp.value.id,
     }
@@ -1372,7 +1398,11 @@ async function handleDebugSend(content?: string) {
           const data = JSON.parse(jsonStr)
 
           if (data.type === 'start') {
-            // 会话开始事件
+            // 保存后端返回的真实sessionId，后续消息复用此sessionId
+            // 这样后端才能加载历史记录，实现上下文感知（如Skill多轮交互保持）
+            if (data.sessionId && currentApp.value?.id) {
+              debugSessionIds.value[currentApp.value.id] = data.sessionId
+            }
           } else if (data.type === 'intent') {
             // 意图识别结果
           } else if (data.type === 'content') {

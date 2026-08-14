@@ -28,6 +28,7 @@
         └── hybrid    → 并行调用知识+数据通道，融合结果
 """
 import json
+import re
 import time
 from typing import List, Optional, Tuple, Dict
 from loguru import logger
@@ -65,12 +66,14 @@ class IntentClassifier:
     """
 
     # 强MCP关键词：单个命中即判定为mcp意图（最高优先级）
+    # 注意："预警"和"定位"在工业场景中是高频词（炉况预警、异常定位），
+    #        不应作为强MCP关键词，天气预警可通过"天气"识别，地图定位可通过"地图"/"导航"识别
     STRONG_MCP_KEYWORDS = [
         # 天气相关
-        '天气', '气温', '下雨', '刮风', '预警',
+        '天气', '气温', '下雨', '刮风',
         # 地图/导航相关
         '地图', '导航', '怎么走', '路线规划', '路径规划',
-        '定位', '在哪里', '附近', '周边',
+        '在哪里', '附近', '周边',
         '高德', 'amap',
     ]
 
@@ -125,11 +128,23 @@ class IntentClassifier:
 
     # 强chat关键词：单个命中即判定为chat，不受其他关键词影响
     # 这些是明确的闲聊/问候/自我介绍表达，不会与知识/数据查询混淆
+    # 注意：'你能做什么'、'你会什么' 已移除，因为与"询问技能列表"高度重叠，
+    #       由 INQUIRE_SKILL_PATTERNS 优先处理；不在技能关键词范围内时再由LLM兜底闲聊
     STRONG_CHAT_KEYWORDS = [
         '你好', '您好', 'hello', 'hi', '嗨',
         '谢谢', '感谢', '再见', '拜拜',
         '介绍下自己', '介绍一下自己', '你是谁', '你叫什么',
-        '你能做什么', '你会什么',
+    ]
+
+    # 询问技能列表的表达：优先级高于普通chat关键词，应判定为skill进入技能展示分支
+    # （最终由 _execute_skill 中的 INQUIRE_SKILL_PATTERNS 返回格式化的技能列表，而非执行）
+    INQUIRE_SKILL_KEYWORDS = [
+        '你有什么技能', '有哪些技能', '技能列表', '技能有哪些',
+        '你都会什么', '你都有什么', '什么技能', '哪些技能',
+        '列出技能', '显示技能', '查看技能', '技能介绍',
+        '你的技能', '我的技能', '支持什么技能',
+        '你有什么skill', '有什么skill', 'skill列表',
+        '你能做什么', '你会什么', '你会啥',
     ]
 
     @staticmethod
@@ -149,7 +164,14 @@ class IntentClassifier:
         """
         question_lower = question.lower()
 
-        # 0. 强chat关键词检测（最高优先级，不受其他关键词影响）
+        # 0a. 询问技能列表（最高优先级之一，排在强chat之前）
+        # "你有什么技能"、"你能做什么"等，应判定为skill（进入技能展示分支，不执行）
+        for keyword in IntentClassifier.INQUIRE_SKILL_KEYWORDS:
+            if keyword.lower() in question_lower:
+                logger.info(f"关键词预判: skill (询问技能列表命中: {keyword})")
+                return "skill"
+
+        # 0b. 强chat关键词检测（最高优先级，不受其他关键词影响）
         # "你好"、"介绍下自己"等明确闲聊表达，即使包含"介绍"等knowledge关键词也优先判定为chat
         for keyword in IntentClassifier.STRONG_CHAT_KEYWORDS:
             if keyword.lower() in question_lower:
@@ -394,11 +416,13 @@ class IntentClassifier:
         question: str,
         db: Optional[AsyncSession] = None,
         tool_config_ids: Optional[List[int]] = None,
+        history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """
         意图分类
 
         分类优先级（从高到低）：
+        0. 上下文感知：检测到Skill交互上下文时，保持skill意图（多轮对话支持）
         1. 关键词快速预判：强关键词命中即返回
         2. 工具相似度匹配：用户问题与已配置MCP/Skill工具的名称、描述进行相似度匹配
         3. LLM深度分类：对复杂问题进行语义理解（参考工具名称和描述）
@@ -406,8 +430,43 @@ class IntentClassifier:
         :param question: 用户问题
         :param db: 数据库会话（用于获取工具描述，可选）
         :param tool_config_ids: 工具配置ID列表（可选，限定工具范围）
+        :param history: 对话历史（用于上下文感知，检测Skill多轮交互）
         :return: 意图类型（knowledge/data/mcp/skill/hybrid/chat）
         """
+        # 0. 上下文感知：检测Skill交互上下文，保持skill意图
+        # 当上一轮assistant回复表明正在进行Skill交互（如"请提供以上信息"），
+        # 且当前问题不包含强MCP/chat关键词时，直接保持skill意图，避免多轮对话被误判
+        if history and len(history) > 0:
+            logger.debug(f"上下文感知: history长度={len(history)}, 消息角色={[m.get('role') for m in history]}")
+            last_assistant_msg = None
+            for msg in reversed(history):
+                if msg.get("role") == "assistant":
+                    last_assistant_msg = msg.get("content", "")
+                    break
+
+            if last_assistant_msg:
+                logger.debug(f"上下文感知: 最后assistant消息前80字符={last_assistant_msg[:80]}")
+                # Skill交互特征词：表明上一轮是Skill执行并等待用户补充信息
+                skill_context_markers = [
+                    '请提供以上信息', '请提供以下信息',
+                    '请补充以下', '请补充相关',
+                    'Skill执行', '技能执行',
+                    '请提供产品', '请输入',
+                    '请提供：', '请提供:',
+                ]
+                is_skill_context = any(marker in last_assistant_msg for marker in skill_context_markers)
+
+                if is_skill_context:
+                    # 当检测到Skill交互上下文时，只检查强chat关键词
+                    # （用户说"你好"、"再见"等可能想结束Skill交互）
+                    # 不检查强MCP关键词，避免工业术语（如"预警"、"定位"等）误判导致中断Skill交互
+                    question_lower = question.lower()
+                    has_strong_chat = any(kw.lower() in question_lower for kw in IntentClassifier.STRONG_CHAT_KEYWORDS)
+
+                    if not has_strong_chat:
+                        logger.info(f"意图分类完成(Skill上下文保持): 问题={question[:30]}..., 意图=skill")
+                        return "skill"
+
         # 1. 关键词预判断（快速路径）
         quick_result = IntentClassifier._quick_classify(question)
         if quick_result:
@@ -561,6 +620,7 @@ class RouterService:
         question: str,
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
+        llm_config: Optional[Dict[str, any]] = None,
     ) -> Dict:
         """
         执行Skill工具调用
@@ -573,6 +633,7 @@ class RouterService:
         :param question: 用户问题
         :param system_prompt: 系统提示词
         :param history: 对话历史（多轮对话上下文）
+        :param llm_config: 应用级LLM配置（base_url, api_key, model 等）
         :return: 工具调用结果，包含 answer, tool_calls, tool_results 等
         """
         result = {
@@ -623,12 +684,23 @@ class RouterService:
         # 询问类表达：用户想了解有哪些技能，而非执行某个技能
         INQUIRE_SKILL_PATTERNS = [
             '你有什么技能', '有哪些技能', '技能列表', '技能有哪些',
-            '你都会什么', '你能做什么', '有什么技能', '什么技能',
+            '你都会什么', '你都有什么', '你能做什么', '你会什么', '你会啥',
+            '有什么技能', '什么技能', '哪些技能',
             '列出技能', '显示技能', '查看技能', '技能介绍',
+            '你的技能', '支持什么技能',
             '你有什么skill', '有什么skill', 'skill列表',
         ]
         question_lower = question.strip().lower()
+        # 1. 模式直接匹配
         is_inquire = any(p in question_lower for p in INQUIRE_SKILL_PATTERNS)
+        # 2. 反向兜底检测：问题包含"技能/skill"且包含疑问词（什么/哪些/介绍/列表等），词序不限
+        if not is_inquire:
+            has_skill_kw = any(kw in question_lower for kw in ['技能', 'skill'])
+            has_question_kw = any(kw in question_lower for kw in
+                                  ['什么', '哪些', '介绍', '列表', '查看', '列出', '显示', '支持'])
+            if has_skill_kw and has_question_kw:
+                is_inquire = True
+                logger.info(f"询问技能兜底判定：问题包含技能+疑问词 -> 视为技能列表询问")
 
         if is_inquire:
             # 用户在询问技能列表，返回展示信息而非执行
@@ -662,15 +734,193 @@ class RouterService:
         # ---------- 用户要求执行技能，调用 Skill 执行引擎 ----------
         from app.services.skill_executor_service import skill_executor_service
 
-        # 记录工具调用信息
-        for skill in skills:
-            result["tool_calls"].append({
-                "tool_name": skill.name,
-                "arguments": {"question": question}
+        # ========== 0. Skill多轮交互上下文保持 ==========
+        # 当上一轮assistant回复包含"请提供以下信息"等Skill交互特征词时，
+        # 说明正在进行的Skill多轮交互，应保持上一轮的Skill，不重新智能匹配
+        # 否则用户提供的输入数据（可能包含其他Skill的关键词如"高炉"、"诊断"）会导致错误匹配
+        if history and len(history) > 0:
+            last_assistant_msg = None
+            for msg in reversed(history):
+                if msg.get("role") == "assistant":
+                    last_assistant_msg = msg.get("content", "")
+                    break
+
+            if last_assistant_msg:
+                skill_context_markers = [
+                    '请提供以上信息', '请提供以下信息',
+                    '请补充以下', '请补充相关',
+                    '请提供产品', '请输入',
+                    '请提供：', '请提供:',
+                ]
+                is_skill_context = any(marker in last_assistant_msg for marker in skill_context_markers)
+
+                if is_skill_context:
+                    # 从上一轮assistant消息内容中匹配Skill名称
+                    # 回答1通常包含Skill相关的关键词（如"产品营销文案"）
+                    last_msg_lower = last_assistant_msg.lower()
+                    for skill in skills:
+                        s_name = (skill.name or "").lower()
+                        # Skill名称或核心关键词出现在上一轮回复中
+                        if s_name and len(s_name) >= 2 and s_name in last_msg_lower:
+                            logger.info(f"Skill上下文保持: 上一轮回复包含Skill名称 '{skill.name}'，直接使用")
+                            result["tool_calls"].append({
+                                "tool_name": skill.name,
+                                "arguments": {"question": question}
+                            })
+                            try:
+                                skill_zip_path = resolve_skill_path(skill.skill_file_path)
+                                logger.info(f"开始执行Skill [{skill.name}]（上下文保持），文件: {skill_zip_path}")
+                                exec_result = await skill_executor_service.execute_skill(
+                                    zip_path=skill_zip_path,
+                                    skill_name=skill.name,
+                                    skill_description=skill.description or "",
+                                    question=question,
+                                    history=history,
+                                    llm_config=llm_config,
+                                )
+                                result["answer"] = exec_result.get("answer", "Skill执行未返回结果")
+                                result["success"] = exec_result.get("success", False)
+                                result["tool_results"].append({
+                                    "tool_name": skill.name,
+                                    "success": exec_result.get("success", False),
+                                    "result": exec_result.get("answer", ""),
+                                    "skill_files": exec_result.get("skill_files", []),
+                                })
+                                logger.info(f"Skill [{skill.name}] 执行完成（上下文保持）: success={result['success']}")
+                            except Exception as e:
+                                logger.error(f"Skill调用分析异常(上下文保持): {type(e).__name__}: {e}", exc_info=True)
+                                result["answer"] = f"抱歉，Skill工具调用过程中出现错误：{type(e).__name__}: {str(e)}"
+                                result["success"] = False
+                            return result
+
+                    # 如果名称未直接匹配，尝试用名称关键词匹配上一轮回复
+                    for skill in skills:
+                        name_keywords = IntentClassifier._extract_keywords(skill.name or "")
+                        if name_keywords:
+                            matched_in_last = [kw for kw in name_keywords if kw.lower() in last_msg_lower]
+                            if len(matched_in_last) / max(len(name_keywords), 1) >= 0.5:
+                                logger.info(f"Skill上下文保持: 上一轮回复匹配Skill '{skill.name}' 关键词 {matched_in_last}，直接使用")
+                                result["tool_calls"].append({
+                                    "tool_name": skill.name,
+                                    "arguments": {"question": question}
+                                })
+                                try:
+                                    skill_zip_path = resolve_skill_path(skill.skill_file_path)
+                                    exec_result = await skill_executor_service.execute_skill(
+                                        zip_path=skill_zip_path,
+                                        skill_name=skill.name,
+                                        skill_description=skill.description or "",
+                                        question=question,
+                                        history=history,
+                                        llm_config=llm_config,
+                                    )
+                                    result["answer"] = exec_result.get("answer", "Skill执行未返回结果")
+                                    result["success"] = exec_result.get("success", False)
+                                    result["tool_results"].append({
+                                        "tool_name": skill.name,
+                                        "success": exec_result.get("success", False),
+                                        "result": exec_result.get("answer", ""),
+                                        "skill_files": exec_result.get("skill_files", []),
+                                    })
+                                    logger.info(f"Skill [{skill.name}] 执行完成（关键词上下文保持）: success={result['success']}")
+                                except Exception as e:
+                                    logger.error(f"Skill调用分析异常(关键词上下文保持): {type(e).__name__}: {e}", exc_info=True)
+                                    result["answer"] = f"抱歉，Skill工具调用过程中出现错误：{type(e).__name__}: {str(e)}"
+                                    result["success"] = False
+                                return result
+
+                    logger.warning("检测到Skill交互上下文但无法匹配到具体Skill，回退到智能匹配")
+
+        # ========== 根据用户问题智能匹配最合适的 Skill ==========
+        # 优先级：1. 名称完全包含 > 2. 名称关键词匹配 > 3. 描述关键词匹配
+        question_lower = question.lower()
+
+        # 记录每个Skill的匹配分数和信息，用于排序选择
+        skill_scores: List[Dict[str, any]] = []
+        for idx, skill in enumerate(skills):
+            s_name = (skill.name or "").lower()
+            s_desc = (skill.description or "").lower()
+            s_file = (skill.skill_file_name or "").lower()
+            score = 0.0
+            matched_reasons = []
+            name_keywords: List[str] = []
+            desc_keywords: List[str] = []
+
+            # 1. 用户问题完整包含Skill名称（最高优先级）
+            if s_name and len(s_name) >= 2 and s_name in question_lower:
+                score += 100
+                matched_reasons.append(f"名称完全匹配: {skill.name}")
+
+            # 2. Skill文件名（去掉时间戳后的skill名）包含在问题中
+            if s_file:
+                file_match = re.search(r'skill_\d+_(.+?)\.zip', s_file)
+                if file_match:
+                    core_name = file_match.group(1).replace('-', '').replace('_', '')
+                    if core_name and core_name in question_lower.replace(' ', ''):
+                        score += 80
+                        matched_reasons.append(f"文件名核心匹配: {core_name}")
+
+            # 3. 名称关键词匹配（≥80%命中率）
+            if s_name:
+                name_keywords = IntentClassifier._extract_keywords(skill.name or "")
+                matched_kw = [kw for kw in name_keywords if kw in question_lower]
+                if len(name_keywords) > 0:
+                    ratio = len(matched_kw) / len(name_keywords)
+                    if len(matched_kw) >= 2 and ratio >= 0.8:
+                        score += 60 * ratio
+                        matched_reasons.append(f"名称关键词命中: {matched_kw}")
+                    elif len(matched_kw) >= 1 and ratio >= 0.5:
+                        score += 30 * ratio
+                        matched_reasons.append(f"名称关键词部分命中: {matched_kw}")
+
+            # 4. 描述关键词匹配（≥2个命中或≥30%命中率，中等权重避免误判）
+            if s_desc:
+                desc_keywords = IntentClassifier._extract_keywords(skill.description or "")
+                matched_desc_kw = [kw for kw in desc_keywords if kw in question_lower]
+                if len(desc_keywords) > 0:
+                    ratio = len(matched_desc_kw) / len(desc_keywords)
+                    if len(matched_desc_kw) >= 2 and ratio >= 0.3:
+                        score += 40 * ratio
+                        matched_reasons.append(f"描述关键词命中: {matched_desc_kw}")
+
+            # 5. 单个强关键词命中（小幅度加分，作为兜底）
+            strong_terms = set(name_keywords + desc_keywords)
+            for term in strong_terms:
+                if len(term) >= 2 and term in question_lower:
+                    score += 5
+                    found_in_reasons = False
+                    for r in matched_reasons:
+                        if term in r:
+                            found_in_reasons = True
+                            break
+                    if not found_in_reasons:
+                        matched_reasons.append(f"强关键词: {term}")
+
+            # 排序打破平局：按原列表顺序（保持稳定性）
+            tiebreak = -idx * 0.001
+            skill_scores.append({
+                "skill": skill,
+                "score": score + tiebreak,
+                "reasons": matched_reasons,
             })
 
+        # 按匹配分数降序排序，选择最高分的 Skill
+        skill_scores.sort(key=lambda x: x["score"], reverse=True)
+        best = skill_scores[0]
+        skill = best["skill"]
+
+        if best["reasons"]:
+            logger.info(f"Skill智能匹配: 选择 '{skill.name}' (得分={best['score']:.2f})，原因: {'; '.join(best['reasons'])}")
+        else:
+            logger.warning(f"Skill匹配无明显特征，默认选择: '{skill.name}' (得分={best['score']:.2f})")
+
+        # 记录工具调用信息（只记录最终选中的Skill，避免混淆）
+        result["tool_calls"].append({
+            "tool_name": skill.name,
+            "arguments": {"question": question}
+        })
+
         try:
-            skill = skills[0]  # 取第一个匹配的 Skill 执行
             skill_zip_path = resolve_skill_path(skill.skill_file_path)
             logger.info(f"开始执行Skill [{skill.name}]，文件: {skill_zip_path}")
 
@@ -680,6 +930,7 @@ class RouterService:
                 skill_description=skill.description or "",
                 question=question,
                 history=history,
+                llm_config=llm_config,
             )
 
             result["answer"] = exec_result.get("answer", "Skill执行未返回结果")
@@ -695,8 +946,8 @@ class RouterService:
 
             logger.info(f"Skill [{skill.name}] 执行完成: success={result['success']}")
         except Exception as e:
-            logger.error(f"Skill调用分析异常: {e}", exc_info=True)
-            result["answer"] = f"抱歉，Skill工具调用过程中出现错误：{str(e)}"
+            logger.error(f"Skill调用分析异常: {type(e).__name__}: {e}", exc_info=True)
+            result["answer"] = f"抱歉，Skill工具调用过程中出现错误：{type(e).__name__}: {str(e)}"
             result["success"] = False
 
         return result
@@ -710,6 +961,7 @@ class RouterService:
         tool_config_ids: Optional[List[int]] = None,
         history: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
+        llm_config: Optional[Dict[str, any]] = None,
     ) -> Tuple[str, List[dict], List[dict], float, Optional[List[dict]], Optional[List[dict]], Optional[str]]:
         """
         路由分发
@@ -723,6 +975,7 @@ class RouterService:
         :param tool_config_ids: 工具配置ID列表（可选，MCP/Skill工具调用时使用）
         :param history: 对话历史（多轮对话上下文，格式 [{"role": "user/assistant", "content": "..."}]）
         :param system_prompt: 应用系统提示词（约束LLM行为，闲聊时使用）
+        :param llm_config: 应用级LLM配置（base_url, api_key, model 等），Skill执行时使用
         :return: (回答内容, 知识引用, SQL溯源, 查询耗时, 数据结果, 字段元信息, 推荐图表类型)
 
         路由逻辑：
@@ -739,8 +992,8 @@ class RouterService:
         start_time = time.time()
         logger.info(f"开始路由分发: 问题={question[:50]}...")
 
-        # 1. 意图分类（传入db和tool_config_ids以便获取工具描述）
-        intent = await IntentClassifier.classify(question, db, tool_config_ids)
+        # 1. 意图分类（传入db和tool_config_ids以便获取工具描述，传入history用于上下文感知）
+        intent = await IntentClassifier.classify(question, db, tool_config_ids, history=history)
         logger.info(f"意图分类结果: {intent}")
 
         # 初始化返回变量
@@ -757,7 +1010,7 @@ class RouterService:
                 logger.info("路由到闲聊对话通道")
                 # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
                 chat_system_prompt = system_prompt or "你是一个智能助手。请用友好、专业的语气回答用户的问题。如果用户是在问候或自我介绍，请简要介绍你的能力范围。"
-                answer = await llm_service.chat(question, system_prompt=chat_system_prompt, history=history)
+                answer = await llm_service.chat(question, system_prompt=chat_system_prompt, history=history, config=llm_config)
                 logger.info(f"闲聊对话完成: 回答长度={len(answer)}")
 
             elif intent == "knowledge":
@@ -820,6 +1073,7 @@ class RouterService:
                     tool_config_ids=tool_config_ids or [],
                     question=question,
                     history=history,
+                    llm_config=llm_config,
                 )
                 answer = skill_result.get("answer", "Skill工具调用失败")
                 logger.info(f"Skill工具调用完成: 成功={skill_result.get('success')}")
