@@ -346,7 +346,7 @@
 
         <div class="embed-code-section">
           <div class="code-header">
-            <span>{{ embedMode === 'fullscreen' ? '复制以下代码进行嵌入' : '复制以下代码进行嵌入' }}</span>
+            <span>{{ embedMode === 'fullscreen' ? '复制以下代码进行集成' : '复制以下代码进行集成' }}</span>
             <el-button type="text" @click="copyEmbedCode" class="copy-code-btn">
               <el-icon><CopyDocument /></el-icon>
               复制代码
@@ -563,16 +563,28 @@ const currentEmbedCode = computed(() => {
   const origin = window.location.origin
 
   if (embedMode.value === 'fullscreen') {
-    // 网页嵌入模式：使用业务系统的 app-iframe 组件嵌入（单行格式）
-    const baseUrl = `${origin}/chat/${currentApp.value.accessHash}`
-    return '<route lang="json5">{ meta: { label: \'智能助手\', isSkip403Check: true } }</'
-      + 'route><'
-      + 'script lang="ts" setup>const iframeSrc = `' + baseUrl + '`;</'
-      + 'script><'
-      + 'template> <app-iframe class="app-iframe" :src="iframeSrc" allow="microphone" /> </'
-      + 'template><'
-      + 'style lang="scss"></'
-      + 'style>'
+    // 网页嵌入模式：使用业务系统的 app-iframe 组件嵌入（单行格式，用户复制后可自行格式化）
+    // 使用 \x3C（< 的十六进制转义）拼接所有 HTML 标签，
+    // 避免 Vue SFC 编译器把字符串字面量中的 <route>/<script>/<template>/<style> 误认为真实标签
+    const lt = '\x3C'        // < 字符
+    const ltSlash = '\x3C/'  // </ 字符
+    const ltComment = '\x3C!--'  // <!-- 字符
+    const gtComment = '--\x3E'   // --> 字符
+    const assistantBaseUrl = origin
+    const accessHash = currentApp.value.accessHash
+    // 单行格式拼接（用户复制后可通过 IDE 格式化功能还原为多行）
+    return lt + 'route lang="json5">{meta: {label: \'智能助手\', isSkip403Check: true,}}' + ltSlash + 'route>'
+      + lt + 'script lang="ts" setup>'
+      + `const assistantBaseUrl = '${assistantBaseUrl}';`
+      + `const accessHash = '${accessHash}';`
+      + 'const iframeSrc = `${assistantBaseUrl}/chat/${accessHash}`;'
+      + ltSlash + 'script>'
+      + lt + 'template>'
+      + '  ' + ltComment + '  ' + lt + 'app-page>' + gtComment
+      + '  ' + lt + 'app-iframe :src="iframeSrc" allow="microphone" />'
+      + '  ' + ltComment + '  ' + ltSlash + 'app-page>' + gtComment
+      + ltSlash + 'template>'
+      + lt + 'style lang="scss" scoped>::v-deep(.app-page-content) {padding: 0 !important;}' + ltSlash + 'style>'
   } else {
     // 浮窗模式：script嵌入
     const token = currentApp.value.accessHash
