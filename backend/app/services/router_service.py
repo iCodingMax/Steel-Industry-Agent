@@ -746,6 +746,8 @@ class RouterService:
                     break
 
             if last_assistant_msg:
+                # Skill交互特征词检测：放宽匹配规则，支持"请您尽可能完整地补充以下"等非连续表达
+                # 1) 精确短语匹配（原逻辑保留，命中即判定）
                 skill_context_markers = [
                     '请提供以上信息', '请提供以下信息',
                     '请补充以下', '请补充相关',
@@ -753,6 +755,17 @@ class RouterService:
                     '请提供：', '请提供:',
                 ]
                 is_skill_context = any(marker in last_assistant_msg for marker in skill_context_markers)
+
+                # 2) 组合特征检测：同时包含"以下/维度/上述" + 动作词（提供/补充/填写/输入/完善）
+                #    覆盖"请您尽可能完整地补充以下七个维度的信息"这类非连续表达
+                if not is_skill_context:
+                    has_following_kw = any(kw in last_assistant_msg for kw in
+                                          ['以下', '维度', '上述', '如下'])
+                    has_action_kw = any(kw in last_assistant_msg for kw in
+                                        ['提供', '补充', '填写', '输入', '完善'])
+                    if has_following_kw and has_action_kw:
+                        is_skill_context = True
+                        logger.info("Skill上下文保持: 组合特征命中（以下/维度/上述 + 动作词）")
 
                 if is_skill_context:
                     # 从上一轮assistant消息内容中匹配Skill名称

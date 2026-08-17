@@ -115,7 +115,18 @@ class LLMService:
                 # 先读取响应体，再解析JSON，最后检查状态码
                 # 这样可以在raise_for_status()之前检测到FastAPI错误响应({"detail":"..."})
                 raw_data = await response.aread()
-                data = json.loads(raw_data)
+                try:
+                    data = json.loads(raw_data)
+                except (json.JSONDecodeError, ValueError) as decode_err:
+                    raw_preview = raw_data[:500].decode('utf-8', errors='replace') if isinstance(raw_data, (bytes, bytearray)) else str(raw_data)[:500]
+                    logger.error(
+                        f"LLM响应JSON解析失败: status_code={response.status_code}, "
+                        f"content_type={response.headers.get('content-type')}, raw前500={raw_preview}"
+                    )
+                    raise Exception(
+                        f"大模型响应格式错误（非JSON）: HTTP {response.status_code}, "
+                        f"响应内容前500字符: {raw_preview}"
+                    ) from decode_err
 
             # 3. 解析返回结果
             # 3a. 检查是否为FastAPI错误响应（如 {"detail": "Model not found"}）
@@ -144,7 +155,17 @@ class LLMService:
             content = data["choices"][0]["message"].get("content", "")
             if content is None:
                 content = ""
-            logger.info(f"LLM调用完成: 模型={model}, 输入长度={len(prompt)}, 输出长度={len(content)}")
+
+            # 检测 finish_reason，判断是否因 max_tokens 截断
+            finish_reason = data["choices"][0].get("finish_reason", "")
+            if finish_reason == "length":
+                logger.warning(
+                    f"LLM响应因max_tokens限制被截断! 模型={model}, "
+                    f"max_tokens={max_tokens}, 输出长度={len(content)}"
+                )
+                content += "\n\n⚠️ **输出已截断**：本次回复因达到最大输出长度限制而不完整，请减少输入内容或增加max_tokens后重试。"
+
+            logger.info(f"LLM调用完成: 模型={model}, 输入长度={len(prompt)}, 输出长度={len(content)}, finish_reason={finish_reason}")
             return content
 
         except httpx.HTTPStatusError as e:
@@ -159,7 +180,14 @@ class LLMService:
             raise Exception(f"大模型调用超时(300s): 请检查模型服务状态或网络连接")
         except KeyError as e:
             import traceback
-            raw_data_preview = raw_data[:500] if 'raw_data' in dir() and raw_data else 'N/A'
+            # 安全地获取 raw_data 预览（防止局部变量在某些异步分支中不可达）
+            raw_data_preview = 'N/A'
+            try:
+                if 'raw_data' in locals() and raw_data is not None:
+                    preview_bytes = raw_data[:500] if isinstance(raw_data, (bytes, bytearray)) else str(raw_data)[:500]
+                    raw_data_preview = preview_bytes.decode('utf-8', errors='replace') if isinstance(preview_bytes, (bytes, bytearray)) else str(preview_bytes)
+            except Exception:
+                pass
             logger.error(f"LLM返回格式异常(KeyError): 缺少键={e}, raw_data={raw_data_preview}\n{traceback.format_exc()}")
             raise Exception(f"大模型返回格式异常: 缺少键 {str(e)}, 响应内容: {raw_data_preview}")
         except Exception as e:

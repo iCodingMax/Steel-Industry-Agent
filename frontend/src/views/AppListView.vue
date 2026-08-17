@@ -623,7 +623,7 @@ const allDebugMessages = ref<Record<number, DebugMessage[]>>({})
 
 // 按应用ID存储后端返回的真实sessionId，确保多轮对话使用同一会话
 // 没有这个映射，每次发消息都创建新会话，后端无法获取历史记录，上下文感知失效
-const debugSessionIds = ref<Record<number, number>>({})
+const debugSessionIds = ref<Record<number, string>>({})
 
 // 切换应用时自动加载该应用的调试消息，确保不同应用的调试预览历史相互独立
 watch(() => currentApp.value?.id, (newId, oldId) => {
@@ -1343,7 +1343,8 @@ async function handleDebugSend(content?: string) {
     const requestBody: any = {
       // 优先使用已保存的真实sessionId，确保多轮对话在同一会话中
       // 后端通过sessionId加载历史记录，实现上下文感知（如Skill多轮交互保持）
-      sessionId: debugSessionIds.value[currentApp.value.id] || `debug-${currentApp.value.id}-${Date.now()}`,
+      // 强制转为字符串，兼容后端EmbedChatRequest.sessionId:str 的校验要求
+      sessionId: String(debugSessionIds.value[currentApp.value.id] || `debug-${currentApp.value.id}-${Date.now()}`),
       question: userMsg.content,
       applicationId: currentApp.value.id,
     }
@@ -1370,6 +1371,7 @@ async function handleDebugSend(content?: string) {
 
     if (!response.ok) {
       const errorText = await response.text()
+      console.error('调试对话HTTP错误:', response.status, errorText)
       throw new Error(`请求失败: ${response.status} - ${errorText}`)
     }
 
@@ -1400,8 +1402,10 @@ async function handleDebugSend(content?: string) {
           if (data.type === 'start') {
             // 保存后端返回的真实sessionId，后续消息复用此sessionId
             // 这样后端才能加载历史记录，实现上下文感知（如Skill多轮交互保持）
+            // 注意：后端返回的sessionId是数据库整数主键，需转为字符串存储，
+            // 否则下次发送时后端EmbedChatRequest.sessionId(str)会校验失败(422)
             if (data.sessionId && currentApp.value?.id) {
-              debugSessionIds.value[currentApp.value.id] = data.sessionId
+              debugSessionIds.value[currentApp.value.id] = String(data.sessionId)
             }
           } else if (data.type === 'intent') {
             // 意图识别结果
@@ -1450,13 +1454,16 @@ async function handleDebugSend(content?: string) {
             aiMsg.isStreaming = false
           }
         } catch (e) {
-          console.warn('解析SSE消息失败:', e)
+          console.warn('解析SSE消息失败:', e, '原始行:', trimmedLine)
         }
       }
     }
   } catch (error: any) {
     console.error('调试对话失败:', error)
-    aiMsg.content = aiMsg.content || '抱歉，消息发送失败，请稍后重试。'
+    // 仅在SSE未返回任何内容时才显示兜底错误（避免覆盖后端type:error事件中的具体错误）
+    if (!aiMsg.content || !aiMsg.content.trim()) {
+      aiMsg.content = `抱歉，消息发送失败：${error.message || error}。请稍后重试。`
+    }
     aiMsg.isStreaming = false
   } finally {
     debugSending.value = false
@@ -2125,7 +2132,10 @@ onMounted(() => {
       }
 
       :deep(.el-card__header) {
-        padding: 10px 16px;
+        padding: 0 16px;
+        height: 44px;
+        display: flex;
+        align-items: center;
         border-bottom: 1px solid #e2e8f0;
       }
 
@@ -2309,6 +2319,14 @@ onMounted(() => {
       min-height: 0;
       border: 1px solid #e2e8f0 !important;
 
+      :deep(.el-card__header) {
+        padding: 0 16px;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid #e2e8f0;
+      }
+
       :deep(.el-card__body) {
         padding: 0 !important;
         flex: 1;
@@ -2323,9 +2341,7 @@ onMounted(() => {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 10px 16px;
-      background-color: #ffffff;
-      border-bottom: 1px solid #e2e8f0;
+      width: 100%;
 
       .card-title {
         font-size: 14px;
@@ -2334,13 +2350,15 @@ onMounted(() => {
       }
 
       .refresh-btn {
-        border-radius: 8px;
-        padding: 6px 14px;
+        border-radius: 6px;
+        padding: 0 8px;
+        height: 28px;
         display: flex;
         align-items: center;
-        gap: 4px;
+        gap: 3px;
         border: 1px solid #e2e8f0;
         color: #475569;
+        font-size: 12px;
         transition: all 0.2s;
 
         &:hover {

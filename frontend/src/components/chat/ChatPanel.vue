@@ -36,8 +36,16 @@
       />
     </div>
 
-    <!-- 输入框 -->
-    <div class="chat-input-area">
+    <!-- 输入框区域（支持上边框拖拽调整高度） -->
+    <div class="chat-input-area" :style="{ height: inputAreaHeight + 'px' }" ref="inputAreaRef">
+      <!-- 拖拽把手：位于输入框上边缘，鼠标按住向上拖拽增加输入框高度 -->
+      <div
+        class="input-resize-handle"
+        @mousedown="startResize"
+        title="拖拽调整输入框高度"
+      >
+        <span class="resize-indicator"></span>
+      </div>
       <div class="input-wrapper">
         <el-input
           v-model="localInputText"
@@ -110,7 +118,87 @@ const localInputText = computed({
 })
 
 const messagesRef = ref<HTMLElement>()
+const inputAreaRef = ref<HTMLElement>()
 const inputRows = computed(() => props.size === 'sm' ? 1 : 2)
+
+// ===================== 输入框拖拽调整高度 =====================
+// 输入框区域高度（px），用户可通过拖拽上边缘把手调整
+// 默认值根据 size 不同有所差异：sm=60, md/md=80
+const defaultInputHeight = computed(() => props.size === 'sm' ? 60 : 80)
+const inputAreaHeight = ref(defaultInputHeight.value)
+
+// 拖拽限制（px）
+const MIN_INPUT_HEIGHT = 44    // 最小高度（单行输入）
+const MAX_INPUT_HEIGHT = 320   // 最大高度（约15行）
+
+// 当 size 切换时（如从对话页切到调试预览），重置为该 size 的默认高度
+watch(defaultInputHeight, (newH) => {
+  inputAreaHeight.value = newH
+})
+
+// 拖拽状态
+let isResizing = false
+let resizeStartY = 0
+let resizeStartHeight = 0
+
+// 开始拖拽
+function startResize(e: MouseEvent) {
+  // 避免右键或中键触发
+  if (e.button !== 0) return
+  e.preventDefault()
+  e.stopPropagation()
+
+  isResizing = true
+  resizeStartY = e.clientY
+  resizeStartHeight = inputAreaRef.value?.offsetHeight || inputAreaHeight.value
+
+  // 拖拽期间禁用文本选择，避免选中输入框内容
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'ns-resize'
+
+  // 绑定全局事件（拖拽过程中鼠标可能移出把手元素）
+  document.addEventListener('mousemove', onResizeMove)
+  document.addEventListener('mouseup', stopResize)
+}
+
+// 拖拽移动：鼠标向上移动 → 输入框高度增加
+function onResizeMove(e: MouseEvent) {
+  if (!isResizing) return
+  // 鼠标向上移动时 deltaY 为负值，高度 = 起始高度 - deltaY
+  const deltaY = e.clientY - resizeStartY
+  let newHeight = resizeStartHeight - deltaY
+
+  // 边界约束
+  if (newHeight < MIN_INPUT_HEIGHT) newHeight = MIN_INPUT_HEIGHT
+  if (newHeight > MAX_INPUT_HEIGHT) newHeight = MAX_INPUT_HEIGHT
+
+  inputAreaHeight.value = newHeight
+}
+
+// 结束拖拽
+function stopResize() {
+  if (!isResizing) return
+  isResizing = false
+
+  // 恢复样式
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+
+  // 解绑全局事件
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', stopResize)
+}
+
+// 组件卸载时清理拖拽事件监听
+onUnmounted(() => {
+  if (isResizing) {
+    document.removeEventListener('mousemove', onResizeMove)
+    document.removeEventListener('mouseup', stopResize)
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+  }
+})
+// =================================================================
 
 // 滚动控制状态
 const isNearBottom = ref(true)  // 用户是否接近底部（50px 以内）
@@ -360,23 +448,84 @@ defineExpose({
   border-top: 1px solid #e2e8f0;
   flex-shrink: 0;
   padding-right: 4px;
+  /* 高度由 JS 控制（inputAreaHeight），这里设置 display:flex 让内部 wrapper 填充 */
+  display: flex;
+  flex-direction: column;
+  /* height 设置包含 padding，避免尺寸计算混乱 */
+  box-sizing: border-box;
+  /* 过渡动画让非拖拽状态下的高度变化更平滑（拖拽时由于频繁更新，过渡会被自然跳过） */
+  transition: height 0.1s ease-out;
+  position: relative;
+
+  /* 拖拽把手：位于输入框区域顶部，呈现为一条可悬停的细条 */
+  .input-resize-handle {
+    height: 6px;
+    flex-shrink: 0;
+    cursor: ns-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    transition: background 0.15s;
+    user-select: none;
+
+    /* 中间的视觉指示条（默认浅色，悬停时高亮） */
+    .resize-indicator {
+      width: 36px;
+      height: 3px;
+      background: #cbd5e1;
+      border-radius: 2px;
+      transition: background 0.15s, width 0.15s;
+    }
+
+    &:hover {
+      background: #f1f5f9;
+
+      .resize-indicator {
+        background: #3b82f6;
+        width: 48px;
+      }
+    }
+
+    /* 拖拽激活状态（由 JS 在 body 上设置 cursor，这里仅做视觉提示） */
+    &:active {
+      .resize-indicator {
+        background: #2563eb;
+      }
+    }
+  }
 
   .input-wrapper {
     display: flex;
     align-items: flex-end;
     gap: 8px;
+    /* 让 wrapper 填充除把手外的剩余空间 */
+    flex: 1;
+    min-height: 0;
+    padding: 0 0 0 4px;
   }
 
   .chat-input {
     flex: 1;
     min-width: 0;
+    /* 让 el-input 撑满 wrapper 高度 */
+    height: 100%;
+
+    :deep(.el-textarea) {
+      height: 100%;
+    }
 
     :deep(.el-textarea__inner) {
       border-radius: 8px;
       padding: 6px 12px;
       font-size: 14px;
       border: 1px solid #e2e8f0;
-      transition: all 0.2s;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      /* 让 textarea 内部撑满高度 */
+      height: 100% !important;
+      min-height: 36px;
+      resize: none;
+      box-sizing: border-box;
 
       &:focus {
         border-color: #3b82f6;

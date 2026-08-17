@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import json
 import asyncio
 import time
@@ -523,11 +523,11 @@ async def stream_chat(
                     total_steps = 4
                     yield emit_thinking(1, total_steps, '意图分析', '识别用户需要调用MCP工具的意图...')
 
-                    yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(mcp_tool_ids)} 个MCP工具配置...')
+                    yield emit_thinking(2, total_steps, '加载MCP服务', f'加载 {len(mcp_tool_ids)} 个MCP Server配置...')
 
                     # 加载工具列表
                     mcp_tools = await mcp_client_service.load_mcp_tools(db, mcp_tool_ids)
-                    yield emit_thinking(3, total_steps, '工具调用', f'调用 {len(mcp_tools)} 个可用MCP工具处理用户问题...')
+                    yield emit_thinking(3, total_steps, '工具调用', f'加载 {len(mcp_tools)} 个MCP工具供智能选择调用...')
 
                     # 执行工具调用
                     tool_result = await mcp_client_service.execute_tool_calls(
@@ -912,18 +912,19 @@ async def stream_chat(
                     await db.rollback()
             except Exception:
                 pass
-            
-            # 发送错误事件
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-            
-            # 发送done事件以确保前端正确结束
+
+            # 异常日志
+            logger.error(f"[stream_chat] 流式处理异常: {type(e).__name__}: {e}", exc_info=True)
+
+            # 发送错误事件，但不再 raise——避免流式连接断开导致前端 catch 块覆盖 error 消息
             try:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {str(e)}'})}\n\n"
+
+                # 发送done事件以确保前端正确结束
                 elapsed_time = time.time() - stream_start_time
                 yield f"data: {json.dumps({'type': 'done', 'elapsed_time': elapsed_time})}\n\n"
-            except Exception:
-                pass
-            
-            raise
+            except Exception as yield_err:
+                logger.warning(f"[stream_chat] 发送error事件时二次异常: {yield_err}")
         finally:
             if data_producer and not data_producer.done():
                 data_producer.cancel()
@@ -949,6 +950,8 @@ async def stream_chat(
 
 class EmbedChatRequest(BaseModel):
     """嵌入对话请求"""
+    # 兼容前端传入整数类型的sessionId（数据库自增ID），使用validator强制转为字符串
+    # 避免因类型不匹配导致422校验错误
     sessionId: str = Field(..., description="会话ID")
     question: str = Field(..., description="用户问题", min_length=1)
     knowledgeBaseId: Optional[int] = Field(None, description="知识库ID")
@@ -957,6 +960,14 @@ class EmbedChatRequest(BaseModel):
     llmConfigId: Optional[int] = Field(None, description="LLM配置ID")
     chatUserId: Optional[int] = Field(None, description="对话用户ID，用于数据隔离")
     chatUsername: Optional[str] = Field(None, description="对话用户名，用于数据隔离")
+
+    @field_validator("sessionId")
+    @classmethod
+    def coerce_session_id_to_str(cls, v):
+        """强制将sessionId转为字符串，兼容前端传入整数的情况"""
+        if v is None:
+            raise ValueError("sessionId不能为空")
+        return str(v)
 
 
 @router.post("/embed/chat", summary="嵌入模式对话")
@@ -1280,11 +1291,11 @@ async def embed_chat(
                     total_steps = 4
                     yield emit_thinking(1, total_steps, '意图分析', '识别用户需要调用MCP工具的意图...')
 
-                    yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(mcp_tool_ids)} 个MCP工具配置...')
+                    yield emit_thinking(2, total_steps, '加载MCP服务', f'加载 {len(mcp_tool_ids)} 个MCP Server配置...')
 
                     # 加载工具列表
                     mcp_tools = await mcp_client_service.load_mcp_tools(db, mcp_tool_ids)
-                    yield emit_thinking(3, total_steps, '工具调用', f'调用 {len(mcp_tools)} 个可用MCP工具处理用户问题...')
+                    yield emit_thinking(3, total_steps, '工具调用', f'加载 {len(mcp_tools)} 个MCP工具供智能选择调用...')
 
                     # 执行工具调用
                     tool_result = await mcp_client_service.execute_tool_calls(
@@ -1644,8 +1655,15 @@ async def embed_chat(
             yield f"data: {json.dumps({'type': 'done', 'elapsed_time': elapsed_time})}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-            raise
+            # 异常时发送 error 事件，但不再 raise——避免流式连接断开导致前端 catch 块覆盖 error 消息
+            logger.error(f"[embed_chat] 流式处理异常: {type(e).__name__}: {e}", exc_info=True)
+            try:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {str(e)}'})}\n\n"
+                # 发送 done 事件，让前端知道流结束
+                elapsed_time = time.time() - stream_start_time
+                yield f"data: {json.dumps({'type': 'done', 'elapsed_time': elapsed_time})}\n\n"
+            except Exception as yield_err:
+                logger.warning(f"[embed_chat] 发送error事件时二次异常: {yield_err}")
         finally:
             if data_producer and not data_producer.done():
                 data_producer.cancel()

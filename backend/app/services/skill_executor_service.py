@@ -139,7 +139,7 @@ class SkillExecutorService:
         question: str,
         skill_name: str,
         skill_description: str,
-        max_prompt_chars: int = 24000,
+        max_prompt_chars: int = 14000,
     ) -> str:
         """
         构建 Skill 执行 prompt
@@ -155,7 +155,7 @@ class SkillExecutorService:
         :param question: 用户问题
         :param skill_name: Skill名称
         :param skill_description: Skill描述
-        :param max_prompt_chars: prompt最大字符数（默认24000，约36000 token，为max_tokens留出空间）
+        :param max_prompt_chars: prompt最大字符数（默认14000，约21000 token，为max_tokens留出充足空间）
         :return: 完整的 prompt
         """
         parts: List[str] = []
@@ -345,16 +345,34 @@ class SkillExecutorService:
         from app.services.llm_service import llm_service
 
         try:
+            # 获取模型名，用于确定 context_length
+            model_name = ""
+            if llm_config:
+                model_name = llm_config.get('model', '') or ''
+
+            # 根据模型名自动识别 context_length（已知主流模型的上下文长度）
+            # 未识别的模型默认 32768 token
+            model_context_length = 32768
+            if 'qwen3' in model_name.lower():
+                model_context_length = 40960
+            elif 'qwen2.5' in model_name.lower() or 'qwen2' in model_name.lower():
+                model_context_length = 32768
+            elif 'gemma4' in model_name.lower():
+                model_context_length = 32768
+            elif 'gemma' in model_name.lower():
+                model_context_length = 32768
+            elif 'glm' in model_name.lower():
+                model_context_length = 32768
+            elif 'deepseek' in model_name.lower():
+                model_context_length = 128000
+            elif 'gpt' in model_name.lower():
+                model_context_length = 128000
+            logger.info(f"模型context_length识别: model={model_name}, context_length={model_context_length}")
+
             # 估算 prompt token 数（中文约1字符≈1.5 token）
+            # 注意：Skill执行不传history给LLM，因此只估算prompt本身的token
             estimated_prompt_tokens = int(len(prompt) * 1.5)
 
-            # 加上 history 的 token 估算
-            if history:
-                history_chars = sum(len(msg.get("content", "")) for msg in history)
-                estimated_prompt_tokens += int(history_chars * 1.5)
-
-            # qwen3 的 context_length 为 40960 token
-            model_context_length = 40960
             safety_margin = 500  # 安全余量
 
             # 自动调整 max_tokens，确保 prompt_tokens + max_tokens <= context_length
@@ -392,13 +410,39 @@ class SkillExecutorService:
                     f"Prompt较长，自动调整max_tokens: {original_max_tokens} -> {adjusted_max_tokens} "
                     f"(prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens})"
                 )
+            else:
+                # 上下文空间充足，向上调整 max_tokens 到合理值
+                # 确保输出空间至少 8192 token，上限 16384 token
+                target_max = min(available_max_tokens, 16384)
+                if target_max > original_max_tokens:
+                    if llm_config:
+                        llm_config = {**llm_config, 'max_tokens': target_max}
+                    else:
+                        llm_config = {'max_tokens': target_max}
+                    logger.info(
+                        f"上下文充足，向上调整max_tokens: {original_max_tokens} -> {target_max} "
+                        f"(available={available_max_tokens}, prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens})"
+                    )
+                else:
+                    logger.info(
+                        f"max_tokens无需调整: original={original_max_tokens}, available={available_max_tokens} "
+                        f"(prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens})"
+                    )
 
-            logger.info(f"开始执行Skill [{skill_name}]，prompt长度={len(prompt)}, 估算token={estimated_prompt_tokens}")
+            logger.info(
+                f"开始执行Skill [{skill_name}]，prompt长度={len(prompt)}, "
+                f"估算token={estimated_prompt_tokens}, max_tokens="
+                f"{llm_config.get('max_tokens', original_max_tokens) if llm_config else original_max_tokens}"
+            )
 
+            # Skill执行不传history给LLM：
+            # 1. Skill prompt已包含所有必要信息（定义/参考文档/数据/问题）
+            # 2. 对话历史会占用大量上下文，导致max_tokens不足
+            # 3. 多轮交互上下文已在路由层处理（router_service的上下文保持逻辑）
             answer = await llm_service.chat(
                 prompt=prompt,
                 system_prompt=None,
-                history=history,
+                history=None,
                 config=llm_config,
             )
 
