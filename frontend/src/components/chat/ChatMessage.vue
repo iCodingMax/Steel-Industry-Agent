@@ -317,33 +317,89 @@ marked.setOptions({
 
 // KaTeX渲染函数：处理$...$行内公式和$$...$$块级公式
 function renderLatex(content: string): string {
+  // 预处理：修复LLM生成的常见无效LaTeX温度表达式
+  // \text{^\circ C} 在文本模式中使用了上标，KaTeX无法渲染
+  // 修复策略：把 ^\circ 从 \text{} 内部移到外部，转为数学模式的上标
+  content = content.replace(/\\text\{\s*\^\s*\\circ\s*(C|c)\s*\}/g, '^\\circ\\text{$1}');
+  // 兼容 \text{°C} 这种带特殊字符的写法（° 在某些字体下渲染异常）
+  content = content.replace(/\\text\{\s*°\s*(C|c)\s*\}/g, '^\\circ\\text{$1}');
+
   // 先处理块级公式 $$...$$
   content = content.replace(/\$\$([\s\S]*?)\$\$/g, (_match, tex) => {
     try {
       return katex.renderToString(tex.trim(), {
-        throwOnError: false,
+        throwOnError: true,
         displayMode: true,
       });
     } catch {
-      // 渲染失败则原样显示
-      return tex.trim();
+      // 渲染失败：移除LaTeX命令，回退为纯文本（去掉$分隔符）
+      return stripLatexCommands(tex.trim());
     }
   });
-  
+
   // 再处理行内公式 $...$
   content = content.replace(/\$([^\$\n]+?)\$/g, (_match, tex) => {
     try {
       return katex.renderToString(tex.trim(), {
-        throwOnError: false,
+        throwOnError: true,
         displayMode: false,
       });
     } catch {
-      // 渲染失败则原样显示
-      return tex.trim();
+      // 渲染失败：移除LaTeX命令，回退为纯文本（去掉$分隔符）
+      return stripLatexCommands(tex.trim());
     }
   });
-  
+
   return content;
+}
+
+// LaTeX命令清理：把无法渲染的LaTeX公式转为可读的纯文本
+// 例如：\text{^\circ C} → ^\circ C → °C；\frac{a}{b} → a/b
+function stripLatexCommands(tex: string): string {
+  let result = tex;
+  // 常见LaTeX命令替换为可读字符
+  const replacements: Array<[RegExp, string]> = [
+    [/\\circ/g, '°'],           // \circ → °
+    [/\\text\{([^}]*)}/g, '$1'], // \text{...} → ...
+    [/\\degree/g, '°'],          // \degree → °
+    [/\\cdot/g, '·'],            // \cdot → ·
+    [/\\times/g, '×'],           // \times → ×
+    [/\\pm/g, '±'],              // \pm → ±
+    [/\\le/g, '≤'],              // \le → ≤
+    [/\\ge/g, '≥'],              // \ge → ≥
+    [/\\ne/g, '≠'],              // \ne → ≠
+    [/\\approx/g, '≈'],          // \approx → ≈
+    [/\\infty/g, '∞'],           // \infty → ∞
+    [/\\sqrt\{([^}]*)}/g, '√($1)'], // \sqrt{x} → √(x)
+    [/\\frac\{([^}]*)}\{([^}]*)}/g, '$1/$2'], // \frac{a}{b} → a/b
+    [/\\alpha/g, 'α'],
+    [/\\beta/g, 'β'],
+    [/\\gamma/g, 'γ'],
+    [/\\delta/g, 'δ'],
+    [/\\epsilon/g, 'ε'],
+    [/\\theta/g, 'θ'],
+    [/\\lambda/g, 'λ'],
+    [/\\mu/g, 'μ'],
+    [/\\pi/g, 'π'],
+    [/\\sigma/g, 'σ'],
+    [/\\omega/g, 'ω'],
+    [/\\Delta/g, 'Δ'],
+    [/\\Sigma/g, 'Σ'],
+    [/\\Omega/g, 'Ω'],
+    // 移除剩余的简单LaTeX命令（\commandname）
+    [/\\[a-zA-Z]+/g, ''],
+    // 清理多余的花括号
+    [/\{([^{}]*)}/g, '$1'],
+    // 清理 ^ 和 _ 后的空格
+    [/\^\s+/g, '^'],
+    [/_\s+/g, '_'],
+  ];
+  for (const [pattern, replacement] of replacements) {
+    result = result.replace(pattern, replacement);
+  }
+  // 压缩多余空格
+  result = result.replace(/\s+/g, ' ').trim();
+  return result;
 }
 const props = withDefaults(defineProps<{
  message: any;

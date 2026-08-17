@@ -54,6 +54,7 @@
           :placeholder="inputPlaceholder"
           resize="none"
           @keydown.enter.exact="handleEnterKey"
+          @keydown.ctrl.enter.exact="handleCtrlEnterKey"
           class="chat-input"
           :disabled="disabled"
         />
@@ -281,11 +282,32 @@ onUnmounted(() => {
 })
 
 function handleEnterKey(e: KeyboardEvent) {
-  if (e.shiftKey) {
+  // Enter（无修饰键）= 发送消息
+  // Ctrl+Enter / Shift+Enter / Meta+Enter = 换行（由浏览器默认行为处理）
+  if (e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) {
+    // 其他修饰键组合走默认换行行为（已在 @keydown.ctrl.enter 中处理）
     return
   }
   e.preventDefault()
   handleSend()
+}
+
+function handleCtrlEnterKey(e: KeyboardEvent) {
+  // Ctrl+Enter 显式换行：插入换行符到光标位置
+  // 通过阻止默认行为并手动插入，确保跨浏览器一致
+  e.preventDefault()
+  const textarea = e.target as HTMLTextAreaElement
+  if (!textarea) return
+
+  const start = textarea.selectionStart
+  const end = textarea.selectionEnd
+  const newValue = localInputText.value.slice(0, start) + '\n' + localInputText.value.slice(end)
+  localInputText.value = newValue
+
+  // 在下一帧恢复光标位置到换行符之后
+  nextTick(() => {
+    textarea.selectionStart = textarea.selectionEnd = start + 1
+  })
 }
 
 function handleSend() {

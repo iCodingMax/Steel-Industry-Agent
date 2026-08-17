@@ -59,7 +59,7 @@
         <div class="header-actions">
           <el-button @click="handleDeleteApp">删除应用</el-button>
           <el-button type="primary" @click="handleSave" :loading="saving">保存</el-button>
-          <el-button type="success" @click="handlePublish">发布</el-button>
+          <el-button type="success" @click="handlePublish" :loading="publishing">发布</el-button>
         </div>
       </div>
 
@@ -458,6 +458,7 @@ import { getTools } from '@/api/tool'
 
 const loading = ref(true)
 const saving = ref(false)
+const publishing = ref(false)
 const creating = ref(false)
 // 应用配置加载状态：防止进入配置页时闪现默认配置
 const settingsLoading = ref(false)
@@ -1206,17 +1207,18 @@ async function handlePublish() {
   }
 
   appForm.status = 'active'
-  saving.value = true
+  publishing.value = true
   try {
     // 合并mcpIds和skillIds到toolConfigIds
     const toolConfigIds = [...appForm.mcpIds, ...appForm.skillIds]
+    // 发布时自动保存配置（与handleSave逻辑一致），避免用户漏点保存按钮
     await updateApplication(currentApp.value.id, { ...appForm, toolConfigIds })
     ElMessage.success('应用已发布')
     await loadApplications()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || '发布失败')
   } finally {
-    saving.value = false
+    publishing.value = false
   }
 }
 
