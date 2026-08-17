@@ -596,7 +596,7 @@ async def stream_chat(
 
                     yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(skill_tool_ids)} 个Skill工具配置...')
 
-                    yield emit_thinking(3, total_steps, '工具分析', f'分析 {len(skill_tool_ids)} 个Skill工具匹配度...')
+                    yield emit_thinking(3, total_steps, '工具分析', f'执行 {len(skill_tool_ids)} 个Skill工具中...')
 
                     # 执行Skill调用分析（传入应用级LLM配置和对话历史，支持多轮交互）
                     skill_result = await RouterService._execute_skill(
@@ -1364,7 +1364,7 @@ async def embed_chat(
 
                     yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(skill_tool_ids)} 个Skill工具配置...')
 
-                    yield emit_thinking(3, total_steps, '工具分析', f'分析 {len(skill_tool_ids)} 个Skill工具匹配度...')
+                    yield emit_thinking(3, total_steps, '工具分析', f'执行 {len(skill_tool_ids)} 个Skill工具中...')
 
                     # 执行Skill调用分析（传入应用级LLM配置和对话历史，支持多轮交互）
                     skill_result = await RouterService._execute_skill(
