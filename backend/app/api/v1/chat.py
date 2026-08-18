@@ -310,8 +310,11 @@ async def stream_chat(
             # 加载多轮对话历史（在用户消息保存后，获取之前的历史，不含当前消息）
             chat_history: List[Dict[str, str]] = await message_service.get_history(db, data.sessionId)
             # 注意：get_history会取最近N条消息（含刚保存的user消息），需排除最后一条当前用户消息
-            if chat_history and chat_history[-1].get("content") == data.question:
+            # 使用strip后比较，避免前后空格导致比较失败
+            _question_stripped = (data.question or "").strip()
+            if chat_history and chat_history[-1].get("content", "").strip() == _question_stripped:
                 chat_history = chat_history[:-1]
+            logger.info(f"[stream_chat] 当前问题={_question_stripped[:50]}, 历史条数={len(chat_history)}")
 
             # 调用意图分类（传入db和tool_config_ids，以便LLM参考工具管理中的MCP/Skills名称和描述）
             # 传入chat_history用于上下文感知（如Skill多轮交互保持）
@@ -673,6 +676,7 @@ async def stream_chat(
 
                 # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
                 chat_system_prompt = app_system_prompt or "你是一个智能助手。请用友好、专业的语气回答用户的问题。如果用户是在问候或自我介绍，请简要介绍你的能力范围。"
+                # 注：历史嵌入由 llm_service.chat_stream 统一处理，无需在此重复
 
                 full_answer = ""
                 async for chunk in llm_service.chat_stream(data.question, chat_system_prompt, chat_history, llm_config_params):
@@ -1069,8 +1073,11 @@ async def embed_chat(
 
             # 加载多轮对话历史（排除当前刚保存的用户消息）
             chat_history: List[Dict[str, str]] = await message_service.get_history(db, real_session_id)
-            if chat_history and chat_history[-1].get("content") == data.question:
+            # 使用strip后比较，避免前后空格导致比较失败
+            _question_stripped = (data.question or "").strip()
+            if chat_history and chat_history[-1].get("content", "").strip() == _question_stripped:
                 chat_history = chat_history[:-1]
+            logger.info(f"[embed_chat] 当前问题={_question_stripped[:50]}, 历史条数={len(chat_history)}")
 
             knowledge_base_id = data.knowledgeBaseId
             datasource_id = data.datasourceId
@@ -1441,6 +1448,7 @@ async def embed_chat(
 
                 # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
                 chat_system_prompt = app_system_prompt or "你是一个智能助手。请用友好、专业的语气回答用户的问题。如果用户是在问候或自我介绍，请简要介绍你的能力范围。"
+                # 注：历史嵌入由 llm_service.chat_stream 统一处理，无需在此重复
 
                 full_answer = ""
                 async for chunk in llm_service.chat_stream(data.question, chat_system_prompt, chat_history, llm_config_params):

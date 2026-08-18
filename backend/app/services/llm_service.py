@@ -212,18 +212,39 @@ class LLMService:
         :raises Exception: 调用失败时抛出，包含详细错误信息
         """
         try:
-            # 1. 构建消息列表（与同步模式相同）
+            # 1. 构建消息列表
             messages = []
 
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
                 logger.debug(f"添加系统提示词，长度={len(system_prompt)}")
 
-            if history:
-                messages.extend(history)
-                logger.debug(f"添加对话历史，条数={len(history)}")
+            # 关键修复：当存在对话历史时，把历史内容直接嵌入到user prompt中
+            # 解决问题：仅通过messages数组传递history时，LLM容易忽略历史（尤其
+            # 应用自定义系统提示词角色定义太强时），把历史嵌入prompt确保LLM无法忽略
+            effective_prompt = prompt
+            if history and len(history) > 0:
+                history_text = "\n".join([
+                    f"{'用户' if m.get('role') == 'user' else '助手'}: {m.get('content', '')}"
+                    for m in history
+                ])
+                effective_prompt = (
+                    f"请先阅读以下对话历史，然后回答当前问题。\n\n"
+                    f"===对话历史开始===\n{history_text}\n===对话历史结束===\n\n"
+                    f"当前问题：{prompt}\n\n"
+                    f"回答要求：\n"
+                    f"1. 必须参考对话历史中的信息\n"
+                    f"2. 问题中的'我'指的是用户，不是助手\n"
+                    f"3. 如果用户在历史中提供过姓名等信息，必须用该信息回答\n"
+                    f"例如：历史中用户说'我叫小明'，当用户问'我叫什么'时，回答'小明'"
+                )
+                logger.info(f"已将{len(history)}条历史嵌入prompt, 历史预览={history_text[:100]}")
 
-            messages.append({"role": "user", "content": prompt})
+            messages.append({"role": "user", "content": effective_prompt})
+
+            # 详细日志：输出最终发送给LLM的messages列表，便于排查上下文丢失问题
+            messages_preview = "; ".join([f"[{m['role']}] {m['content'][:80]}" for m in messages])
+            logger.info(f"[chat_stream] 发送给LLM的messages: 总条数={len(messages)}, 内容=[{messages_preview}]")
 
             # 使用配置参数或默认值（与 chat 方法一致的 None 值处理）
             if config:

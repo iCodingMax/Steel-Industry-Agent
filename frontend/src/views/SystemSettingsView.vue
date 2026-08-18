@@ -40,21 +40,14 @@
             </el-button>
           </div>
 
-          <el-table :data="users" style="width: 100%" v-loading="loading">
-            <el-table-column prop="name" label="姓名" min-width="120">
+          <el-table :data="users" style="width: 100%" v-loading="loading" class="user-table" stripe border>
+            <el-table-column prop="name" label="姓名" min-width="120" align="center">
               <template #default="{ row }">
                 <span>{{ row.name || '-' }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="username" label="用户名" min-width="140" />
-            <el-table-column label="用户来源" width="110">
-              <template #default="{ row }">
-                <el-tag :type="row.userSource === 'oauth2' ? 'primary' : 'info'" effect="plain">
-                  {{ row.userSource === 'oauth2' ? 'OAuth2' : '本地创建' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="100">
+            <el-table-column prop="username" label="用户名" min-width="120" align="center" />
+            <el-table-column label="状态" min-width="100" align="center">
               <template #default="{ row }">
                 <el-tag
                   :type="row.status === 'active' ? 'success' : 'danger'"
@@ -64,24 +57,31 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="email" label="邮箱" min-width="180">
+            <el-table-column prop="email" label="邮箱" min-width="160" align="center">
               <template #default="{ row }">
                 <span>{{ row.email || '-' }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="phone" label="手机号" width="130">
+            <el-table-column prop="phone" label="手机号" min-width="120" align="center">
               <template #default="{ row }">
                 <span>{{ row.phone || '-' }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="role" label="角色" width="100">
+            <el-table-column prop="role" label="角色" min-width="100" align="center">
               <template #default="{ row }">
                 <el-tag :type="row.role === 'admin' ? 'primary' : 'info'" effect="plain">
                   {{ row.role === 'admin' ? '管理员' : '普通用户' }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="创建时间" width="170">
+            <el-table-column label="用户来源" min-width="120" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.userSource === 'oauth2' ? 'primary' : 'info'" effect="plain">
+                  {{ row.userSource === 'oauth2' ? 'OAuth2' : '本地创建' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="创建时间" min-width="160" align="center">
               <template #default="{ row }">
                 {{ formatDate(row.createdAt) }}
               </template>
@@ -675,6 +675,10 @@ onMounted(() => {
   align-items: center;
   white-space: nowrap;
   gap: 4px;
+}
+
+.user-table {
+  margin-bottom: 16px;
 }
 
 .config-section {

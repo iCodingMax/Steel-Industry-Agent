@@ -295,7 +295,9 @@ class MessageService:
                 content = content[:800] + "..."
             history.append({"role": msg.role, "content": content})
 
-        logger.debug(f"获取对话历史: session_id={session_id}, 数量={len(history)}")
+        # 详细日志：输出每条历史消息的角色和内容前50字符，便于排查上下文丢失问题
+        history_preview = "; ".join([f"[{h['role']}] {h['content'][:50]}" for h in history])
+        logger.info(f"获取对话历史: session_id={session_id}, window_size={window_size}, 数量={len(history)}, 历史=[{history_preview}]")
         return history
 
 
