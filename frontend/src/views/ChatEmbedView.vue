@@ -1155,7 +1155,29 @@ async function handleSend(content?: string) {
           const data = JSON.parse(jsonStr)
           
           if (data.type === 'start') {
-            // 会话开始事件，记录sessionId
+            // 会话开始事件，保存后端返回的真实sessionId
+            // 后端首次创建session后通过start事件返回sessionId，
+            // 必须保存以便后续消息复用，否则每次都创建新session，
+            // 导致后端get_history看不到之前的消息，无法实现上下文感知
+            //
+            // 关键修复：同时更新sessions列表中对应session的id
+            // 前端createNewSession创建的id是"embed-{timestamp}"临时ID，
+            // 后端返回的真实sessionId是数据库整数主键(如"429")，
+            // 如果只更新currentSessionId而不更新sessions中的id，
+            // 后续currentSession=computed find(s=>s.id===currentSessionId)会找不到session，
+            // 导致流式消息无法追加到session.messages，界面不显示回复
+            if (data.sessionId) {
+              const newId = String(data.sessionId)
+              const oldId = currentSessionId.value
+              if (oldId && oldId !== newId) {
+                const session = sessions.value.find(s => s.id === oldId)
+                if (session) {
+                  session.id = newId
+                }
+              }
+              currentSessionId.value = newId
+              saveSessions()
+            }
           } else if (data.type === 'intent') {
             // 意图识别结果
           } else if (data.type === 'content') {

@@ -1,13 +1,37 @@
 """
-大模型服务模块
+大模型服务模块（LLM Service Layer）
 统一封装LLM调用接口，支持通过Xinference部署的各类模型（OpenAI兼容协议）
-主要功能：单轮对话、流式对话、意图分类
 
-配置依赖：
-- XINFERENCE_BASE_URL: Xinference服务基础地址
-- XINFERENCE_LLM_MODEL: 大模型名称（如 qwen2-72b-instruct）
-- LLM_MAX_TOKENS: 最大输出Token数
-- LLM_TEMPERATURE: 温度参数（控制随机性）
+=============================================================================
+架构定位（面试重点）：
+  本模块属于「业务服务层」，位于 API路由层(chat.py) 和 基础设施层(llm_client.py) 之间。
+  职责是将「对话业务逻辑」与「LLM调用细节」解耦：
+    - chat.py 路由层 只管 HTTP请求/响应 和 SSE协议
+    - llm_service.py 服务层 管 意图分类、历史嵌入、错误处理等业务逻辑
+    - llm_client.py 基础设施层 管 HTTP请求发送和SSE流解析
+
+  设计模式：门面模式（Facade）—— 对外暴露简化的 chat/chat_stream/classify_intent 三个方法，
+  内部封装了消息构建、配置覆盖、模型适配、异常分类等复杂逻辑。
+=============================================================================
+
+主要功能：
+  1. chat()           —— 同步对话：一次性获取完整回复（用于意图分类、SQL生成等非实时场景）
+  2. chat_stream()    —— 流式对话：逐字返回回复（用于知识问答、数据解读等需要实时显示的场景）
+  3. classify_intent()—— 意图分类：将用户问题路由到 knowledge/data/mcp/skill/hybrid/chat 六大通道
+
+配置依赖（从 .env 环境变量加载）：
+  - XINFERENCE_BASE_URL: Xinference推理服务地址（自托管，OpenAI兼容API）
+  - XINFERENCE_LLM_MODEL: 大模型名称（如 qwen3-32b）
+  - LLM_MAX_TOKENS: 最大输出Token数（控制回复长度上限）
+  - LLM_TEMPERATURE: 温度参数（0=确定性输出，1=创造性输出，知识问答建议0.3）
+  - CHAT_HISTORY_LIMIT: 对话历史窗口大小（默认10条，控制多轮对话上下文长度）
+
+面试考点：
+  Q: 为什么不用 LangChain 的 LLMChain？
+  A: LangChain 封装层级过深，对流式输出和错误处理的精细控制不足。
+     本项目直接用 httpx 调用 OpenAI兼容API，可以精确控制超时、SSE解析、异常分类。
+  Q: 为什么 chat_stream 要把历史嵌入 prompt 而不是用 messages 数组？
+  A: 见 chat_stream 方法内的详细注释（LLM容易忽略 messages 中的历史，尤其当 system_prompt 角色定义过强时）。
 """
 import httpx
 import json
@@ -19,23 +43,31 @@ from app.core.config import settings
 
 class LLMService:
     """
-    大模型服务类
+    大模型服务类（核心业务服务）
     封装与Xinference LLM服务的交互，提供统一的对话接口
+
     支持两种调用模式：
-    1. 同步模式：一次性获取完整回复
-    2. 流式模式：逐片段返回，提升用户体验
+      1. 同步模式（chat）        —— 一次性获取完整回复，用于意图分类、SQL生成等不需要实时显示的场景
+      2. 流式模式（chat_stream） —— 逐片段返回文本，用于知识问答、数据解读等需要逐字显示的场景
+
+    应用级配置覆盖机制：
+      每个应用可在「模型配置」页面自定义 LLM 的 base_url/api_key/model/max_tokens/temperature，
+      通过 config 参数传入，覆盖默认的系统级配置。这实现了「多应用多模型」的灵活部署。
     """
 
     def __init__(self):
         """
-        初始化大模型服务配置
-        从全局配置中读取Xinference服务地址和模型参数
+        初始化大模型服务配置（系统级默认值）
+        从全局配置 settings 中读取 Xinference 服务地址和模型参数。
+
+        注意：这里的配置是系统级默认值，具体调用时可通过 config 参数覆盖（应用级配置）。
+        配置优先级：应用级 config > 系统级 settings（依赖注入思想）
         """
         self.base_url = f"{settings.XINFERENCE_BASE_URL}/v1"
-        self.api_key = "not-needed"
-        self.model = settings.XINFERENCE_LLM_MODEL
-        self.max_tokens = settings.LLM_MAX_TOKENS
-        self.temperature = settings.LLM_TEMPERATURE
+        self.api_key = "not-needed"  # Xinference 自托管服务，无需 API Key 鉴权
+        self.model = settings.XINFERENCE_LLM_MODEL  # 默认对话模型（如 qwen3-32b）
+        self.max_tokens = settings.LLM_MAX_TOKENS  # 最大输出Token数
+        self.temperature = settings.LLM_TEMPERATURE  # 温度参数（0=确定性，1=创造性）
         logger.info(f"LLM服务初始化完成: base_url={self.base_url}, model={self.model}")
 
     async def chat(
@@ -74,14 +106,16 @@ class LLMService:
             messages.append({"role": "user", "content": prompt})
 
             # 使用配置参数或默认值（支持应用级配置覆盖）
+            # 配置优先级链路：前端传入的 llmConfigId → 应用配置的 model_name → 系统默认LLM配置
             # 注意：config 中值为 None 时需 fallback 到默认值，避免传 null 给LLM服务导致500
+            # 这是因为前端可能只配置了部分参数（如只改了temperature），其余参数为null
             if config:
                 base_url = config.get('base_url') or self.base_url
                 api_key = config.get('api_key') or self.api_key
                 model = config.get('model') or self.model
                 max_tokens = config.get('max_tokens') or self.max_tokens
                 temperature = config.get('temperature')
-                if temperature is None:
+                if temperature is None:  # temperature=0 是合法值，必须用 is None 判断
                     temperature = self.temperature
             else:
                 base_url = self.base_url
@@ -91,7 +125,11 @@ class LLMService:
                 temperature = self.temperature
 
             # 2. 发起HTTP请求调用LLM
-            # 对qwen3系列模型禁用thinking模式，避免Xinference解析reasoning_content时触发KeyError 'text'
+            # 对qwen3系列模型禁用thinking模式（面试考点）：
+            #   qwen3 默认开启 thinking 模式，输出中会包含 reasoning_content 字段。
+            #   Xinference 的 OpenAI兼容层在解析时尝试访问 delta.text 会触发 KeyError，
+            #   因为 thinking 模式下增量内容放在 reasoning_content 而非 content 字段。
+            #   解决方案：通过 chat_template_kwargs.enable_thinking=False 显式关闭。
             request_body = {
                 "model": model,
                 "messages": messages,
@@ -128,12 +166,24 @@ class LLMService:
                         f"响应内容前500字符: {raw_preview}"
                     ) from decode_err
 
-            # 3. 解析返回结果
+            # 3. 解析返回结果（多层防御策略，面试考点）
+            # 按顺序执行三道检查，任何一道失败都会抛出带有诊断信息的异常：
+            #
+            # 3a. FastAPI错误响应检查 —— Xinference返回的JSON body可能不是标准OpenAI格式，
+            #     而是FastAPI的错误结构 {"detail": "..."}（如模型不存在、参数错误等）。
+            #     必须在 raise_for_status() 之前检查，因为 raise_for_status() 触发的
+            #     HTTPStatusError 异常处理器中访问 data["choices"] 会触发二次 KeyError。
+            #
+            # 3b. HTTP状态码检查 —— 标准HTTP错误（如500/502/503），
+            #     raise_for_status() 会在非2xx状态码时抛出 HTTPStatusError。
+            #
+            # 3c. 返回数据结构校验 —— 即使HTTP 200，也要检查 choices 数组是否完整，
+            #     防止 Xinference 返回格式异常导致后续 KeyError。
+
             # 3a. 检查是否为FastAPI错误响应（如 {"detail": "Model not found"}）
-            #     必须在raise_for_status()之前检查，避免HTTPStatusError处理中触发KeyError
             if isinstance(data, dict) and "detail" in data and "choices" not in data:
                 error_detail = data["detail"]
-                if isinstance(error_detail, list):
+                if isinstance(error_detail, list):  # FastAPI验证错误返回列表
                     error_detail = "; ".join(str(item) for item in error_detail)
                 logger.error(f"LLM服务返回错误响应: detail={error_detail}, url={base_url}, model={model}")
                 raise Exception(f"大模型服务返回错误: {error_detail} (base_url={base_url}, model={model})")
@@ -141,7 +191,7 @@ class LLMService:
             # 3b. 检查HTTP状态码（非FastAPI错误的其他HTTP错误）
             response.raise_for_status()
 
-            # 3c. 检查返回数据格式是否正确
+            # 3c. 检查返回数据格式是否正确（防御性编程）
             if (not data 
                 or "choices" not in data 
                 or not isinstance(data.get("choices"), list) 
@@ -219,9 +269,24 @@ class LLMService:
                 messages.append({"role": "system", "content": system_prompt})
                 logger.debug(f"添加系统提示词，长度={len(system_prompt)}")
 
-            # 关键修复：当存在对话历史时，把历史内容直接嵌入到user prompt中
-            # 解决问题：仅通过messages数组传递history时，LLM容易忽略历史（尤其
-            # 应用自定义系统提示词角色定义太强时），把历史嵌入prompt确保LLM无法忽略
+            # 关键修复：历史上下文嵌入策略（面试重点 —— 多轮对话上下文丢失问题）
+            #
+            # 问题背景：
+            #   传统做法是把对话历史通过 messages 数组传递（[{role:user,content:...},{role:assistant,...}]），
+            #   但实际测试发现 LLM 经常忽略 messages 中的历史内容。
+            #   原因：当应用配置了自定义 system_prompt 且角色定义过强时，
+            #         LLM 的注意力集中在 system_prompt 上，容易忽略 messages 中的历史。
+            #
+            # 解决方案：把历史直接嵌入到 user prompt 中（而非 messages 数组）
+            #   1. 用 ===对话历史开始=== 和 ===对话历史结束=== 分隔符包裹历史内容
+            #   2. 明确告知"必须参考对话历史"
+            #   3. 消歧代词：明确指出"问题中的'我'指的是用户，不是助手"（代词消歧）
+            #   4. 给出示例引导：历史中用户说'我叫小明'→问'我叫什么'→回答'小明'
+            #
+            # 三层保障机制（intent classification + history embedding + pronoun disambiguation）：
+            #   第一层：意图分类确保"我叫小明"等自我介绍被路由到 chat 通道（不经过RAG/SQL分流）
+            #   第二层：历史嵌入确保 LLM 能看到完整上下文（本段代码）
+            #   第三层：代词消歧确保"我"被正确理解为用户而非助手
             effective_prompt = prompt
             if history and len(history) > 0:
                 history_text = "\n".join([
@@ -288,25 +353,38 @@ class LLMService:
                 ) as response:
                     response.raise_for_status()
 
-                    # 3. 逐行解析流式响应
+                    # 3. 逐行解析 SSE 流式响应（Server-Sent Events 协议）
+                    # SSE 协议格式：每行以 "data: " 前缀开头，后面跟 JSON 数据
+                    # 终止标记："data: [DONE]" 表示流结束
+                    #
+                    # 每个 chunk 的 JSON 结构：
+                    # {"choices": [{"delta": {"content": "增量文本块"}, "finish_reason": null}]}
+                    # delta.content 是增量文本（非完整文本），前端拼接后得到完整回答
+                    #
+                    # 面试考点 —— SSE vs WebSocket：
+                    #   SSE 是单向通信（服务器→客户端），基于HTTP，实现简单，适合LLM流式输出。
+                    #   WebSocket 是双向通信，实现复杂，适合需要客户端实时交互的场景。
+                    #   本项目选择 SSE 是因为 LLM 流式输出只需服务器→客户端的单向推送。
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
-                            data_str = line[6:]
+                            data_str = line[6:]  # 去掉 "data: " 前缀
                             if data_str == "[DONE]":
                                 logger.debug("接收到流式结束标记 [DONE]")
                                 break
                             try:
                                 data = json.loads(data_str)
-                                if ("choices" in data 
-                                    and isinstance(data["choices"], list) 
+                                # 防御性检查：确保 choices 数组存在且非空
+                                if ("choices" in data
+                                    and isinstance(data["choices"], list)
                                     and len(data["choices"]) > 0
                                     and isinstance(data["choices"][0], dict)):
                                     delta = data["choices"][0].get("delta", {})
                                     if isinstance(delta, dict):
                                         content = delta.get("content", "")
-                                        if content:
-                                            yield content
+                                        if content:  # content 可能为空（如首帧只有 role 信息）
+                                            yield content  # 逐块 yield 给上层路由
                             except json.JSONDecodeError:
+                                # 跳过无法解析的行（如心跳包、空行、注释行）
                                 logger.debug(f"JSON解析失败，跳过该行: {line[:100]}")
                                 continue
 
@@ -334,22 +412,34 @@ class LLMService:
         skill_tools: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """
-        意图分类
-        使用LLM对用户问题进行分类，决定路由到哪个处理通道
+        意图分类（Intent Classification —— 智能路由的核心）
+
+        使用 LLM 对用户问题进行分类，决定路由到哪个处理通道。
+        这是整个对话系统的「大脑」，决定了问题被送往哪个子系统处理。
+
+        三级级联意图识别策略（面试重点）：
+          第一级：关键词快速预判（chat.py 中的 STRONG_TOOL_KEYWORDS 等）
+                  —— 对"高炉炉况诊断"、"执行技能"等明确表达做快速判断，不调LLM
+          第二级：工具名称精确匹配（chat.py 中的工具匹配逻辑）
+                  —— 与已注册的 MCP/Skill 工具名做语义匹配
+          第三级：LLM 分类增强（本方法）
+                  —— 对无法预判的问题，用LLM做语义级分类
+
+        六大意图通道：
+          chat      → 闲聊对话（问候、自我介绍、感谢）→ 直接LLM回答
+          knowledge → 知识问答（工艺原理、技术规范）→ RAG检索
+          data      → 数据查询（产量、合格率、报表）→ NL2SQL
+          mcp       → MCP工具调用（地图、天气等外部服务）→ MCP协议
+          skill     → Skill工具调用（本地技能脚本）→ Skill执行引擎
+          hybrid    → 混合分析（知识问答+数据查询组合）→ 拆分后分别处理
 
         :param question: 用户输入的问题
-        :param system_prompt: 自定义分类提示词，为空时使用默认提示词
+        :param system_prompt: 自定义分类提示词，为空时使用内置默认提示词
         :param mcp_tools: 可用MCP工具列表 [{"name": ..., "description": ...}]，
                           参考工具管理中已配置的MCP名称与描述
         :param skill_tools: 可用Skill工具列表 [{"name": ..., "description": ..., "file_name": ...}]，
                             参考工具管理中已配置的Skills名称、描述与文件
-        :return: 分类结果，取值为 knowledge/data/mcp/skill/hybrid/chat
-                 - chat: 闲聊对话通道（问候语、自我介绍、感谢等，直接用LLM回答，不检索知识库）
-                 - knowledge: 知识问答通道（工艺知识、技术规范等，需要检索知识库）
-                 - data: 数据查询通道（生产数据、指标统计、图表展示等）
-                 - mcp: MCP工具调用通道（外部服务，如地图、天气等）
-                 - skill: Skill工具调用通道（本地技能脚本执行）
-                 - hybrid: 混合分析通道（仅包含知识问答+数据查询的组合）
+        :return: 分类结果（knowledge/data/mcp/skill/hybrid/chat），异常时默认返回 hybrid
         """
         # 构建MCP工具描述信息（参考工具管理中已配置的MCP名称与描述）
         if mcp_tools:
@@ -458,18 +548,26 @@ class LLMService:
 
 请直接返回分类结果（knowledge/data/mcp/skill/hybrid/chat），不要返回任何解释或额外内容。"""
 
-        # 调用LLM进行分类
+        # 调用 LLM 进行分类（使用同步 chat 方法，因为分类不需要流式输出）
         result = await self.chat(
             prompt=question,
             system_prompt=system_prompt or default_prompt,
         )
 
-        # 清理并验证分类结果
+        # 清理并验证分类结果（防御性编程）
+        # LLM 可能返回带额外文字的结果（如 "我认为应该归类为 knowledge"），需提取关键词
         intent = result.strip().lower()
         valid_intents = ["knowledge", "data", "mcp", "skill", "hybrid", "chat"]
         if intent not in valid_intents:
-            logger.warning(f"意图分类结果异常: {result}，使用默认值 hybrid")
-            intent = "hybrid"
+            # 尝试从结果中提取有效意图词（LLM 可能输出解释性文字）
+            for valid_intent in valid_intents:
+                if valid_intent in intent:
+                    intent = valid_intent
+                    break
+            else:
+                # 兜底策略：无法识别时默认 hybrid（走混合通道，最安全）
+                logger.warning(f"意图分类结果异常: {result}，使用默认值 hybrid")
+                intent = "hybrid"
 
         logger.info(f"意图分类完成: 问题={question[:50]}..., 结果={intent}")
         return intent

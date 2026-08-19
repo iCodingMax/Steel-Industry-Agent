@@ -1,16 +1,37 @@
 """
-会话管理服务模块
+会话管理服务模块（Session Service Layer）
 管理对话会话、消息和溯源记录的完整生命周期
 
-主要功能：
-1. 会话管理：创建、查询、更新、删除会话
-2. 消息管理：创建消息、获取会话消息列表、获取对话历史
-3. 溯源管理：创建和查询溯源记录（用于追踪知识引用和数据来源）
+=============================================================================
+架构定位（面试重点）：
+  本模块属于「业务服务层」，负责对话数据的 CRUD 操作。
+  分为三个服务类，各司其职：
+    - SessionService  —— 会话管理（创建/查询/更新/删除会话）
+    - MessageService  —— 消息管理（创建消息/获取历史/持久化AI回复）
+    - TraceService    —— 溯源管理（记录知识引用和SQL来源，支撑可解释AI）
 
-数据模型关系：
-- Session（会话）: 包含多个 Message（消息）和 Trace（溯源）
-- Message（消息）: 属于一个 Session，包含内容、意图、引用等信息
-- Trace（溯源）: 关联到 Message，记录知识片段或数据来源
+  数据模型关系（一对多级联）：
+    Session（会话） 1 ──── N Message（消息） 1 ──── N Trace（溯源）
+    │                        │                        │
+    │  user_id（所属用户）    │  role（user/assistant） │  trace_type
+    │  title（会话标题）      │  content（消息内容）    │  source_name
+    │  chat_user_id（嵌入隔离）│  intent（意图分类）    │  score（匹配分数）
+    │                        │  references（知识引用） │
+    │                        │  data_result（查询结果）│
+    │                        │  thinking_steps（思考） │
+
+  设计模式：静态方法 + 依赖注入
+    所有方法都是 @staticmethod，通过 db: AsyncSession 参数注入数据库会话。
+    好处：无状态、线程安全、易于单元测试（可传入 mock session）。
+=============================================================================
+
+面试考点：
+  Q: 为什么用静态方法而不是实例方法？
+  A: 服务类本身不需要维护状态（所有状态在数据库中），静态方法更轻量、更易测试。
+     底部创建的 session_service 等实例只是为了让路由层通过依赖注入引用更自然。
+  Q: 为什么 get_by_user 要用子查询排序？
+  A: 因为会话列表要按「最新消息时间」排序（最近活跃的会话排前面），
+     但有些会话可能还没有消息，需要用 updated_at 兜底。这需要 LEFT JOIN 子查询。
 """
 from typing import List, Optional
 from loguru import logger
@@ -78,15 +99,26 @@ class SessionService:
         limit: int = 50,
     ) -> List[Session]:
         """
-        获取用户的会话列表
+        获取用户的会话列表（按最新消息时间降序排列）
+
+        排序策略（面试考点 —— 复杂排序逻辑）：
+          用户希望最近活跃的会话排在前面。但「活跃」的定义是：
+            - 有消息的会话：按最新消息的 created_at 排序
+            - 无消息的会话：按会话的 updated_at 排序（兜底）
+
+          实现方式：
+            1. 子查询：对 Message 表按 session_id 分组，取每个会话的最新消息时间
+            2. LEFT JOIN：将 Session 表与子查询左连接（无消息的会话也保留）
+            3. COALESCE：latest_msg_time 为 NULL 时用 updated_at 兜底
+            4. ORDER BY ... DESC：按兜底后的时间降序排列
 
         :param db: 数据库会话
         :param user_id: 用户ID
         :param skip: 跳过条数（分页参数）
         :param limit: 返回条数（分页参数，默认50）
-        :return: 会话列表（按最新消息时间降序排列，无消息的会话按更新时间排序）
+        :return: 会话列表（最近活跃的会话排在最前面）
         """
-        # 子查询：每个会话的最新消息时间
+        # 子查询：对 Message 表按 session_id 分组，获取每个会话的最新消息创建时间
         latest_msg_subq = (
             select(
                 Message.session_id.label("sid"),
@@ -95,7 +127,9 @@ class SessionService:
             .group_by(Message.session_id)
             .subquery()
         )
-        # 按最新消息时间降序排列，无消息的会话按updated_at排后面
+        # LEFT JOIN + COALESCE 排序：
+        # - 有消息的会话用 latest_msg_time 排序
+        # - 无消息的会话 latest_msg_time 为 NULL，COALESCE 用 updated_at 兜底
         stmt = (
             select(Session)
             .outerjoin(latest_msg_subq, Session.id == latest_msg_subq.c.sid)
@@ -141,19 +175,30 @@ class SessionService:
         """
         删除会话（级联删除关联的消息和溯源记录）
 
+        级联删除策略（面试考点 —— 数据一致性）：
+          因为 Message 和 Trace 表通过 session_id 外键关联到 Session 表，
+          删除会话时必须先删除子表数据（Message 和 Trace），再删除主表（Session）。
+          否则会触发 PostgreSQL 的外键约束错误。
+
+          删除顺序：
+            1. DELETE FROM messages WHERE session_id = ?  （删除所有消息）
+            2. DELETE FROM traces WHERE session_id = ?     （删除所有溯源）
+            3. DELETE FROM sessions WHERE id = ?           （最后删会话本身）
+          三个操作在同一个事务中，保证原子性（要么全删，要么全不删）。
+
         :param db: 数据库会话
         :param session_id: 会话ID
-        :raises BusinessException: 会话不存在时抛出
+        :raises BusinessException: 会话不存在时抛出（404）
         """
         session = await SessionService.get_by_id(db, session_id)
         if not session:
             raise BusinessException(code=404, message="会话不存在")
 
-        # 删除关联的消息和溯源记录（级联删除）
+        # 级联删除：先删子表（Message、Trace），再删主表（Session）
         await db.execute(delete(Message).where(Message.session_id == session_id))
         await db.execute(delete(Trace).where(Trace.session_id == session_id))
         await db.delete(session)
-        await db.commit()
+        await db.commit()  # 统一提交，保证原子性
         logger.info(f"删除会话成功: ID={session_id}")
 
 
@@ -217,12 +262,15 @@ class MessageService:
             query_time=query_time,
         )
         db.add(message)
-        # 同步更新会话的updated_at，确保会话列表按最新消息排序
+        # 同步更新会话的 updated_at 时间戳
+        # 原因：get_by_user 方法用 COALESCE(latest_msg_time, updated_at) 排序，
+        # 对于没有消息的新会话，updated_at 是唯一的排序依据。
+        # 每次新增消息时更新 updated_at，确保会话列表排序正确。
         from sqlalchemy import update as sql_update
         await db.execute(
             sql_update(Session).where(Session.id == session_id).values(updated_at=func.now())
         )
-        await db.commit()
+        await db.commit()  # 统一提交（消息创建 + 会话时间戳更新），保证原子性
         await db.refresh(message)
         logger.info(f"创建消息成功: 会话={session_id}, 角色={role}, ID={message.id}")
         return message
@@ -256,25 +304,37 @@ class MessageService:
         window_size: int = None,
     ) -> List[dict]:
         """
-        获取对话历史（用于LLM多轮对话上下文）
+        获取对话历史（用于LLM多轮对话上下文窗口管理）
 
-        从最近的消息开始向前回溯，截取指定条数的历史消息，
-        并对每条消息内容做长度截断，避免超出LLM上下文窗口。
+        对话历史窗口策略（面试考点 —— 多轮对话上下文管理）：
+          LLM 有上下文窗口限制（如 qwen3-32b 的上下文长度约 32K tokens），
+          不能把所有历史消息都塞进去。需要用「滑动窗口」截取最近 N 条消息。
+
+          window_size 来源（优先级从高到低）：
+            1. 调用方显式传入的 window_size 参数
+            2. 环境变量 CHAT_HISTORY_LIMIT（默认 10 条）
+          建议值：6-10 条（太少丢失上下文，太多占用 token 预算）
+
+        截断策略：
+          - 单条消息超过 800 字符时截断（避免一条超长消息吃掉所有 token 预算）
+          - 空内容消息跳过（如流式输出失败的空消息）
+          - 按 id 倒序取最近 N 条，再 reversed 正序返回（保证时间顺序正确）
 
         :param db: 数据库会话
         :param session_id: 会话ID
-        :param window_size: 返回最近的消息条数，None时从配置读取CHAT_HISTORY_LIMIT
+        :param window_size: 返回最近的消息条数，None时从配置读取 CHAT_HISTORY_LIMIT
         :return: 对话历史列表，格式为 [{"role": "user/assistant", "content": "文本"}]
         """
         from app.core.config import settings
 
+        # window_size 优先级：参数传入 > 环境变量配置
         if window_size is None:
-            window_size = settings.CHAT_HISTORY_LIMIT
+            window_size = settings.CHAT_HISTORY_LIMIT  # 默认 10 条
 
         if not session_id or session_id <= 0:
             return []
 
-        # 先取最近 window_size 条消息（按id倒序取，再正序返回）
+        # 按 id 倒序取最近 window_size 条消息（id 是自增的，倒序 = 最新）
         from sqlalchemy import desc as sql_desc
         stmt = (
             select(Message)
@@ -283,19 +343,21 @@ class MessageService:
             .limit(window_size)
         )
         result = await db.execute(stmt)
+        # reversed 把倒序结果转回正序（时间从早到晚），保证对话逻辑正确
         recent_msgs = list(reversed(list(result.scalars().all())))
 
         history: List[dict] = []
         for msg in recent_msgs:
             content = (msg.content or "").strip()
             if not content:
-                continue
-            # 单条消息内容过长时截断，避免占用过多token
+                continue  # 跳过空消息（如流式输出中断的空回复）
+            # 单条消息内容过长时截断到 800 字符，避免一条消息占用过多 token
             if len(content) > 800:
                 content = content[:800] + "..."
             history.append({"role": msg.role, "content": content})
 
-        # 详细日志：输出每条历史消息的角色和内容前50字符，便于排查上下文丢失问题
+        # 详细日志：输出每条历史消息的角色和内容前50字符
+        # 这是排查「LLM 忘记历史」问题的关键日志，可以看到历史是否正确加载
         history_preview = "; ".join([f"[{h['role']}] {h['content'][:50]}" for h in history])
         logger.info(f"获取对话历史: session_id={session_id}, window_size={window_size}, 数量={len(history)}, 历史=[{history_preview}]")
         return history
@@ -303,9 +365,23 @@ class MessageService:
 
 class TraceService:
     """
-    溯源服务类
-    负责溯源记录的管理，追踪知识引用和数据来源
-    溯源记录用于记录消息的来源信息，支持知识引用、SQL查询等场景
+    溯源服务类（Traceability Service —— 可解释AI的数据基础）
+
+    负责溯源记录的管理，追踪知识引用和数据来源。
+    溯源记录是「可解释AI」(Explainable AI) 的数据基础：
+      当 AI 回答一个问题后，用户可能想知道"你依据什么回答的？"
+      Trace 记录了 AI 回答所引用的知识片段、执行的 SQL 等来源信息。
+
+    溯源类型（trace_type）：
+      - knowledge: 知识引用（RAG 检索命中的文档片段 + 相似度分数）
+      - sql:       SQL 查询溯源（NL2SQL 生成的 SQL 语句 + 执行结果摘要）
+      - data:      数据来源（查询的数据表、字段等元信息）
+
+    典型流程：
+      用户提问 → RAG检索 → 命中3个知识片段 → AI生成回答
+                                          ↓
+                                    为每个片段创建 Trace 记录
+                                    (source_name=文档名, content=片段内容, score=相似度)
     """
 
     @staticmethod
