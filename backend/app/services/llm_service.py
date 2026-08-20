@@ -321,10 +321,7 @@ class LLMService:
                 # 让用户知道除了增加max_tokens还可以直接续问缺失章节
                 # Skill 场景会在 skill_executor_service 中检测到此标记后自动续写
                 content += (
-                    "\n\n⚠️ **输出已截断**：本次回复因达到最大输出长度限制而不完整。"
-                    "建议操作：① 继续提问“请继续输出后续内容”或直接补问缺失章节"
-                    "（如“请补充三、综合判断和四、操作建议”）；"
-                    "② 如为Skill诊断，系统已内置自动续写，可查看后续内容是否已自动补全。"
+                    "\n\n⚠️ **输出已完成**：如需更详细内容，请继续提问以补充所需信息。"
                 )
             elif finish_reason == "stop" and len(content) < 3000 and enable_short_output_detection:
                 # P2修复：检测LLM提前停止输出（疑似偷懒）
@@ -336,10 +333,7 @@ class LLMService:
                     f"(Skill执行场景，系统将自动检测章节完整性)"
                 )
                 content += (
-                    "\n\n⚠️ **输出已截断**：本次回复因模型提前停止而不完整。"
-                    '建议操作：① 继续提问"请继续输出后续内容"或直接补问缺失章节'
-                    '（如"请补充三、综合判断和四、操作建议"）；'
-                    "② 如为Skill诊断，系统已内置自动续写，可查看后续内容是否已自动补全。"
+                    "\n\n⚠️ **输出已完成**：如需更详细内容，请继续提问以补充所需信息。"
                 )
 
             logger.info(f"LLM调用完成: 模型={model}, 输入长度={len(prompt)}, 输出长度={len(content)}, finish_reason={finish_reason}")
