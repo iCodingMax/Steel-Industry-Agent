@@ -351,9 +351,15 @@ class MessageService:
             content = (msg.content or "").strip()
             if not content:
                 continue  # 跳过空消息（如流式输出中断的空回复）
-            # 单条消息内容过长时截断到 800 字符，避免一条消息占用过多 token
-            if len(content) > 800:
-                content = content[:800] + "..."
+            # 区分角色截断策略（P1改造修复：Skill引导词被截断问题）
+            # - user 消息：截断到 1500 字符（用户输入通常较短，JSON数据也够用）
+            # - assistant 消息：不截断（Skill引导词如"请发送数据"通常在末尾，截断会丢失关键特征词）
+            #   token 预算由 _build_messages 的 max_history_chars=30000 兜底，从最旧开始丢弃
+            if msg.role == "assistant":
+                # assistant 消息不截断，保留完整的 Skill 引导词和诊断结果
+                pass
+            elif len(content) > 1500:
+                content = content[:1500] + "..."
             history.append({"role": msg.role, "content": content})
 
         # 详细日志：输出每条历史消息的角色和内容前50字符

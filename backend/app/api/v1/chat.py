@@ -2,6 +2,7 @@
 对话API
 功能：会话管理、消息发送、SSE流式响应
 """
+import re
 from typing import List, Optional, Dict
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -283,6 +284,26 @@ async def stream_chat(
                         )
                         _cfg_result = await db.execute(_stmt)
                         _llm_cfg = _cfg_result.scalar_one_or_none()
+                        # P2修复：精确匹配不到时，用"前缀匹配"兜底
+                        # 例：Application.model_name=gemma4:e4b 但 LLMConfig.model_name=gemma4
+                        if not _llm_cfg and ':' in app_obj.model_name:
+                            _prefix = app_obj.model_name.split(':')[0]
+                            logger.warning(
+                                f"[应用配置解析] 精确匹配无结果，尝试前缀匹配: "
+                                f"应用model_name={app_obj.model_name!r}, prefix={_prefix!r}"
+                            )
+                            _stmt2 = select(_LLMCfgModel).where(
+                                _LLMCfgModel.model_name.ilike(f"{_prefix}%") &
+                                (_LLMCfgModel.model_type == 'llm') &
+                                (_LLMCfgModel.status == 'active')
+                            )
+                            _cfg_result2 = await db.execute(_stmt2)
+                            _llm_cfg = _cfg_result2.scalar_one_or_none()
+                            if _llm_cfg:
+                                logger.warning(
+                                    f"[应用配置解析] 前缀匹配成功: 使用 LLMConfig model={_llm_cfg.model_name!r} "
+                                    f"匹配应用model_name={app_obj.model_name!r}"
+                                )
                     if not _llm_cfg:
                         _llm_cfg = await _llm_cfg_svc.get_default_by_model_type(db, 'llm')
                     if _llm_cfg:
@@ -293,6 +314,22 @@ async def stream_chat(
                             'max_tokens': _llm_cfg.max_tokens,
                             'temperature': _llm_cfg.temperature,
                         }
+                    # P2修复：应用级LLM配置解析日志（排查是否正确使用gemma4:e4b）
+                    if resolved_llm_config_params:
+                        logger.info(
+                            f"[应用配置解析] 应用ID={session.application_id}, 应用名={app_obj.name!r}, "
+                            f"应用model_name={app_obj.model_name!r}, 请求llmConfigId={data.llmConfigId!r}, "
+                            f"解析到LLM配置: model={resolved_llm_config_params.get('model')!r}, "
+                            f"base_url={resolved_llm_config_params.get('base_url')}, "
+                            f"max_tokens={resolved_llm_config_params.get('max_tokens')}, "
+                            f"temperature={resolved_llm_config_params.get('temperature')}"
+                        )
+                    else:
+                        logger.error(
+                            f"[应用配置解析] 应用ID={session.application_id}, 应用名={app_obj.name!r}, "
+                            f"应用model_name={app_obj.model_name!r}, 请求llmConfigId={data.llmConfigId!r}, "
+                            f"**未解析到任何LLM配置，将使用系统默认模型 {settings.XINFERENCE_LLM_MODEL!r}**"
+                        )
 
             # 发送开始事件
             yield f"data: {json.dumps({'type': 'start', 'sessionId': data.sessionId})}\n\n"
@@ -316,10 +353,60 @@ async def stream_chat(
                 chat_history = chat_history[:-1]
             logger.info(f"[stream_chat] 当前问题={_question_stripped[:50]}, 历史条数={len(chat_history)}")
 
+            # P0改造：查询改写（基于历史做指代消解和省略补全）
+            # 原始问题已保存到数据库（用户看到的仍是原始输入）
+            # 改写后的问题用于意图分类、RAG检索、NL2SQL等后续处理
+            # JSON数据保护：如果用户输入是JSON格式（如Skill数据输入），跳过改写避免破坏格式
+            # 图表切换保护：如果用户只是切换图表类型（如"改为柱状图"），跳过改写
+            #   — 否则 rewrite_query 会把"使用柱状图展示"补全为"使用柱状图展示不同班次的炉况报告结果"，
+            #     导致后续图表切换检测正则不再匹配，走了正常查询重新生成SQL
+            _is_chart_switch = False
+            _chart_switch_pattern = re.compile(
+                r'^(?:改为|换成|用|使用|改成|切换为|变更为?)\s*'
+                r'(?:表格|柱状图?|条形图?|折线图?|曲线图?|饼图?|'
+                r'环形图?|雷达图?|散点图?)\s*(?:展示|显示|呈现|查看)?$'
+            )
+            if chat_history and _chart_switch_pattern.match((data.question or "").strip()):
+                _is_chart_switch = True
+                logger.info(f"[stream_chat] 检测到纯图表切换指令，跳过查询改写: {data.question[:50]}")
+
+            if chat_history and not _is_chart_switch:
+                from app.services.llm_service import llm_service
+                # 检测是否为JSON数据（Skill多轮交互场景，如高炉炉况诊断数据输入）
+                _is_json_data = False
+                _stripped_q = (data.question or "").strip()
+                if _stripped_q.startswith("{") and _stripped_q.endswith("}"):
+                    try:
+                        import json as _json
+                        _json.loads(_stripped_q)
+                        _is_json_data = True
+                        logger.info("[stream_chat] 检测到JSON数据输入，跳过查询改写避免破坏格式")
+                    except Exception:
+                        # 不是合法JSON，可能是包含花括号的自然语言，正常改写
+                        pass
+
+                if not _is_json_data:
+                    effective_question = await llm_service.rewrite_query(data.question, chat_history)
+                    if effective_question != data.question:
+                        logger.info(
+                            f"[stream_chat] 查询改写: 原问题={data.question[:50]}, 改写={effective_question[:50]}"
+                        )
+                        data.question = effective_question
+
             # 调用意图分类（传入db和tool_config_ids，以便LLM参考工具管理中的MCP/Skills名称和描述）
             # 传入chat_history用于上下文感知（如Skill多轮交互保持）
             from app.services.router_service import intent_classifier
+            # P1改造修复：详细排查日志（定位Skill多轮交互识别失败问题）
+            logger.info(
+                f"[stream_chat][Skill排查] classify调用前: question前50字符={data.question[:50]!r}, "
+                f"chat_history长度={len(chat_history) if chat_history else 0}, "
+                f"history角色={[m.get('role') for m in chat_history] if chat_history else []}"
+            )
+            if chat_history:
+                for idx, m in enumerate(chat_history):
+                    logger.info(f"[stream_chat][Skill排查] history[{idx}] role={m.get('role')}, content前50字符={m.get('content','')[:50]!r}")
             intent = await intent_classifier.classify(data.question, db, tool_config_ids, history=chat_history)
+            logger.info(f"[stream_chat][Skill排查] classify返回 intent={intent}")
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
 
@@ -449,9 +536,46 @@ async def stream_chat(
                 yield emit_thinking(1, 4, '意图分析', '识别用户意图，确定查询策略...')
 
                 from app.services.chatbi_service import chatbi_service
-                explanation, results, traces, query_time, explanation_prompt, column_meta, chart_type = await chatbi_service.query(
-                    db, data.question, data.datasourceId
-                )
+
+                # ====== 图表切换检测 ======
+                # _is_chart_switch 已在 rewrite_query 之前用原始问题检测过
+                # 当用户仅要求切换展示形式（如"改为柱状图"、"使用柱状图展示"）时，
+                # 直接复用上一轮的SQL和数据结果，只更新图表类型，不重新生成SQL
+                if _is_chart_switch and chat_history:
+                    # 从数据库取最近一条 intent="data" 的 assistant 消息
+                    from sqlalchemy import desc as sql_desc
+                    prev_data_stmt = (
+                        select(Message)
+                        .where(Message.session_id == data.sessionId, Message.role == "assistant", Message.intent == "data")
+                        .order_by(sql_desc(Message.id))
+                        .limit(1)
+                    )
+                    prev_data_result = await db.execute(prev_data_stmt)
+                    prev_msg = prev_data_result.scalar_one_or_none()
+
+                    if prev_msg and prev_msg.sql_traces and prev_msg.data_result:
+                        # 复用上一轮的SQL和数据，只更新图表类型
+                        traces = prev_msg.sql_traces
+                        results = prev_msg.data_result
+                        column_meta = prev_msg.column_meta
+                        # 从当前问题匹配新的图表类型
+                        chart_type = chatbi_service.suggest_chart_type(data.question)
+                        query_time = 0.01
+                        explanation = f"已将展示形式切换为{chart_type}，数据与上一轮查询结果一致。"
+                        explanation_prompt = None
+                        logger.info(
+                            f"[图表切换] 检测到仅切换图表类型，复用上一轮SQL和数据，"
+                            f"新图表类型={chart_type}, SQL={traces[0].get('sql', '')[:60] if traces else 'N/A'}"
+                        )
+                    else:
+                        _is_chart_switch = False  # 上一轮无数据，降级为正常查询
+
+                if not _is_chart_switch:
+                    # P2修复：补传 history 给 chatbi_service，让 NL2SQL 引擎能拿到多轮对话上下文
+                    # 否则"那八月呢"这种延续性提问无法正确改写和生成 SQL
+                    explanation, results, traces, query_time, explanation_prompt, column_meta, chart_type = await chatbi_service.query(
+                        db, data.question, data.datasourceId, history=chat_history
+                    )
 
                 yield emit_thinking(2, 4, 'SQL生成', f'成功生成 SQL 查询语句，共 {len(traces)} 条')
 
@@ -471,7 +595,7 @@ async def stream_chat(
 
                 from app.services.llm_service import llm_service
                 from app.services.llm_config_service import llm_config_service
-                
+
                 # 获取LLM配置
                 llm_config = None
                 if data.llmConfigId:
@@ -530,7 +654,7 @@ async def stream_chat(
 
                     # 加载工具列表
                     mcp_tools = await mcp_client_service.load_mcp_tools(db, mcp_tool_ids)
-                    yield emit_thinking(3, total_steps, '工具调用', f'加载 {len(mcp_tools)} 个MCP工具供智能选择调用...')
+                    yield emit_thinking(3, total_steps, '调用MCP工具', '调用MCP工具中...')
 
                     # 执行工具调用
                     tool_result = await mcp_client_service.execute_tool_calls(
@@ -544,7 +668,16 @@ async def stream_chat(
                     yield f"data: {json.dumps({'type': 'tool_calls', 'data': tool_result.get('tool_calls', [])})}\n\n"
                     yield f"data: {json.dumps({'type': 'tool_results', 'data': tool_result.get('tool_results', [])})}\n\n"
 
-                    yield emit_thinking(4, total_steps, '生成回答', '整合MCP工具调用结果，生成自然语言回答...')
+                    # 仅显示实际被调用的MCP工具名称（而非所有已配置的MCP工具）
+                    actual_mcp_tool_names = '、'.join([
+                        call.get('tool_name', '') for call in tool_result.get('tool_calls', [])
+                        if call.get('tool_name')
+                    ])
+                    if actual_mcp_tool_names:
+                        yield emit_thinking(4, total_steps, '生成回答',
+                                            f'已调用MCP工具"{actual_mcp_tool_names}"，整合结果生成自然语言回答...')
+                    else:
+                        yield emit_thinking(4, total_steps, '生成回答', '整合MCP工具调用结果，生成自然语言回答...')
 
                     # 流式输出最终回答
                     full_answer = tool_result.get('answer', 'MCP工具调用失败')
@@ -599,7 +732,7 @@ async def stream_chat(
 
                     yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(skill_tool_ids)} 个Skill工具配置...')
 
-                    yield emit_thinking(3, total_steps, '工具分析', f'执行 {len(skill_tool_ids)} 个Skill工具中...')
+                    yield emit_thinking(3, total_steps, '工具分析', '执行Skill工具中...')
 
                     # 执行Skill调用分析（传入应用级LLM配置和对话历史，支持多轮交互）
                     skill_result = await RouterService._execute_skill(
@@ -615,7 +748,16 @@ async def stream_chat(
                     yield f"data: {json.dumps({'type': 'tool_calls', 'data': skill_result.get('tool_calls', [])})}\n\n"
                     yield f"data: {json.dumps({'type': 'tool_results', 'data': skill_result.get('tool_results', [])})}\n\n"
 
-                    yield emit_thinking(4, total_steps, '生成回答', '整合Skill工具分析结果，生成自然语言回答...')
+                    # 仅显示实际被调用的Skill工具名称（而非所有已配置的Skill工具）
+                    actual_skill_tool_names = '、'.join([
+                        call.get('tool_name', '') for call in skill_result.get('tool_calls', [])
+                        if call.get('tool_name')
+                    ])
+                    if actual_skill_tool_names:
+                        yield emit_thinking(4, total_steps, '生成回答',
+                                            f'已执行Skill工具"{actual_skill_tool_names}"，整合结果生成自然语言回答...')
+                    else:
+                        yield emit_thinking(4, total_steps, '生成回答', '整合Skill工具分析结果，生成自然语言回答...')
 
                     # 输出最终回答
                     full_answer = skill_result.get('answer', 'Skill工具调用失败')
@@ -756,8 +898,9 @@ async def stream_chat(
                     nonlocal explanation, data_result, sql_traces, column_meta, chart_type, explanation_prompt
                     if not data_question or not data.datasourceId:
                         return
+                    # P2修复：补传 history，让多轮对话上下文传递到 NL2SQL
                     exp, results, traces, _, exp_prompt, col_meta, c_type = await chatbi_service.query(
-                        db, data_question, data.datasourceId
+                        db, data_question, data.datasourceId, history=chat_history
                     )
                     explanation = exp
                     data_result = results
@@ -1079,6 +1222,44 @@ async def embed_chat(
                 chat_history = chat_history[:-1]
             logger.info(f"[embed_chat] 当前问题={_question_stripped[:50]}, 历史条数={len(chat_history)}")
 
+            # P0改造：查询改写（基于历史做指代消解和省略补全）
+            # 原始问题已保存到数据库（用户看到的仍是原始输入）
+            # 改写后的问题用于意图分类、RAG检索、NL2SQL等后续处理
+            # JSON数据保护：如果用户输入是JSON格式（如Skill数据输入），跳过改写避免破坏格式
+            # 图表切换保护：如果用户只是切换图表类型，跳过改写（同 stream_chat 分支逻辑）
+            _is_chart_switch = False
+            _chart_switch_pattern = re.compile(
+                r'^(?:改为|换成|用|使用|改成|切换为|变更为?)\s*'
+                r'(?:表格|柱状图?|条形图?|折线图?|曲线图?|饼图?|'
+                r'环形图?|雷达图?|散点图?)\s*(?:展示|显示|呈现|查看)?$'
+            )
+            if chat_history and _chart_switch_pattern.match((data.question or "").strip()):
+                _is_chart_switch = True
+                logger.info(f"[embed_chat] 检测到纯图表切换指令，跳过查询改写: {data.question[:50]}")
+
+            if chat_history and not _is_chart_switch:
+                from app.services.llm_service import llm_service
+                # 检测是否为JSON数据（Skill多轮交互场景，如高炉炉况诊断数据输入）
+                _is_json_data = False
+                _stripped_q = (data.question or "").strip()
+                if _stripped_q.startswith("{") and _stripped_q.endswith("}"):
+                    try:
+                        import json as _json
+                        _json.loads(_stripped_q)
+                        _is_json_data = True
+                        logger.info("[embed_chat] 检测到JSON数据输入，跳过查询改写避免破坏格式")
+                    except Exception:
+                        # 不是合法JSON，可能是包含花括号的自然语言，正常改写
+                        pass
+
+                if not _is_json_data:
+                    effective_question = await llm_service.rewrite_query(data.question, chat_history)
+                    if effective_question != data.question:
+                        logger.info(
+                            f"[embed_chat] 查询改写: 原问题={data.question[:50]}, 改写={effective_question[:50]}"
+                        )
+                        data.question = effective_question
+
             knowledge_base_id = data.knowledgeBaseId
             datasource_id = data.datasourceId
             greeting_message = ""
@@ -1135,6 +1316,25 @@ async def embed_chat(
                         )
                         cfg_result = await db.execute(stmt)
                         llm_config = cfg_result.scalar_one_or_none()
+                        # P2修复：精确匹配不到时，用"前缀匹配"兜底
+                        if not llm_config and ':' in app.model_name:
+                            _prefix = app.model_name.split(':')[0]
+                            logger.warning(
+                                f"[嵌入应用配置解析] 精确匹配无结果，尝试前缀匹配: "
+                                f"应用model_name={app.model_name!r}, prefix={_prefix!r}"
+                            )
+                            _stmt2 = select(LLMConfigModel).where(
+                                LLMConfigModel.model_name.ilike(f"{_prefix}%") &
+                                (LLMConfigModel.model_type == 'llm') &
+                                (LLMConfigModel.status == 'active')
+                            )
+                            _cfg_result2 = await db.execute(_stmt2)
+                            llm_config = _cfg_result2.scalar_one_or_none()
+                            if llm_config:
+                                logger.warning(
+                                    f"[嵌入应用配置解析] 前缀匹配成功: 使用 LLMConfig model={llm_config.model_name!r} "
+                                    f"匹配应用model_name={app.model_name!r}"
+                                )
                     if not llm_config:
                         # 回退到系统默认LLM配置
                         llm_config = await llm_config_service.get_default_by_model_type(db, 'llm')
@@ -1147,9 +1347,36 @@ async def embed_chat(
                             'max_tokens': llm_config.max_tokens,
                             'temperature': llm_config.temperature,
                         }
+                    # P2修复：嵌入入口应用级LLM配置解析日志（排查是否正确使用gemma4:e4b）
+                    if resolved_llm_config_params:
+                        logger.info(
+                            f"[嵌入应用配置解析] 应用ID={data.applicationId}, 应用名={app.name!r}, "
+                            f"应用model_name={app.model_name!r}, 请求llmConfigId={data.llmConfigId!r}, "
+                            f"解析到LLM配置: model={resolved_llm_config_params.get('model')!r}, "
+                            f"base_url={resolved_llm_config_params.get('base_url')}, "
+                            f"max_tokens={resolved_llm_config_params.get('max_tokens')}, "
+                            f"temperature={resolved_llm_config_params.get('temperature')}"
+                        )
+                    else:
+                        from app.core.config import settings as _settings
+                        logger.error(
+                            f"[嵌入应用配置解析] 应用ID={data.applicationId}, 应用名={app.name!r}, "
+                            f"应用model_name={app.model_name!r}, 请求llmConfigId={data.llmConfigId!r}, "
+                            f"**未解析到任何LLM配置，将使用系统默认模型 {_settings.XINFERENCE_LLM_MODEL!r}**"
+                        )
 
             from app.services.router_service import intent_classifier
+            # P1改造修复：详细排查日志（定位Skill多轮交互识别失败问题）
+            logger.info(
+                f"[embed_chat][Skill排查] classify调用前: question前50字符={data.question[:50]!r}, "
+                f"chat_history长度={len(chat_history) if chat_history else 0}, "
+                f"history角色={[m.get('role') for m in chat_history] if chat_history else []}"
+            )
+            if chat_history:
+                for idx, m in enumerate(chat_history):
+                    logger.info(f"[embed_chat][Skill排查] history[{idx}] role={m.get('role')}, content前50字符={m.get('content','')[:50]!r}")
             intent = await intent_classifier.classify(data.question, db, tool_config_ids, history=chat_history)
+            logger.info(f"[embed_chat][Skill排查] classify返回 intent={intent}")
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
 
@@ -1239,9 +1466,39 @@ async def embed_chat(
                 yield emit_thinking(1, 4, '意图分析', '识别用户意图，确定查询策略...')
 
                 from app.services.chatbi_service import chatbi_service
-                explanation, results, traces, query_time, explanation_prompt, column_meta, chart_type = await chatbi_service.query(
-                    db, data.question, datasource_id
-                )
+
+                # ====== 图表切换检测（_is_chart_switch 已在 rewrite_query 之前检测）======
+                if _is_chart_switch and chat_history:
+                    from sqlalchemy import desc as sql_desc
+                    prev_data_stmt = (
+                        select(Message)
+                        .where(Message.session_id == real_session_id, Message.role == "assistant", Message.intent == "data")
+                        .order_by(sql_desc(Message.id))
+                        .limit(1)
+                    )
+                    prev_data_result = await db.execute(prev_data_stmt)
+                    prev_msg = prev_data_result.scalar_one_or_none()
+
+                    if prev_msg and prev_msg.sql_traces and prev_msg.data_result:
+                        traces = prev_msg.sql_traces
+                        results = prev_msg.data_result
+                        column_meta = prev_msg.column_meta
+                        chart_type = chatbi_service.suggest_chart_type(data.question)
+                        query_time = 0.01
+                        explanation = f"已将展示形式切换为{chart_type}，数据与上一轮查询结果一致。"
+                        explanation_prompt = None
+                        logger.info(
+                            f"[图表切换] 检测到仅切换图表类型，复用上一轮SQL和数据，"
+                            f"新图表类型={chart_type}, SQL={traces[0].get('sql', '')[:60] if traces else 'N/A'}"
+                        )
+                    else:
+                        _is_chart_switch = False
+
+                if not _is_chart_switch:
+                    # P2修复：补传 history，让 NL2SQL 引擎能拿到多轮对话上下文
+                    explanation, results, traces, query_time, explanation_prompt, column_meta, chart_type = await chatbi_service.query(
+                        db, data.question, datasource_id, history=chat_history
+                    )
 
                 yield emit_thinking(2, 4, 'SQL生成', f'成功生成 SQL 查询语句，共 {len(traces)} 条')
 
@@ -1302,7 +1559,7 @@ async def embed_chat(
 
                     # 加载工具列表
                     mcp_tools = await mcp_client_service.load_mcp_tools(db, mcp_tool_ids)
-                    yield emit_thinking(3, total_steps, '工具调用', f'加载 {len(mcp_tools)} 个MCP工具供智能选择调用...')
+                    yield emit_thinking(3, total_steps, '调用MCP工具', '调用MCP工具中...')
 
                     # 执行工具调用
                     tool_result = await mcp_client_service.execute_tool_calls(
@@ -1316,7 +1573,16 @@ async def embed_chat(
                     yield f"data: {json.dumps({'type': 'tool_calls', 'data': tool_result.get('tool_calls', [])})}\n\n"
                     yield f"data: {json.dumps({'type': 'tool_results', 'data': tool_result.get('tool_results', [])})}\n\n"
 
-                    yield emit_thinking(4, total_steps, '生成回答', '整合MCP工具调用结果，生成自然语言回答...')
+                    # 仅显示实际被调用的MCP工具名称（而非所有已配置的MCP工具）
+                    actual_mcp_tool_names = '、'.join([
+                        call.get('tool_name', '') for call in tool_result.get('tool_calls', [])
+                        if call.get('tool_name')
+                    ])
+                    if actual_mcp_tool_names:
+                        yield emit_thinking(4, total_steps, '生成回答',
+                                            f'已调用MCP工具"{actual_mcp_tool_names}"，整合结果生成自然语言回答...')
+                    else:
+                        yield emit_thinking(4, total_steps, '生成回答', '整合MCP工具调用结果，生成自然语言回答...')
 
                     # 输出最终回答
                     full_answer = tool_result.get('answer', 'MCP工具调用失败')
@@ -1371,7 +1637,7 @@ async def embed_chat(
 
                     yield emit_thinking(2, total_steps, '加载工具', f'加载 {len(skill_tool_ids)} 个Skill工具配置...')
 
-                    yield emit_thinking(3, total_steps, '工具分析', f'执行 {len(skill_tool_ids)} 个Skill工具中...')
+                    yield emit_thinking(3, total_steps, '工具分析', '执行Skill工具中...')
 
                     # 执行Skill调用分析（传入应用级LLM配置和对话历史，支持多轮交互）
                     skill_result = await RouterService._execute_skill(
@@ -1387,7 +1653,16 @@ async def embed_chat(
                     yield f"data: {json.dumps({'type': 'tool_calls', 'data': skill_result.get('tool_calls', [])})}\n\n"
                     yield f"data: {json.dumps({'type': 'tool_results', 'data': skill_result.get('tool_results', [])})}\n\n"
 
-                    yield emit_thinking(4, total_steps, '生成回答', '整合Skill工具分析结果，生成自然语言回答...')
+                    # 仅显示实际被调用的Skill工具名称（而非所有已配置的Skill工具）
+                    actual_skill_tool_names = '、'.join([
+                        call.get('tool_name', '') for call in skill_result.get('tool_calls', [])
+                        if call.get('tool_name')
+                    ])
+                    if actual_skill_tool_names:
+                        yield emit_thinking(4, total_steps, '生成回答',
+                                            f'已执行Skill工具"{actual_skill_tool_names}"，整合结果生成自然语言回答...')
+                    else:
+                        yield emit_thinking(4, total_steps, '生成回答', '整合Skill工具分析结果，生成自然语言回答...')
 
                     # 输出最终回答
                     full_answer = skill_result.get('answer', 'Skill工具调用失败')
@@ -1528,8 +1803,9 @@ async def embed_chat(
                     nonlocal explanation, data_result, sql_traces, column_meta, chart_type, explanation_prompt
                     if not data_question or not datasource_id:
                         return
+                    # P2修复：补传 history，让多轮对话上下文传递到 NL2SQL
                     exp, results, traces, _, exp_prompt, col_meta, c_type = await chatbi_service.query(
-                        db, data_question, datasource_id
+                        db, data_question, datasource_id, history=chat_history
                     )
                     explanation = exp
                     data_result = results

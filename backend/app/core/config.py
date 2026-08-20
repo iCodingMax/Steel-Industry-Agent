@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 20480
     LLM_TEMPERATURE: float = 0.7
 
+    # Skill专用最大输出Token（Skill输出5章节诊断报告需要更长空间）
+    # 普通对话 20480 足够，Skill 需要完整报告（含推理说明）建议 ≥32768
+    # 仅在模型 context_length 允许时生效，若 context_length 不足则自动下调
+    SKILL_MAX_TOKENS: int = 32768
+
     # 多轮对话：加载到LLM上下文的历史消息条数（10条=5轮对话）
     CHAT_HISTORY_LIMIT: int = 10
 

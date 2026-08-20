@@ -223,11 +223,14 @@ class SkillExecutorService:
 
 请严格按照 SKILL.md 中定义的流程执行 Skill，基于上述参考文档和数据完成用户要求的任务。
 
-**重要规则**：
-- 严格遵循 SKILL.md 中定义的执行流程和输出格式
-- 参考文档中的规则和标准应作为执行依据
-- 如果数据不足以完成任务，明确告知用户需要补充哪些信息
-- 直接输出执行结果，不要输出无关内容""")
+**重要规则（必须遵守）**：
+1. 严格遵循 SKILL.md 中定义的执行流程和输出格式
+2. 参考文档中的规则和标准应作为执行依据
+3. 如果 SKILL.md 中定义了前置检查步骤（如数据完整性预检），必须优先执行。
+   前置检查条件不满足时，按照 SKILL.md 中定义的对应输出模板输出，并停止后续流程。
+4. SKILL.md 中定义的输出格式和章节结构必须完整输出，不得省略、跳过或提前停止。
+   即使某章节因数据不足无法深入分析，也要明确标注"数据不足"并继续输出后续章节。
+5. 直接输出执行结果，不要输出无关内容""")
 
         return "\n\n".join(parts)
 
@@ -345,94 +348,85 @@ class SkillExecutorService:
         from app.services.llm_service import llm_service
 
         try:
-            # 获取模型名，用于确定 context_length
+            # ===== 1. 获取模型名 + 识别 context_length =====
             model_name = ""
             if llm_config:
                 model_name = llm_config.get('model', '') or ''
+            # 兜底：从全局 settings 中取 LLM 模型名（当 llm_config 未传 model 时）
+            if not model_name:
+                from app.core.config import settings as _cfg
+                model_name = _cfg.XINFERENCE_LLM_MODEL or ''
 
             # 根据模型名自动识别 context_length（已知主流模型的上下文长度）
-            # 未识别的模型默认 32768 token
-            model_context_length = 32768
-            if 'qwen3' in model_name.lower():
-                model_context_length = 40960
-            elif 'qwen2.5' in model_name.lower() or 'qwen2' in model_name.lower():
-                model_context_length = 32768
-            elif 'gemma4' in model_name.lower():
-                model_context_length = 32768
-            elif 'gemma' in model_name.lower():
-                model_context_length = 32768
-            elif 'glm' in model_name.lower():
-                model_context_length = 32768
-            elif 'deepseek' in model_name.lower():
-                model_context_length = 128000
-            elif 'gpt' in model_name.lower():
-                model_context_length = 128000
+            # P2修复：之前对 qwen3 给 40960 太保守。qwen3-32b/14b 官方 context 为 128k，
+            # 模型部署到 Xinference 时通常也会保留大上下文，这里统一按 128k 预估
+            model_context_length = 65536  # 未识别模型默认 64k（原32k加倍）
+            _mn = (model_name or '').lower()
+            if any(k in _mn for k in ['qwen3', 'qwen2.5', 'qwen2']):
+                model_context_length = 131072   # qwen 系列部署通常是 128k+
+            elif any(k in _mn for k in ['glm4', 'glm-4', 'glm5', 'glm-5']):
+                model_context_length = 131072
+            elif 'glm' in _mn:
+                model_context_length = 65536
+            elif any(k in _mn for k in ['gemma4', 'gemma-4']):
+                model_context_length = 131072
+            elif 'gemma' in _mn:
+                model_context_length = 65536
+            elif 'deepseek' in _mn or 'gpt' in _mn:
+                model_context_length = 131072
             logger.info(f"模型context_length识别: model={model_name}, context_length={model_context_length}")
 
-            # 估算 prompt token 数（中文约1字符≈1.5 token）
-            # 注意：Skill执行不传history给LLM，因此只估算prompt本身的token
+            # ===== 2. 估算 prompt token 数（中文约1字符≈1.5 token）=====
+            # Skill执行不传history给LLM，因此只估算prompt本身的token
             estimated_prompt_tokens = int(len(prompt) * 1.5)
 
-            safety_margin = 500  # 安全余量
+            # ===== 3. 确定 Skill 专用的 max_tokens 目标值 =====
+            # Skill 诊断报告（5章节）需要约 18000~30000 token 输出空间
+            # 优先使用 env SKILL_MAX_TOKENS，应用级 max_tokens 作为 floor（更大则采用）
+            from app.core.config import settings as _settings
+            skill_desired_max_tokens = 32768
+            if hasattr(_settings, 'SKILL_MAX_TOKENS') and _settings.SKILL_MAX_TOKENS:
+                skill_desired_max_tokens = int(_settings.SKILL_MAX_TOKENS)
+            # 应用级配置优先级最高（若用户在应用模型配置中显式设置更大max_tokens）
+            if llm_config and llm_config.get('max_tokens'):
+                app_set = int(llm_config['max_tokens'])
+                if app_set >= 4096:
+                    skill_desired_max_tokens = max(skill_desired_max_tokens, app_set)
 
-            # 自动调整 max_tokens，确保 prompt_tokens + max_tokens <= context_length
+            safety_margin = 1000  # 安全余量（原500加倍，避免上下文越界）
+
+            # ===== 4. 在模型 context_length 内计算可用 max_tokens =====
             available_max_tokens = model_context_length - estimated_prompt_tokens - safety_margin
-
-            # 获取原始 max_tokens
-            if llm_config:
-                original_max_tokens = llm_config.get('max_tokens') or 20480
-            else:
-                original_max_tokens = 20480
-
-            if available_max_tokens < original_max_tokens:
-                if available_max_tokens < 1024:
-                    # prompt 太长，即使 max_tokens 设为最小也无法容纳
-                    logger.error(
-                        f"Prompt过长，无法在模型上下文限制内执行: "
-                        f"prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens}, "
-                        f"模型context_length={model_context_length}"
-                    )
-                    result["answer"] = (
-                        f"Skill执行失败：Prompt内容过长（{len(prompt)}字符，约{estimated_prompt_tokens} token），"
-                        f"超过了模型的上下文长度限制（{model_context_length} token）。"
-                        f"请精简Skill包中的参考文档或缩短问题。"
-                    )
-                    result["success"] = False
-                    return result
-
-                # 调整 max_tokens 以适应上下文限制
-                adjusted_max_tokens = available_max_tokens
-                if llm_config:
-                    llm_config = {**llm_config, 'max_tokens': adjusted_max_tokens}
-                else:
-                    llm_config = {'max_tokens': adjusted_max_tokens}
-                logger.warning(
-                    f"Prompt较长，自动调整max_tokens: {original_max_tokens} -> {adjusted_max_tokens} "
-                    f"(prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens})"
+            if available_max_tokens < 2048:
+                logger.error(
+                    f"Prompt过长，无法在模型上下文限制内执行: "
+                    f"prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens}, "
+                    f"context={model_context_length}, available={available_max_tokens}"
                 )
+                result["answer"] = (
+                    f"Skill执行失败：输入内容过长（约{estimated_prompt_tokens} token），"
+                    f"已超出模型上下文可用空间（剩余{available_max_tokens} token）。"
+                    f"请精简参考文档或输入数据后重新执行。"
+                )
+                result["success"] = False
+                return result
+
+            # 最终 max_tokens = min(desired, available)，不低于 2048
+            final_max_tokens = max(2048, min(skill_desired_max_tokens, available_max_tokens))
+
+            # 记录日志并写回配置
+            prior_max = int(llm_config.get('max_tokens') or 0) if llm_config else 0
+            if llm_config:
+                llm_config = {**llm_config, 'max_tokens': final_max_tokens}
             else:
-                # 上下文空间充足，向上调整 max_tokens 到合理值
-                # 确保输出空间至少 8192 token，上限 16384 token
-                target_max = min(available_max_tokens, 16384)
-                if target_max > original_max_tokens:
-                    if llm_config:
-                        llm_config = {**llm_config, 'max_tokens': target_max}
-                    else:
-                        llm_config = {'max_tokens': target_max}
-                    logger.info(
-                        f"上下文充足，向上调整max_tokens: {original_max_tokens} -> {target_max} "
-                        f"(available={available_max_tokens}, prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens})"
-                    )
-                else:
-                    logger.info(
-                        f"max_tokens无需调整: original={original_max_tokens}, available={available_max_tokens} "
-                        f"(prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens})"
-                    )
+                llm_config = {'max_tokens': final_max_tokens}
 
             logger.info(
-                f"开始执行Skill [{skill_name}]，prompt长度={len(prompt)}, "
-                f"估算token={estimated_prompt_tokens}, max_tokens="
-                f"{llm_config.get('max_tokens', original_max_tokens) if llm_config else original_max_tokens}"
+                f"Skill [{skill_name}] token预算: "
+                f"prompt字符={len(prompt)}, 估算token={estimated_prompt_tokens}, "
+                f"context={model_context_length}, desired={skill_desired_max_tokens}, "
+                f"available={available_max_tokens}, "
+                f"final_max_tokens={final_max_tokens} (原配置max_tokens={prior_max})"
             )
 
             # Skill执行不传history给LLM：
@@ -444,7 +438,192 @@ class SkillExecutorService:
                 system_prompt=None,
                 history=None,
                 config=llm_config,
+                enable_short_output_detection=True,
             )
+
+            # ===== 5. 检测截断并自动续写（最多续写2次） =====
+            # 当答案末尾出现"输出已截断"提示时，识别为finish_reason=length
+            # 自动调用LLM续写上一次输出。
+            #
+            # P2修复：原逻辑硬编码了"高炉炉况诊断"5个章节作为完整性校验标准，
+            #         导致其他 Skill（如"产品营销文案"）输出不含这5章节时被误判为"缺失"，
+            #         续写 prompt 又强制 LLM 输出炉况诊断章节，造成输出内容混淆。
+            #         修复：5章节完整性校验 + 续写只对炉况诊断类 Skill 生效，
+            #               其他 Skill 仅做基础过短检测（<500字符记录warning）。
+            truncation_marker = "⚠️ **输出已截断**"
+            is_furnace_diagnosis = (
+                '炉况诊断' in (skill_name or '')
+                or 'furnace' in (skill_name or '').lower()
+                or 'diagnosis' in (skill_name or '').lower()
+            )
+
+            if is_furnace_diagnosis:
+                # ---------- 仅炉况诊断类 Skill 启用 5 章节完整性续写 ----------
+                #
+                # P2修复：首次询问引导回复不应触发续写
+                # Skill 首次执行时若 SKILL.md 定义了数据完整性预检步骤，
+                # LLM 发现用户未提供数据，会输出"请您协助补充以下关键数据..."
+                # 这种引导回复（短且不含5章节），不应触发续写。
+                # 续写只针对"用户已提供数据后的诊断报告不完整"场景。
+                is_data_request_reply = (
+                    len(answer) < 3000
+                    and any(kw in answer for kw in [
+                        '请补充', '请提供', '请协助', '请上传',
+                        '请发送', '请提交', '请填写', '请输入',
+                    ])
+                    and any(kw in answer for kw in [
+                        '数据', '信息', '参数', '指标', '关键',
+                        '以下', '维度',
+                    ])
+                )
+                if is_data_request_reply:
+                    logger.info(
+                        f"Skill [{skill_name}] 检测为数据预检引导回复"
+                        f"（长度={len(answer)}字符，未提供数据），跳过5章节续写逻辑"
+                    )
+                    result["answer"] = answer
+                    logger.info(f"Skill [{skill_name}] 执行完成，回答长度={len(answer)}")
+                    return result
+
+                required_sections = [
+                    "一、关键指标概览",
+                    "二、分项诊断",
+                    "三、综合判断",
+                    "四、操作建议",
+                    "五、诊断置信度",
+                ]
+                missing_required = [s for s in required_sections if s not in answer]
+                is_truncated = truncation_marker in answer
+                # 兜底：如果输出过短（<5000字符）且缺失2个以上章节，也视为需要续写
+                too_short_missing_sections = len(answer) < 5000 and len(missing_required) >= 2
+
+                if is_truncated or too_short_missing_sections:
+                    # 先移除截断提示文本，再提取"最后完整章节"作为续写起点
+                    base_answer = answer.split(truncation_marker)[0].rstrip()
+                    trigger_reason = "截断标记" if is_truncated else f"输出过短({len(answer)}字符)且缺失章节"
+                    logger.warning(
+                        f"Skill [{skill_name}] 触发自动续写（原因={trigger_reason}），"
+                        f"当前输出 {len(base_answer)} 字符，缺失章节: {missing_required}"
+                    )
+                    continuation_max = 2
+                    for idx in range(1, continuation_max + 1):
+                        # 剩余 token 预算：在原 final_max_tokens 基础上再分配一次续写空间
+                        cont_tokens = min(final_max_tokens, available_max_tokens)
+                        # 续写 prompt：把已输出内容最后3000字当上下文，要求LLM补全缺失章节
+                        last_context = base_answer[-3000:] if len(base_answer) > 3000 else base_answer
+                        cont_prompt = (
+                            f"你正在续写《{skill_name}》的诊断报告（之前输出因长度限制或提前停止而不完整）。\n\n"
+                            f"## 已输出内容的最后部分\n{last_context}\n\n"
+                            f"## 报告章节完整性要求\n"
+                            f"完整报告必须包含以下5个章节，缺失章节必须补全：\n"
+                            f"一、关键指标概览\n"
+                            f"二、分项诊断（含 2.1 送风制度 / 2.2 炉缸热状态 / 2.3 炉料运动 / 2.4 煤气分布 / 2.5 热负荷 / 2.6 原燃料评估）\n"
+                            f"三、综合判断\n"
+                            f"四、操作建议（立即执行 / 短期调整 / 中期优化）\n"
+                            f"五、诊断置信度与数据缺口\n\n"
+                            f"## 续写要求\n"
+                            f"1. 只输出**缺失章节的内容**，不要重复任何已输出过的章节\n"
+                            f"2. 章节标题使用与已输出一致的编号格式（三、四、五...）\n"
+                            f"3. 每个判断必须解释“因为看到什么数据，所以判断是什么”\n"
+                            f"4. 直接输出正文，不要有前言、总结或标记\n"
+                            f"5. **必须完整输出所有缺失章节，不得提前停止**\n"
+                            f"\n请开始续写："
+                        )
+                        cont_cfg = {**(llm_config or {}), 'max_tokens': cont_tokens}
+                        logger.info(f"Skill续写第{idx}次: 上下文长度={len(cont_prompt)}, cont_tokens={cont_tokens}")
+                        try:
+                            cont_answer = await llm_service.chat(
+                                prompt=cont_prompt,
+                                system_prompt=None,
+                                history=None,
+                                config=cont_cfg,
+                                enable_short_output_detection=True,
+                            )
+                        except Exception as _e:
+                            logger.error(f"Skill续写第{idx}次异常: {type(_e).__name__}: {_e}")
+                            break
+
+                        # 去除续写结果中的截断提示
+                        cont_answer_clean = cont_answer.split(truncation_marker)[0].rstrip()
+                        base_answer = (base_answer.rstrip() + "\n\n" + cont_answer_clean.strip()).strip()
+                        logger.info(
+                            f"Skill续写第{idx}次完成: 续写{len(cont_answer_clean)}字符, "
+                            f"当前总长度={len(base_answer)}"
+                        )
+                        # 如果续写结果不含截断标记，视为完整，停止
+                        if truncation_marker not in cont_answer:
+                            logger.info(f"Skill续写第{idx}次后无截断，视为完整")
+                            break
+
+                    # 最终检查：若仍缺失必需章节，在末尾显式提醒用户补问
+                    missing_sections = [s for s in [
+                        "三、综合判断", "四、操作建议", "五、诊断置信度",
+                    ] if s not in base_answer]
+                    if missing_sections:
+                        base_answer += (
+                            f"\n\n---\n\n"
+                            f"⚠️ **诊断报告已自动续写2次但仍不完整**，缺失章节："
+                            f"{', '.join(missing_sections)}。"
+                            f"您可以继续提问：“请补充{missing_sections[0]}和后续章节”。"
+                        )
+                    else:
+                        base_answer += "\n\n---\n\n✅ **因原始输出达到长度限制已自动续写，报告章节已补全**。"
+                    answer = base_answer
+
+                # 兜底续写：输出过短且缺失2章节时，强制要求LLM补全缺失章节
+                final_missing = [s for s in required_sections if s not in answer]
+                if len(answer) < 5000 and len(final_missing) >= 2:
+                    logger.warning(
+                        f"Skill [{skill_name}] 最终输出仍过短: {len(answer)} 字符, "
+                        f"缺失章节: {final_missing}, 触发兜底强制续写"
+                    )
+                    try:
+                        last_ctx = answer[-3000:] if len(answer) > 3000 else answer
+                        final_prompt = (
+                            f"你正在补全《{skill_name}》的诊断报告。当前报告仅输出了部分章节，"
+                            f"必须补全以下缺失章节：{', '.join(final_missing)}\n\n"
+                            f"## 已输出内容的最后部分\n{last_ctx}\n\n"
+                            f"## 严格要求\n"
+                            f"1. 必须输出所有缺失章节，不得遗漏\n"
+                            f"2. 每个章节至少包含3-5个具体的分析判断\n"
+                            f"3. 直接输出正文，不要有前言或标记\n"
+                            f"4. 这是最后一次补全机会，必须完整输出\n"
+                            f"\n请立即开始补全："
+                        )
+                        final_cfg = {**(llm_config or {}), 'max_tokens': min(final_max_tokens, available_max_tokens)}
+                        final_answer = await llm_service.chat(
+                            prompt=final_prompt,
+                            system_prompt=None,
+                            history=None,
+                            config=final_cfg,
+                            enable_short_output_detection=True,
+                        )
+                        final_clean = final_answer.split(truncation_marker)[0].rstrip()
+                        answer = answer.rstrip() + "\n\n" + final_clean.strip()
+                        logger.info(f"Skill兜底续写完成: 追加{len(final_clean)}字符, 总长度={len(answer)}")
+                    except Exception as _e:
+                        logger.error(f"Skill兜底续写异常: {type(_e).__name__}: {_e}")
+                        answer += f"\n\n---\n\n⚠️ **诊断报告不完整**：系统尝试自动补全但失败，缺失章节：{', '.join(final_missing)}"
+                elif len(answer) < 500:
+                    logger.warning(
+                        f"Skill [{skill_name}] 输出异常短: {len(answer)} 字符, "
+                        f"可能是模型输出空间不足或提前停止"
+                    )
+            else:
+                # ---------- 非炉况诊断类 Skill：仅做基础过短检测 ----------
+                # 截断标记出现时也只追加通用提示，不强制续写特定章节
+                if truncation_marker in answer:
+                    base_answer = answer.split(truncation_marker)[0].rstrip()
+                    logger.warning(
+                        f"Skill [{skill_name}] 输出出现截断标记，但非炉况诊断类Skill，"
+                        f"不强制续写特定章节。当前输出 {len(base_answer)} 字符"
+                    )
+                    answer = base_answer + "\n\n---\n\nℹ️ **输出已截断**：如需更详细内容，请继续提问以补充所需信息。"
+                elif len(answer) < 500:
+                    logger.warning(
+                        f"Skill [{skill_name}] 输出异常短: {len(answer)} 字符, "
+                        f"可能是模型输出空间不足或提前停止"
+                    )
 
             result["answer"] = answer
             logger.info(f"Skill [{skill_name}] 执行完成，回答长度={len(answer)}")

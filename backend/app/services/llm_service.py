@@ -35,6 +35,7 @@
 """
 import httpx
 import json
+import re
 from typing import Optional, List, Dict
 from loguru import logger
 
@@ -70,16 +71,127 @@ class LLMService:
         self.temperature = settings.LLM_TEMPERATURE  # 温度参数（0=确定性，1=创造性）
         logger.info(f"LLM服务初始化完成: base_url={self.base_url}, model={self.model}")
 
+    @staticmethod
+    def _build_multi_turn_instruction() -> str:
+        """
+        构建多轮对话指令模板（注入到 system_prompt 末尾）
+
+        设计目标：
+          - 引导 LLM 主动参考 messages 数组中的对话历史
+          - 解决代词消歧问题（"我"指用户而非助手）
+          - 保留用户在历史中提供的姓名等关键信息
+
+        适用场景：当 history 非空时，附加到 system_prompt 末尾。
+        不替换原有 system_prompt，避免破坏应用角色定义。
+
+        :return: 多轮对话指令字符串
+        """
+        return (
+            "\n\n## 多轮对话要求\n"
+            "1. 必须参考对话历史中的信息回答当前问题\n"
+            "2. 问题中的'我'指的是用户，不是助手\n"
+            "3. 如果用户在历史中提供过姓名等信息，必须用该信息回答\n"
+            "例如：历史中用户说'我叫小明'，当用户问'我叫什么'时，回答'小明'"
+        )
+
+    def _build_messages(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        history: Optional[List[Dict]] = None,
+        max_history_chars: int = 30000,
+    ) -> List[Dict]:
+        """
+        构建 OpenAI 标准消息列表（chat 与 chat_stream 共用）
+
+        方案B：把历史放入 messages 数组的 history 中，符合 OpenAI 兼容协议。
+        优点：
+          - 角色权重正确（user/assistant 区分明确，模型能正确理解对话流）
+          - token 效率高（无额外指令和分隔符开销）
+          - 便于 token 预算管理（可按 message 精确计算）
+
+        当 history 非空时，自动在 system_prompt 末尾追加多轮对话指令，
+        引导 LLM 主动参考历史并完成代词消歧。
+
+        token 预算管理：
+          - 估算总字符数（中文约1字符≈1.5 token）
+          - 超过 max_history_chars 时，从最旧的历史消息开始丢弃
+          - 保留 system_prompt 和当前 user 输入不被丢弃
+          - 默认 30000 字符 ≈ 45000 token，对应 qwen3 的 40960 token 上下文留出安全余量
+
+        :param prompt: 用户当前问题
+        :param system_prompt: 应用级系统提示词（角色定义等）
+        :param history: 对话历史列表 [{"role": "user/assistant", "content": "文本"}]
+        :param max_history_chars: 历史部分最大字符数（超出则从最旧开始丢弃）
+        :return: OpenAI 标准 messages 数组
+        """
+        messages: List[Dict] = []
+
+        # 1. 构建增强后的 system_prompt（注入多轮对话指令）
+        effective_system_prompt = system_prompt
+        if history and len(history) > 0:
+            multi_turn_instruction = self._build_multi_turn_instruction()
+            if system_prompt:
+                effective_system_prompt = system_prompt + multi_turn_instruction
+            else:
+                # 未配置 system_prompt 时，仅用多轮对话指令作为 system 角色
+                effective_system_prompt = (
+                    "你是一个智能助手，请参考对话历史回答用户问题。" + multi_turn_instruction
+                )
+            logger.debug(f"已注入多轮对话指令到system_prompt, 历史条数={len(history)}")
+
+        if effective_system_prompt:
+            messages.append({"role": "system", "content": effective_system_prompt})
+            logger.debug(f"添加系统提示词，长度={len(effective_system_prompt)}")
+
+        # 2. token 预算管理：从最旧历史开始丢弃超限部分
+        #    策略：保留 system_prompt 和当前 user 输入的预算，剩余分配给历史
+        #    history 中按时间正序排列（最旧在前），从最旧开始丢弃
+        trimmed_history = list(history) if history else []
+        if trimmed_history:
+            system_chars = len(effective_system_prompt) if effective_system_prompt else 0
+            prompt_chars = len(prompt)
+            # 历史可用预算 = 总预算 - system - 当前问题 - 安全余量(500)
+            history_budget = max(0, max_history_chars - system_chars - prompt_chars - 500)
+
+            # 计算历史总字符数
+            total_history_chars = sum(len(m.get("content", "")) for m in trimmed_history)
+            if total_history_chars > history_budget:
+                # 从最旧开始丢弃，直到总字符数 <= 预算
+                dropped_count = 0
+                while trimmed_history and total_history_chars > history_budget:
+                    dropped = trimmed_history.pop(0)  # 最旧的消息在列表头部
+                    total_history_chars -= len(dropped.get("content", ""))
+                    dropped_count += 1
+                logger.warning(
+                    f"历史token预算管理: 总字符={sum(len(m.get('content', '')) for m in (history or []))}, "
+                    f"预算={history_budget}, 丢弃最旧消息={dropped_count}条, 保留={len(trimmed_history)}条"
+                )
+
+            messages.extend(trimmed_history)
+            logger.debug(f"添加对话历史到messages数组，条数={len(trimmed_history)}")
+
+        # 3. 添加用户当前输入
+        messages.append({"role": "user", "content": prompt})
+
+        return messages
+
     async def chat(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict]] = None,
         config: Optional[Dict] = None,
+        enable_short_output_detection: bool = False,
     ) -> str:
         """
         单轮同步对话
         一次性获取模型完整回复，适用于不需要实时反馈的场景（如意图分类、SQL生成、Skill执行）
+
+        :param enable_short_output_detection: 是否启用短输出截断检测（仅Skill执行需要，MCP等场景不需要）
+
+        历史传递方式（方案B）：通过 messages 数组的 history 传递，符合 OpenAI 标准。
+        当 history 非空时自动注入多轮对话指令到 system_prompt。
 
         :param prompt: 用户输入的问题或指令
         :param system_prompt: 系统提示词，定义模型行为和角色
@@ -89,21 +201,8 @@ class LLMService:
         :raises Exception: 调用失败时抛出，包含详细错误信息
         """
         try:
-            # 1. 构建消息列表
-            messages = []
-
-            # 添加系统提示词（如果有）
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-                logger.debug(f"添加系统提示词，长度={len(system_prompt)}")
-
-            # 添加对话历史（如果有）
-            if history:
-                messages.extend(history)
-                logger.debug(f"添加对话历史，条数={len(history)}")
-
-            # 添加用户当前输入
-            messages.append({"role": "user", "content": prompt})
+            # 1. 构建消息列表（统一使用 _build_messages 公共方法）
+            messages = self._build_messages(prompt, system_prompt, history)
 
             # 使用配置参数或默认值（支持应用级配置覆盖）
             # 配置优先级链路：前端传入的 llmConfigId → 应用配置的 model_name → 系统默认LLM配置
@@ -141,7 +240,12 @@ class LLMService:
                 logger.debug(f"检测到qwen3模型，已禁用thinking模式: model={model}")
 
             async with httpx.AsyncClient(timeout=300.0) as client:
-                logger.debug(f"发起LLM调用: model={model}, prompt长度={len(prompt)}")
+                # P2修复：提升日志级别到info并补全请求关键信息（调试模型是否正确使用gemma4:e4b）
+                logger.info(
+                    f"发起LLM chat调用: model={model!r}, base_url={base_url}, "
+                    f"max_tokens={max_tokens}, temperature={temperature}, "
+                    f"prompt长度={len(prompt)}, 历史条数={len(history) if history else 0}"
+                )
                 response = await client.post(
                     f"{base_url}/chat/completions",
                     headers={
@@ -213,7 +317,30 @@ class LLMService:
                     f"LLM响应因max_tokens限制被截断! 模型={model}, "
                     f"max_tokens={max_tokens}, 输出长度={len(content)}"
                 )
-                content += "\n\n⚠️ **输出已截断**：本次回复因达到最大输出长度限制而不完整，请减少输入内容或增加max_tokens后重试。"
+                # P2修复：给出更友好的截断提示 + 具体操作指引
+                # 让用户知道除了增加max_tokens还可以直接续问缺失章节
+                # Skill 场景会在 skill_executor_service 中检测到此标记后自动续写
+                content += (
+                    "\n\n⚠️ **输出已截断**：本次回复因达到最大输出长度限制而不完整。"
+                    "建议操作：① 继续提问“请继续输出后续内容”或直接补问缺失章节"
+                    "（如“请补充三、综合判断和四、操作建议”）；"
+                    "② 如为Skill诊断，系统已内置自动续写，可查看后续内容是否已自动补全。"
+                )
+            elif finish_reason == "stop" and len(content) < 3000 and enable_short_output_detection:
+                # P2修复：检测LLM提前停止输出（疑似偷懒）
+                # 仅在Skill执行场景启用（enable_short_output_detection=True）
+                # MCP工具调用等场景不启用，避免短回复被误判为截断
+                logger.warning(
+                    f"LLM响应过短疑似提前停止! 模型={model}, finish_reason={finish_reason}, "
+                    f"输出长度={len(content)}, 输入长度={len(prompt)} "
+                    f"(Skill执行场景，系统将自动检测章节完整性)"
+                )
+                content += (
+                    "\n\n⚠️ **输出已截断**：本次回复因模型提前停止而不完整。"
+                    '建议操作：① 继续提问"请继续输出后续内容"或直接补问缺失章节'
+                    '（如"请补充三、综合判断和四、操作建议"）；'
+                    "② 如为Skill诊断，系统已内置自动续写，可查看后续内容是否已自动补全。"
+                )
 
             logger.info(f"LLM调用完成: 模型={model}, 输入长度={len(prompt)}, 输出长度={len(content)}, finish_reason={finish_reason}")
             return content
@@ -255,57 +382,21 @@ class LLMService:
         流式对话
         逐片段返回模型生成内容，适用于需要实时显示回复的场景（如知识问答、数据分析）
 
+        历史传递方式（方案B）：通过 messages 数组的 history 传递，符合 OpenAI 标准。
+        当 history 非空时自动注入多轮对话指令到 system_prompt，引导 LLM 参考历史并完成代词消歧。
+
         :param prompt: 用户输入的问题或指令
         :param system_prompt: 系统提示词，定义模型行为和角色
         :param history: 对话历史列表，格式为 [{"role": "user/assistant", "content": "文本"}]
+        :param config: 应用级LLM配置（base_url, api_key, model, max_tokens, temperature），覆盖默认值
         :yield: 流式输出的文本片段，每次返回一个字符串
         :raises Exception: 调用失败时抛出，包含详细错误信息
         """
         try:
-            # 1. 构建消息列表
-            messages = []
-
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-                logger.debug(f"添加系统提示词，长度={len(system_prompt)}")
-
-            # 关键修复：历史上下文嵌入策略（面试重点 —— 多轮对话上下文丢失问题）
-            #
-            # 问题背景：
-            #   传统做法是把对话历史通过 messages 数组传递（[{role:user,content:...},{role:assistant,...}]），
-            #   但实际测试发现 LLM 经常忽略 messages 中的历史内容。
-            #   原因：当应用配置了自定义 system_prompt 且角色定义过强时，
-            #         LLM 的注意力集中在 system_prompt 上，容易忽略 messages 中的历史。
-            #
-            # 解决方案：把历史直接嵌入到 user prompt 中（而非 messages 数组）
-            #   1. 用 ===对话历史开始=== 和 ===对话历史结束=== 分隔符包裹历史内容
-            #   2. 明确告知"必须参考对话历史"
-            #   3. 消歧代词：明确指出"问题中的'我'指的是用户，不是助手"（代词消歧）
-            #   4. 给出示例引导：历史中用户说'我叫小明'→问'我叫什么'→回答'小明'
-            #
-            # 三层保障机制（intent classification + history embedding + pronoun disambiguation）：
-            #   第一层：意图分类确保"我叫小明"等自我介绍被路由到 chat 通道（不经过RAG/SQL分流）
-            #   第二层：历史嵌入确保 LLM 能看到完整上下文（本段代码）
-            #   第三层：代词消歧确保"我"被正确理解为用户而非助手
-            effective_prompt = prompt
-            if history and len(history) > 0:
-                history_text = "\n".join([
-                    f"{'用户' if m.get('role') == 'user' else '助手'}: {m.get('content', '')}"
-                    for m in history
-                ])
-                effective_prompt = (
-                    f"请先阅读以下对话历史，然后回答当前问题。\n\n"
-                    f"===对话历史开始===\n{history_text}\n===对话历史结束===\n\n"
-                    f"当前问题：{prompt}\n\n"
-                    f"回答要求：\n"
-                    f"1. 必须参考对话历史中的信息\n"
-                    f"2. 问题中的'我'指的是用户，不是助手\n"
-                    f"3. 如果用户在历史中提供过姓名等信息，必须用该信息回答\n"
-                    f"例如：历史中用户说'我叫小明'，当用户问'我叫什么'时，回答'小明'"
-                )
-                logger.info(f"已将{len(history)}条历史嵌入prompt, 历史预览={history_text[:100]}")
-
-            messages.append({"role": "user", "content": effective_prompt})
+            # 1. 构建消息列表（统一使用 _build_messages 公共方法）
+            # 方案B：历史放入 messages 数组的 history 中（OpenAI 标准方式）
+            # 多轮对话指令（参考历史、代词消歧）自动注入到 system_prompt 末尾
+            messages = self._build_messages(prompt, system_prompt, history)
 
             # 详细日志：输出最终发送给LLM的messages列表，便于排查上下文丢失问题
             messages_preview = "; ".join([f"[{m['role']}] {m['content'][:80]}" for m in messages])
@@ -341,7 +432,12 @@ class LLMService:
                 logger.debug(f"检测到qwen3模型，已禁用thinking模式: model={model}")
 
             async with httpx.AsyncClient(timeout=300.0) as client:
-                logger.debug(f"发起LLM流式调用: model={model}, prompt长度={len(prompt)}")
+                # P2修复：提升日志级别到info并补全请求关键信息（调试模型是否正确使用gemma4:e4b）
+                logger.info(
+                    f"发起LLM chat_stream调用: model={model!r}, base_url={base_url}, "
+                    f"max_tokens={max_tokens}, temperature={temperature}, "
+                    f"prompt长度={len(prompt)}, 历史条数={len(history) if history else 0}"
+                )
                 async with client.stream(
                     "POST",
                     f"{base_url}/chat/completions",
@@ -404,12 +500,211 @@ class LLMService:
             logger.error(f"LLM流式调用失败: {type(e).__name__}: {e}", exc_info=True)
             raise Exception(f"大模型流式调用失败: {type(e).__name__}: {str(e)}")
 
+    async def rewrite_query(
+        self,
+        question: str,
+        history: Optional[List[Dict]] = None,
+    ) -> str:
+        """
+        查询改写（Query Rewriting —— 多轮对话核心能力）
+
+        基于对话历史改写当前问题，完成两项任务：
+          1. 指代消解：将"它"、"这个"、"那个"等代词替换为历史中提到的具体实体
+          2. 省略补全：将"那下个月呢"、"再来一个"等省略表达补全为完整问题
+
+        改写后的问题用于意图分类、RAG 检索、NL2SQL，能显著提升多轮对话效果。
+        原始问题保留用于数据库存储和前端展示（用户看到的仍是原始输入）。
+
+        设计原则：
+          - 只做指代消解和省略补全，不改变问题的核心语义
+          - 如果问题本身完整清晰，直接返回原问题
+          - 改写失败时降级返回原问题，不影响主流程
+          - 不依赖外部工具，仅用 LLM 完成
+
+        典型场景：
+          - 上一轮"高炉炼铁的原理是什么" + 当前"那它的应用呢" → "高炉炼铁的应用"
+          - 上一轮"展示2023年8月每日吹炼次数" + 当前"那9月呢" → "展示2023年9月每日吹炼次数"
+          - 上一轮"我叫小明" + 当前"我叫什么" → "我叫什么"（无需改写，直接返回）
+
+        :param question: 用户当前问题（原始输入）
+        :param history: 对话历史 [{"role": "user/assistant", "content": "文本"}]
+        :return: 改写后的问题；无历史或改写失败时返回原问题
+        """
+        # 无历史时无需改写，直接返回原问题
+        if not history or len(history) == 0:
+            return question
+
+        try:
+            # 构建历史摘要（仅取最近3轮，避免prompt过长）
+            recent_history = history[-6:] if len(history) > 6 else history
+            # P2修复：放宽历史摘要截断，区分角色保留关键上下文
+            # - user 消息：截断到 500 字符（用户问题通常较短，需完整保留查询主题）
+            # - assistant 消息：截断到 1200 字符（保留 SQL 和分析主题，避免丢失表名/字段/指标）
+            #   原值 300 字符会导致长回复被截断后丢失关键上下文，引发延续性提问改写失败
+            history_lines = []
+            for m in recent_history:
+                content = m.get('content', '')
+                if not content:
+                    continue
+                role_label = '用户' if m.get('role') == 'user' else '助手'
+                if m.get('role') == 'assistant':
+                    if len(content) > 1200:
+                        content = content[:1200] + "...(截断)"
+                else:
+                    if len(content) > 500:
+                        content = content[:500] + "...(截断)"
+                history_lines.append(f"{role_label}: {content}")
+            history_text = "\n".join(history_lines)
+
+            if not history_text.strip():
+                return question
+
+            # 改写指令：只做指代消解和省略补全，不改变核心语义
+            rewrite_prompt = f"""请基于对话历史改写当前问题，使其成为完整、独立的问题。
+
+## 对话历史
+{history_text}
+
+## 当前问题
+{question}
+
+## 改写要求（严格遵守）
+1. **指代消解**：将"它"、"这个"、"那个"、"上面提到的"等代词替换为历史中的具体实体
+2. **省略补全**：将"那XX呢"、"再来一个"、"继续"等省略表达补全为完整问题
+3. **保留查询主题（重要）**：若当前问题为延续性提问（如"那X月呢"、"换成XX"），
+   **必须从上一轮用户问题或助手回复中提取查询主题**（表名、字段、聚合方式、
+   统计维度等），完整保留到改写后的问题中
+   - 示例：历史助手回复SQL含 `SELECT TYPE_CODE, AVG(SCORE) FROM hgbf1_condition_result`
+     + 当前"那八月呢" → 改写为"展示2024年8月炉况报告结果中各评分类型的平均打分值"
+     （而非简化为"展示8月数据"）
+4. **时间词改写规则**：若当前问题只改时间（如"那8月呢"、"换成9月"），
+   只替换时间部分，其他语义（表名、字段、聚合）保持与上一轮一致
+5. **年份继承规则（关键！必须严格遵守）**：若当前问题仅提到**月份/季节/日期**，
+   **没有明确写年份**（如"那8月呢"、"7月的数据"、"上个季度"），
+   **必须从对话历史中**（优先看"最近一条用户问题"里写的年份，若没有看"最近一条
+   助手回复"中SQL或叙述提到的年份）**继承年份**，**严禁使用当前系统日期的年份**
+   作为默认值！只有历史中完全找不到任何年份信息时，才允许用当前系统年份。
+   - 错误示例：上一轮用户问"2024年9月..." + 当前"那8月呢" → 错误改成"2026年8月..."
+   - 正确示例：上一轮用户问"2024年9月..." + 当前"那8月呢" → 继承"2024"→"2024年8月..."
+6. **时间冲突保护（必须严格遵守）**：若**当前问题本身已包含明确的时间**（如
+   "2024年8月"、"2023年9月15日"、"本月"、"上周"等），**严禁从对话历史中
+   替换或推断其他时间**，必须保留当前问题中用户明确指定的时间
+   - 错误示例：历史含"2024年9月" + 当前"展示2024年8月炉况报告..." → 错误改写为"2024年9月..."
+   - 正确示例：历史含"2024年9月" + 当前"展示2024年8月炉况报告..." → 保留"2024年8月"原样
+7. **保持核心语义**：不要增加、修改或删除原问题的意图
+8. 如果当前问题本身完整清晰，直接返回原问题
+9. 只返回改写后的问题，不要输出任何解释或额外内容
+
+## 示例
+- 历史"高炉炼铁的原理" + 当前"那它的应用呢" → "高炉炼铁的应用"
+- 历史"展示2023年8月每日吹炼次数" + 当前"那9月呢" → "展示2023年9月每日吹炼次数"
+- 历史"展示2024年8月炉况报告结果中各评分类型的平均打分值" + 当前"那9月呢"
+  → "展示2024年9月炉况报告结果中各评分类型的平均打分值"
+- 历史"展示2024年9月炉况报告结果中各评分类型的平均打分值" + 当前"那8月呢"
+  → "展示2024年8月炉况报告结果中各评分类型的平均打分值"（继承历史的2024年份，不使用系统年份2026）
+- 历史"展示2024年9月炉况报告..." + 当前"展示2024年8月炉况报告结果中各评分类型的平均打分值"
+  → "展示2024年8月炉况报告结果中各评分类型的平均打分值"（保留当前问题中的8月，不从历史替换）
+- 历史"我叫小明" + 当前"我叫什么" → "我叫什么"（无需改写）
+- 当前"你好" → "你好"（无需改写）
+
+请直接输出改写后的问题："""
+
+            rewritten = await self.chat(
+                prompt=rewrite_prompt,
+                system_prompt=None,
+                history=None,  # 改写任务不需要再次嵌入历史，prompt中已包含
+            )
+
+            # 清理结果
+            rewritten = (rewritten or "").strip()
+            # 移除可能的引号包裹
+            if rewritten.startswith('"') and rewritten.endswith('"'):
+                rewritten = rewritten[1:-1]
+            elif rewritten.startswith("'") and rewritten.endswith("'"):
+                rewritten = rewritten[1:-1]
+
+            # 防御：如果改写结果为空或异常长（>5倍原问题），降级返回原问题
+            if not rewritten or len(rewritten) > len(question) * 5:
+                logger.warning(
+                    f"查询改写结果异常: 原问题={question[:50]}, 改写={rewritten[:50]}, 使用原问题"
+                )
+                return question
+
+            # P2修复：代码级时间冲突保护
+            # 防御 LLM 不遵守 prompt 中"时间冲突保护"规则，从历史中替换了当前问题的明确时间
+            # 如果原问题含"YYYY年MM月"等明确时间，且改写后含不同时间，强制用原时间覆盖
+            orig_time_match = re.search(r'(\d{4})年(\d{1,2})月(?:(\d{1,2})日)?', question)
+            if orig_time_match:
+                orig_time_str = orig_time_match.group(0)
+                rewrite_time_match = re.search(r'(\d{4})年(\d{1,2})月(?:(\d{1,2})日)?', rewritten)
+                if rewrite_time_match and rewrite_time_match.group(0) != orig_time_str:
+                    logger.warning(
+                        f"时间冲突保护触发: 原问题时间={orig_time_str}, "
+                        f"改写后时间={rewrite_time_match.group(0)}, 强制用原时间覆盖"
+                    )
+                    rewritten = rewritten.replace(
+                        rewrite_time_match.group(0),
+                        orig_time_str
+                    )
+                    logger.info(f"时间冲突保护后改写: {rewritten[:80]}...")
+
+            # P2修复：代码级"年份继承"保护（防御 LLM 用当前系统日期当年份默认值）
+            # 触发条件：
+            #   a) 原问题只有月份/日期，没有年份（如"那8月呢"、"7月数据"）；
+            #   b) 改写后的问题里出现了"年份+月份"，且年份 = 当前系统年份；
+            #   c) 对话历史（倒序优先找user消息，没有再找assistant）中最近一条能提取到明确4位数年份
+            #       且 != 当前系统年份
+            # → 强制把改写结果的系统年份替换为"历史最近年份"
+            import datetime as _dt
+            current_year = _dt.date.today().year
+            orig_has_year = bool(re.search(r'\d{4}', question))
+            rewrite_year_match = re.search(r'(\d{4})年(\d{1,2})月', rewritten)
+            if (not orig_has_year) and rewrite_year_match and int(rewrite_year_match.group(1)) == current_year:
+                # 从 history 倒序找最近一条含明确4位数年份的消息（优先user角色）
+                inherited_year: Optional[int] = None
+                user_year = None
+                assist_year = None
+                for m in reversed(history or []):
+                    c = m.get('content', '') or ''
+                    y_match = re.search(r'(19|20)\d{2}', c)
+                    if not y_match:
+                        continue
+                    y = int(y_match.group(0))
+                    if 1990 <= y <= current_year + 5:  # 合理年份范围
+                        role = m.get('role', '')
+                        if role == 'user' and user_year is None:
+                            user_year = y
+                            break  # 优先user角色，找到就停
+                        elif role == 'assistant' and assist_year is None:
+                            assist_year = y
+                            # assistant不急着停，先看user有没有，没有就用assistant的
+                inherited_year = user_year or assist_year
+                if inherited_year and inherited_year != current_year:
+                    rewrite_year_str = rewrite_year_match.group(0)
+                    new_year_str = re.sub(r'^\d{4}', str(inherited_year), rewrite_year_str, count=1)
+                    logger.warning(
+                        f"年份继承保护触发: 原问题无年份, LLM误使用当前系统年{current_year} "
+                        f"({rewrite_year_str!r}), 从历史最近内容继承为{inherited_year} "
+                        f"(→ {new_year_str!r})"
+                    )
+                    rewritten = rewritten.replace(rewrite_year_str, new_year_str, 1)
+                    logger.info(f"年份继承保护后改写: {rewritten[:100]}...")
+
+            if rewritten != question:
+                logger.info(f"查询改写完成: 原问题={question[:50]}..., 改写={rewritten[:50]}...")
+            return rewritten
+
+        except Exception as e:
+            logger.warning(f"查询改写失败，使用原问题: {type(e).__name__}: {e}")
+            return question
+
     async def classify_intent(
         self,
         question: str,
         system_prompt: Optional[str] = None,
         mcp_tools: Optional[List[Dict[str, str]]] = None,
         skill_tools: Optional[List[Dict[str, str]]] = None,
+        history: Optional[List[Dict]] = None,
     ) -> str:
         """
         意图分类（Intent Classification —— 智能路由的核心）
@@ -425,6 +720,13 @@ class LLMService:
           第三级：LLM 分类增强（本方法）
                   —— 对无法预判的问题，用LLM做语义级分类
 
+        多轮对话支持（P0改造）：
+          history 参数会被传给 llm_service.chat，让 LLM 分类时能看到历史。
+          这样能识别延续性意图，例如：
+            - 上一轮"展示2023年8月每日吹炼次数" + 当前"那9月呢" → data
+            - 上一轮"高炉炼铁的原理" + 当前"那它的应用呢" → knowledge
+            - 上一轮"我叫小明" + 当前"我叫什么" → chat
+
         六大意图通道：
           chat      → 闲聊对话（问候、自我介绍、感谢）→ 直接LLM回答
           knowledge → 知识问答（工艺原理、技术规范）→ RAG检索
@@ -439,6 +741,7 @@ class LLMService:
                           参考工具管理中已配置的MCP名称与描述
         :param skill_tools: 可用Skill工具列表 [{"name": ..., "description": ..., "file_name": ...}]，
                             参考工具管理中已配置的Skills名称、描述与文件
+        :param history: 对话历史（用于上下文感知，识别延续性意图）
         :return: 分类结果（knowledge/data/mcp/skill/hybrid/chat），异常时默认返回 hybrid
         """
         # 构建MCP工具描述信息（参考工具管理中已配置的MCP名称与描述）
@@ -490,12 +793,17 @@ class LLMService:
 - **重要**：如果用户问题与上述MCP工具的名称或描述在语义上匹配，应归类为mcp
 
 ### 3. skill（Skill工具调用）
-**仅当用户明确要求执行技能时**，归类为skill：
-- 用户明确说"高炉炉况诊断"、"执行高炉炉况诊断"、"执行炉况诊断技能"
-- 用户明确说"使用技能"、"调用技能"、"运行技能"
+**当用户问题与上述Skill工具列表中的某个Skill名称匹配时**，归类为skill：
+- 用户问题**完整包含**上述Skill工具列表中某个Skill的名称（如"高炉炉况诊断"、"产品营销文案"等）
+- 用户问题是某个Skill名称的简写（如"产品营销文案"是"产品营销文案创作"的简写）
+- 用户明确表达执行技能意图："执行xxx技能"、"使用xxx技能"、"调用xxx技能"、"运行xxx"
+- **严格约束（必须遵守）**：
+  - 只有用户问题与Skill工具列表中的**某个具体Skill名称**匹配（完整包含或简写）时才归类为skill
+  - 出现"炉况"、"诊断"、"高炉"等单独词组，但**未构成完整Skill名称**时，一律归类为knowledge
 - **重要**：普通的炉况相关问题（如"风压波动怎么回事"、"铁水硅高了"、"炉况不顺"等）
   **不归类为skill**，应归类为knowledge（知识问答），因为这些是知识咨询而非技能调用
-- 只有用户明确表达"执行技能"意图时才归类为skill
+- **关键**：请仔细比对用户问题与上方"Skill工具"列表中的每个Skill名称，
+  只要用户问题与某个Skill名称匹配（完整包含或简写），就归类为skill
 
 ### 4. data（数据查询）
 当用户需要查询数据库中的业务数据时，归类为data：
@@ -537,21 +845,28 @@ class LLMService:
 - "深圳南山区的位置在哪里" → mcp
 - "帮我导航到最近的加油站" → mcp
 - "执行Python脚本计算平均值" → skill
-- "高炉炉况诊断" → skill
+- "高炉炉况诊断" → skill（完整包含Skill名称）
 - "执行高炉炉况诊断技能" → skill
-- "使用技能分析炉况" → skill
+- "产品营销文案" → skill（用户问题等于或简写自Skill名称，如Skill名为"产品营销文案创作"）
+- "产品营销文案创作" → skill（完整包含Skill名称）
 - "诊断炉况"、"炉况分析"、"分析高炉数据" → knowledge
 - "炉子是不是不顺"、"风压波动怎么回事" → knowledge
 - "铁水硅高了"、"要不要调风"、"料速慢了" → knowledge
+- "当前压差不稳，炉料质量不好，应该如何调整以减少炉况波动？" → knowledge
+- "烧结矿粒度变小，如何调整布料矩阵和炉料结构？" → knowledge
+- "为了稳定炉温和炉况，应该如何调整？" → knowledge
 - "展示2023年8月的每日吹炼次数，并且解释什么是高炉炼铁" → hybrid
 - "当前压差不稳应该如何调整？同时展示近期产量数据" → hybrid
 
 请直接返回分类结果（knowledge/data/mcp/skill/hybrid/chat），不要返回任何解释或额外内容。"""
 
         # 调用 LLM 进行分类（使用同步 chat 方法，因为分类不需要流式输出）
+        # P0改造：传入 history，让 LLM 分类时能看到对话历史，识别延续性意图
+        # 例如：上一轮"展示2023年8月数据" + 当前"那9月呢" → 正确分类为 data
         result = await self.chat(
             prompt=question,
             system_prompt=system_prompt or default_prompt,
+            history=history,
         )
 
         # 清理并验证分类结果（防御性编程）

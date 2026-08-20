@@ -66,27 +66,50 @@ class ChatBIService:
     }
 
     @staticmethod
-    def suggest_chart_type(question: str) -> str:
+    def suggest_chart_type(question: str, history: Optional[List[dict]] = None) -> str:
         """
         根据用户问题推荐图表类型
 
         通过关键词匹配用户问题中的图表需求，返回推荐的图表类型。
         支持折线图(line)、柱状图(bar)、饼图(pie)，默认返回柱状图(bar)。
 
+        多轮对话支持（P1改造）：
+          当当前问题中没有图表关键词时，从对话历史中提取上一轮的图表类型关键词。
+          例如：第一次"折线图展示2023年8月数据" → line
+                第二次"那9月呢" → 当前问题无图表关键词，从历史中提取"折线图" → line
+
         :param question: 用户问题
+        :param history: 对话历史（用于继承上一轮图表类型）
         :return: 推荐的图表类型 (line/bar/pie/table)
 
         匹配逻辑：
-            1. 遍历图表类型及其关键词
-            2. 使用正则表达式匹配问题中是否包含关键词
-            3. 匹配成功则返回对应图表类型
-            4. 无匹配则返回默认类型bar
+            1. 先匹配当前问题中的图表关键词
+            2. 当前问题无匹配时，从历史中最近一条 user 消息提取图表关键词
+            3. 仍无匹配则返回默认类型bar
         """
+        # 1. 先匹配当前问题中的图表关键词
         for chart_type, keywords in ChatBIService.CHART_KEYWORDS.items():
             for kw in keywords:
                 if re.search(kw, question):
-                    logger.debug(f"图表类型匹配: 问题={question[:30]}..., 类型={chart_type}, 关键词={kw}")
+                    logger.debug(f"图表类型匹配(当前问题): 问题={question[:30]}..., 类型={chart_type}, 关键词={kw}")
                     return chart_type
+
+        # 2. 当前问题无匹配时，从历史中提取图表关键词（多轮继承）
+        if history:
+            # 从最近一条 user 消息中提取图表关键词
+            for msg in reversed(history):
+                if msg.get("role") == "user":
+                    hist_content = msg.get("content", "")
+                    for chart_type, keywords in ChatBIService.CHART_KEYWORDS.items():
+                        for kw in keywords:
+                            if re.search(kw, hist_content):
+                                logger.info(
+                                    f"图表类型继承(历史): 当前问题={question[:30]}..., "
+                                    f"历史问题={hist_content[:30]}..., 继承类型={chart_type}"
+                                )
+                                return chart_type
+                    break  # 只检查最近一条 user 消息
+
         logger.debug(f"图表类型未匹配，使用默认: bar")
         return "bar"
 
@@ -142,7 +165,8 @@ class ChatBIService:
         results = None
         explanation = ""
         column_meta = None
-        chart_type = ChatBIService.suggest_chart_type(question)
+        # 根据问题推荐图表类型（传入history用于多轮对话继承图表类型）
+        chart_type = ChatBIService.suggest_chart_type(question, history=history)
 
         try:
             # 步骤1：尝试NL2Metrics（优先模式）
@@ -158,19 +182,30 @@ class ChatBIService:
                 datasource = ds_result.scalar_one_or_none()
 
                 if datasource:
-                    # 执行指标SQL
-                    success, error, data, meta = await nl2sql_engine.validate_and_execute(db, sql, datasource)
+                    # validate_and_execute 返回5元组 (success, error, results, column_meta, actual_sql_used)
+                    success, error, data, meta, actual_sql_used = \
+                        await nl2sql_engine.validate_and_execute(db, sql, datasource)
                     if success:
                         results = data
                         column_meta = meta
                         explanation = metrics_explanation
+                        trace_sql = actual_sql_used or sql
                         sql_traces.append({
-                            "sql": sql,
+                            "sql": trace_sql,
                             "source": "nl2metrics",
                             "metric": matched_metric.name,
-                            "rows": len(results),
+                            "rows": len(results) if results else 0,
                         })
-                        logger.info(f"NL2Metrics执行成功: 结果数={len(results)}")
+                        # 无数据时补充说明
+                        if not results:
+                            explanation = (
+                                f"{metrics_explanation}\n\n"
+                                f"未查询到符合条件的数据。请检查查询的时间范围或条件是否正确，"
+                                f"或确认数据库中是否存在对应时间段的数据。"
+                            )
+                            logger.info(f"NL2Metrics执行成功但无数据: 指标={matched_metric.name}")
+                        else:
+                            logger.info(f"NL2Metrics执行成功: 结果数={len(results)}")
                     else:
                         logger.warning(f"NL2Metrics SQL执行失败: {error}")
                 else:
@@ -192,9 +227,14 @@ class ChatBIService:
                         logger.error("未找到可用的数据源")
                         return "抱歉，未找到可用的数据源。", None, [], time.time() - start_time, None, None, chart_type
 
-                # 调用NL2SQL引擎生成并执行SQL
-                sql, data, error, meta = await nl2sql_engine.query(db, question, datasource_id)
-                logger.info(f"NL2SQL查询结果: sql={sql[:80] if sql else 'None'}..., data_count={len(data) if data else 0}, error={error}")
+                # nl2sql_engine.query 返回4元组 (sql, data, error, column_meta)
+                sql, data, error, meta = await nl2sql_engine.query(
+                    db, question, datasource_id, history=history
+                )
+                logger.info(
+                    f"NL2SQL查询结果: sql={sql[:80] if sql else 'None'}..., "
+                    f"data_count={len(data) if data else 0}, error={error}"
+                )
                 column_meta = meta
 
                 if sql:
@@ -205,10 +245,7 @@ class ChatBIService:
                             "source": "nl2sql",
                             "rows": len(results),
                         })
-                        if error and "自动放宽" in error:
-                            explanation = error
-                        else:
-                            explanation = ""
+                        explanation = ""
                     else:
                         results = []
                         sql_traces.append({
@@ -225,7 +262,9 @@ class ChatBIService:
             logger.info(f"ChatBI查询完成: 问题={question[:30]}..., 结果数={len(results) if results else 0}, 耗时={query_time:.2f}s")
 
             # 构建解释Prompt（用于流式生成回答）
-            explanation_prompt = ChatBIService._build_explanation_prompt(question, sql_traces, results) if results else None
+            explanation_prompt = ChatBIService._build_explanation_prompt(
+                question, sql_traces, results
+            ) if results else None
             return explanation, results, sql_traces, query_time, explanation_prompt, column_meta, chart_type
 
         except Exception as e:
@@ -250,6 +289,7 @@ class ChatBIService:
 
         Prompt结构：
             - 用户问题
+            - 严格解释规则
             - 执行的SQL
             - 查询结果（前5条示例）
             - 解释要求（数据概况、关键数值、对问题的回答）
@@ -259,11 +299,18 @@ class ChatBIService:
 
         result_count = len(results)
         sample_data = results[:5]  # 取前5条作为示例，避免Prompt过长
-        sql = sql_traces[0]['sql'] if sql_traces else ''
+        sql = sql_traces[-1]['sql'] if sql_traces else ''
+
+        strict_section = (
+            f"\n## 严格解释规则\n"
+            f"回答必须与「执行的SQL」的WHERE过滤条件、GROUP BY聚合维度保持严格一致。\n"
+            f"不要凭空添加或推断不存在的时间/维度限制。\n"
+        )
 
         return f"""请根据用户问题、执行的SQL和查询结果，生成自然语言解释。
 
 用户问题：{question}
+{strict_section}
 
 执行的SQL：
 {sql}

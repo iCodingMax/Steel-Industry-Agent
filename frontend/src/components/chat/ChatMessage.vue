@@ -552,6 +552,123 @@ function getFieldAlias(fieldName: string) {
  // 兼容不同的别名字段：comment（后端返回）或 columnAlias（其他来源）
  return meta?.comment || meta?.columnAlias || null;
 }
+// 智能选择分类列（X轴）和数值列（Y轴）
+// 优先选择包含分类关键词的列，排除文本型列（报告、备注等）
+function smartSelectColumns(data: any[]) {
+ if (!data || data.length === 0)
+ return { xField: null, yField: null };
+ const keys = Object.keys(data[0]);
+ const firstRow = data[0];
+ // 分类列关键词（优先匹配）
+ const categoryKeywords = ['班次', '类型', '名称', '日期', '时间', '代码', '编号', '项目', '评分', '等级'];
+ // 需排除的文本列关键词（不应作为分类轴）
+ const excludeKeywords = ['报告', '备注', '说明', '描述', '内容', '信息', '消息', 'remark', 'report'];
+ // 数值列关键词（优先匹配）
+ const valueKeywords = ['得分', '评分', '数量', '次数', '金额', '率', '值', '数', 'count', 'score', 'value'];
+ // 判断是否数值
+ const isNumeric = (val: any) => typeof val === 'number' || (!isNaN(Number(val)) && val !== null && val !== '');
+ // 1. 先筛选出非数值列中排除文本型的候选列
+ const nonTextKeys = keys.filter((key) => {
+ const label = getFieldAlias(key) || key;
+ const val = firstRow[key];
+ // 排除文本型列
+ if (excludeKeywords.some((kw) => label.toLowerCase().includes(kw.toLowerCase())))
+ return false;
+ // 排除数值列（分类列应是非数值的）
+ if (isNumeric(val))
+ return false;
+ // 排除值过长的列（>50字符通常是描述性文本）
+ if (String(val ?? '').length > 50)
+ return false;
+ return true;
+ });
+ // 2. 在候选列中优先匹配分类关键词
+ let xField = null;
+ for (const kw of categoryKeywords) {
+ const found = nonTextKeys.find((key) => {
+ const label = getFieldAlias(key) || key;
+ return label.includes(kw);
+ });
+ if (found) {
+ xField = found;
+ break;
+ }
+ }
+ // 3. 兜底：取第一个非文本非数值列
+ if (!xField && nonTextKeys.length > 0) {
+ xField = nonTextKeys[0];
+ }
+ // 4. 兜底：取第一列
+ if (!xField && keys.length > 0) {
+ xField = keys[0];
+ }
+ // 5. 选择数值列（排除已选的xField）
+ const numericKeys = keys.filter((key) => key !== xField && isNumeric(firstRow[key]));
+ // 优先匹配数值关键词
+ let yField = null;
+ for (const kw of valueKeywords) {
+ const found = numericKeys.find((key) => {
+ const label = getFieldAlias(key) || key;
+ return label.toLowerCase().includes(kw.toLowerCase());
+ });
+ if (found) {
+ yField = found;
+ break;
+ }
+ }
+ // 兜底：取第一个数值列
+ if (!yField && numericKeys.length > 0) {
+ yField = numericKeys[0];
+ }
+ return { xField, yField };
+}
+// 自动聚合明细数据（当数据行数远大于分类数时）
+// 避免187行明细直接渲染导致图表混乱
+function autoAggregateData(data: any[], xField: string, yField: string): any[] {
+ if (!data || data.length <= 10 || !xField || !yField)
+ return data;
+ // 按xField分组
+ const groups = new Map<string, any[]>();
+ for (const row of data) {
+ const key = String(row[xField] ?? '');
+ if (!groups.has(key))
+ groups.set(key, []);
+ groups.get(key)!.push(row);
+ }
+ const groupCount = groups.size;
+ // 如果分组数量接近总行数，说明没有重复，不需要聚合
+ if (groupCount >= data.length * 0.7)
+ return data;
+ // 计算重复度：平均每组行数
+ const avgRowsPerGroup = data.length / Math.max(groupCount, 1);
+ if (avgRowsPerGroup <= 1.5)
+ return data;
+ // 执行聚合：对yField取平均值，新增"数量"字段
+ const aggregated: any[] = [];
+ for (const [key, rows] of groups) {
+ const values = rows.map((r) => Number(r[yField]) || 0);
+ const avg = values.reduce((s, v) => s + v, 0) / values.length;
+ aggregated.push({
+ [xField]: key,
+ [yField]: Math.round(avg * 100) / 100,
+ [`count`]: rows.length,
+ });
+ }
+ // 按count降序排列
+ aggregated.sort((a, b) => b.count - a.count);
+ // 最多保留20个分组
+ if (aggregated.length > 20) {
+ const top = aggregated.slice(0, 19);
+ const rest = aggregated.slice(19).reduce((s, r) => s + r.count, 0);
+ top.push({
+ [xField]: '其他',
+ [yField]: Math.round(aggregated.slice(19).reduce((s, r) => s + (Number(r[yField]) || 0) * (r.count || 1), 0) / rest * 100) / 100,
+ count: rest,
+ });
+ return top;
+ }
+ return aggregated;
+}
 function getDataColumns() {
  if (!props.message.dataResult || props.message.dataResult.length === 0)
  return [];
@@ -598,9 +715,11 @@ function getChartTypeName(chartType: string): string {
  return typeMap[chartType] || '柱状图';
 }
 function updateChartOption() {
- const data = props.message.dataResult;
- if (!data || data.length === 0)
+ const rawData = props.message.dataResult;
+ if (!rawData || rawData.length === 0)
  return;
+ // 智能列选择
+ const { xField: smartX, yField: smartY } = smartSelectColumns(rawData);
  const allCols = getDataColumns();
  const numCols = getNumericColumns();
  // 图表配色方案 - 现代化配色
@@ -616,7 +735,14 @@ function updateChartOption() {
  if (!chartOption.value && props.message.chartType && ['bar', 'line', 'pie'].includes(props.message.chartType)) {
  chartConfig.value.chartType = props.message.chartType;
  }
- // 默认选择
+ // 使用智能选择的列（如果可用）
+ if (!chartConfig.value.xField && smartX) {
+ chartConfig.value.xField = smartX;
+ }
+ if (!chartConfig.value.yField && smartY) {
+ chartConfig.value.yField = smartY;
+ }
+ // 兜底：使用原有逻辑
  if (!chartConfig.value.xField && allCols.length > 0) {
  chartConfig.value.xField = allCols[0].prop;
  }
@@ -625,6 +751,8 @@ function updateChartOption() {
  }
  if (!chartConfig.value.xField || !chartConfig.value.yField)
  return;
+ // 自动聚合明细数据（避免大量重复行导致图表混乱）
+ const data = autoAggregateData(rawData, chartConfig.value.xField, chartConfig.value.yField);
  // 获取坐标轴名称（使用字段中文别名）
  const xFieldLabel = getFieldAlias(chartConfig.value.xField) || chartConfig.value.xField;
  const yFieldLabel = getFieldAlias(chartConfig.value.yField) || chartConfig.value.yField;
@@ -632,6 +760,9 @@ function updateChartOption() {
  // 数据项数量，用于调整图表配置
  const dataLength = data.length;
  const needRotateLabel = dataLength > 6; // 数据多于6项时旋转X轴标签
+ // 数据项过多时启用缩放
+ const needDataZoom = dataLength > 20;
+ const needScrollBar = dataLength > 10;
  
  // 根据尺寸调整配置
  const isSmallSize = props.size === 'sm';
@@ -655,12 +786,38 @@ function updateChartOption() {
  },
  grid: {
  left: '8%',
- right: '5%',
- bottom: needRotateLabel ? '20%' : '15%',
+ right: needDataZoom ? '12%' : '5%',
+ bottom: needDataZoom ? '25%' : (needRotateLabel ? '20%' : '15%'),
  top: '10%',
  containLabel: true,
  }
  };
+ // 数据缩放组件（数据项过多时启用）
+ if (needDataZoom) {
+ option.dataZoom = [
+ {
+ type: 'slider',
+ show: true,
+ xAxisIndex: 0,
+ start: 0,
+ end: Math.min(50, (20 / dataLength) * 100), // 默认显示前20项
+ bottom: 5,
+ height: 15,
+ borderColor: '#e2e8f0',
+ fillerColor: 'rgba(59, 130, 246, 0.15)',
+ handleStyle: { color: '#3b82f6' },
+ textStyle: { fontSize: 10, color: '#64748b' },
+ dataBackground: { lineStyle: { color: '#e2e8f0' }, areaStyle: { color: '#f1f5f9' } },
+ selectedDataBackground: { lineStyle: { color: '#3b82f6' }, areaStyle: { color: 'rgba(59, 130, 246, 0.1)' } },
+ },
+ {
+ type: 'inside',
+ xAxisIndex: 0,
+ start: 0,
+ end: Math.min(50, (20 / dataLength) * 100),
+ },
+ ];
+ }
  if (chartConfig.value.chartType === 'bar') {
  option.xAxis = {
  type: 'category',
@@ -669,10 +826,11 @@ function updateChartOption() {
  nameGap: needRotateLabel ? 25 : 15,
  nameTextStyle: { fontSize: nameFontSize, color: '#64748b' },
  axisLabel: {
- rotate: needRotateLabel ? 45 : 0,
+ rotate: needRotateLabel ? 45 : (needScrollBar ? 30 : 0),
  fontSize: fontSize,
  color: '#64748b',
- interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0,
+ interval: needScrollBar ? Math.ceil(dataLength / 10) - 1 : 0,
+ hideOverlap: true,
  },
  axisLine: { lineStyle: { color: '#e2e8f0' } },
  axisTick: { show: false },
@@ -718,10 +876,11 @@ function updateChartOption() {
  nameGap: needRotateLabel ? 25 : 15,
  nameTextStyle: { fontSize: nameFontSize, color: '#64748b' },
  axisLabel: {
- rotate: needRotateLabel ? 45 : 0,
+ rotate: needRotateLabel ? 45 : (needScrollBar ? 30 : 0),
  fontSize: fontSize,
  color: '#64748b',
- interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0,
+ interval: needScrollBar ? Math.ceil(dataLength / 10) - 1 : 0,
+ hideOverlap: true,
  },
  axisLine: { lineStyle: { color: '#e2e8f0' } },
  axisTick: { show: false },

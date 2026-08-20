@@ -652,31 +652,84 @@ function handleExport(cmd: string, msg: DebugMessage, chartOption?: any) {
 
 // 根据消息内容动态生成图表配置（用于chartOption未传入的情况）
 function buildChartOption(msg: any): any {
-  const data = msg.dataResult
-  if (!data || data.length === 0) return null
+  const rawData = msg.dataResult
+  if (!rawData || rawData.length === 0) return null
 
-  const allKeys = Object.keys(data[0])
-  const numKeys = allKeys.filter((key) => {
-    const val = data[0][key]
-    return typeof val === 'number' || (!isNaN(Number(val)) && val !== null && val !== '')
-  })
+  const allKeys = Object.keys(rawData[0])
+  const isNumeric = (val: any) => typeof val === 'number' || (!isNaN(Number(val)) && val !== null && val !== '')
+  const numKeys = allKeys.filter((key) => isNumeric(rawData[0][key]))
   if (allKeys.length === 0 || numKeys.length === 0) return null
 
-  let chartType = msg.chartType || 'bar'
-  if (!['bar', 'line', 'pie'].includes(chartType)) chartType = 'bar'
-
-  const xField = allKeys[0]
-  const yField = numKeys[0]
+  // 智能选择列
+  const categoryKeywords = ['班次', '类型', '名称', '日期', '时间', '代码', '编号', '项目', '评分', '等级']
+  const excludeKeywords = ['报告', '备注', '说明', '描述', '内容', '信息', '消息']
+  const valueKeywords = ['得分', '评分', '数量', '次数', '金额', '率', '值', '数']
 
   function getAlias(key: string): string {
     const meta = msg.columnMeta?.find((m: any) => (m.name || m.columnName) === key)
     return meta?.comment || meta?.columnAlias || key
   }
 
+  // 智能选择xField
+  let xField = allKeys.find((key) => {
+    const label = getAlias(key) || key
+    const val = rawData[0][key]
+    if (isNumeric(val)) return false
+    if (excludeKeywords.some((kw) => label.includes(kw))) return false
+    if (String(val ?? '').length > 50) return false
+    return categoryKeywords.some((kw) => label.includes(kw))
+  })
+  if (!xField) {
+    const nonTextKeys = allKeys.filter((key) => {
+      const label = getAlias(key) || key
+      const val = rawData[0][key]
+      if (isNumeric(val)) return false
+      if (excludeKeywords.some((kw) => label.includes(kw))) return false
+      if (String(val ?? '').length > 50) return false
+      return true
+    })
+    xField = nonTextKeys[0] || allKeys[0]
+  }
+  // 智能选择yField
+  let yField = numKeys.find((key) => {
+    const label = getAlias(key) || key
+    return valueKeywords.some((kw) => label.includes(kw))
+  })
+  if (!yField) yField = numKeys[0]
+
+  // 自动聚合
+  let data = rawData
+  if (rawData.length > 10 && xField && yField) {
+    const groups = new Map<string, any[]>()
+    for (const row of rawData) {
+      const key = String(row[xField] ?? '')
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key)!.push(row)
+    }
+    if (rawData.length / Math.max(groups.size, 1) > 1.5 && groups.size < rawData.length * 0.7) {
+      data = Array.from(groups.entries()).map(([key, rows]) => ({
+        [xField]: key,
+        [yField]: Math.round(rows.reduce((s, r) => s + (Number(r[yField]) || 0), 0) / rows.length * 100) / 100,
+        count: rows.length,
+      }))
+      if (data.length > 20) {
+        const top = data.slice(0, 19)
+        const rest = data.slice(19).reduce((s, r) => s + (r.count || 0), 0)
+        const restAvg = data.slice(19).reduce((s, r) => s + (Number(r[yField]) || 0) * (r.count || 1), 0) / Math.max(rest, 1)
+        top.push({ [xField]: '其他', [yField]: Math.round(restAvg * 100) / 100, count: rest })
+        data = top
+      }
+    }
+  }
+
+  let chartType = msg.chartType || 'bar'
+  if (!['bar', 'line', 'pie'].includes(chartType)) chartType = 'bar'
+
   const xLabel = getAlias(xField)
   const yLabel = getAlias(yField)
   const dataLength = data.length
   const needRotate = dataLength > 6
+  const needDataZoom = dataLength > 20
   const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#6366f1', '#f43f5e', '#84cc16', '#0ea5e9']
   const barColors = ['#3b82f6', '#2563eb', '#1d4ed8', '#1e40af', '#1e3a8a']
   const lineColor = '#3b82f6'
@@ -696,11 +749,14 @@ function buildChartOption(msg: any): any {
   }
 
   if (chartType === 'bar') {
-    option.grid = { left: '8%', right: '5%', bottom: needRotate ? '20%' : '15%', top: '10%', containLabel: true }
+    option.grid = { left: '8%', right: needDataZoom ? '12%' : '5%', bottom: needDataZoom ? '25%' : (needRotate ? '20%' : '15%'), top: '10%', containLabel: true }
+    if (needDataZoom) {
+      option.dataZoom = [{ type: 'slider', show: true, xAxisIndex: 0, start: 0, end: Math.min(50, (20 / dataLength) * 100), bottom: 5, height: 15, borderColor: '#e2e8f0', fillerColor: 'rgba(59, 130, 246, 0.15)', handleStyle: { color: '#3b82f6' } }, { type: 'inside', xAxisIndex: 0, start: 0, end: Math.min(50, (20 / dataLength) * 100) }]
+    }
     option.xAxis = {
       type: 'category', name: xLabel, nameLocation: 'middle', nameGap: needRotate ? 25 : 15,
       nameTextStyle: { fontSize: 12, color: '#64748b' },
-      axisLabel: { rotate: needRotate ? 45 : 0, fontSize: 11, color: '#64748b', interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0 },
+      axisLabel: { rotate: needRotate ? 45 : 0, fontSize: 11, color: '#64748b', interval: dataLength > 10 ? Math.ceil(dataLength / 10) - 1 : 0, hideOverlap: true },
       axisLine: { lineStyle: { color: '#e2e8f0' } }, axisTick: { show: false },
       data: data.map((d: any) => d[xField]),
     }

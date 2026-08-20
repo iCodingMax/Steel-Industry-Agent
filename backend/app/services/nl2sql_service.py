@@ -39,7 +39,7 @@ import datetime
 import decimal
 import uuid
 import sqlglot
-from typing import List, Optional, Tuple, Any
+from typing import List, Optional, Tuple, Any, Dict
 from loguru import logger
 
 from sqlalchemy import select
@@ -252,6 +252,7 @@ class SchemaLinkingEngine:
         db: AsyncSession,
         question: str,
         datasource_id: int,
+        history: Optional[List[Dict]] = None,
     ) -> List[Tuple[str, str]]:
         """
         从问题识别需要的表和字段
@@ -259,6 +260,7 @@ class SchemaLinkingEngine:
         :param db: 数据库会话
         :param question: 用户问题
         :param datasource_id: 数据源ID
+        :param history: 对话历史（P0改造：让LLM识别相关表时能看到上一轮查询，支持延续性提问）
         :return: [(表名, 字段名)] - 字段名为空表示所有字段
 
         流程步骤：
@@ -298,7 +300,7 @@ class SchemaLinkingEngine:
 
 只返回相关表名，用逗号分隔。例如：table1,table2"""
 
-        response = await llm_service.chat(prompt)
+        response = await llm_service.chat(prompt, history=history)
 
         # 解析结果（只提取表名）
         linked_tables = []
@@ -491,9 +493,10 @@ class NL2SQLEngine:
         time_instruction = ""
         if time_range:
             time_instruction = f"""4. 时间范围处理（必须严格执行）：
-   - 用户指定的时间范围已解析为：PRODUCE_DATE >= '{time_range['start']}' AND PRODUCE_DATE < '{time_range['end']}'
-   - 你必须使用这个精确的时间范围，不要修改或猜测
-   - 在WHERE子句中添加：PRODUCE_DATE >= '{time_range['start']}' AND PRODUCE_DATE < '{time_range['end']}'
+   - 用户指定的时间范围已解析为：起始='{time_range['start']}'，结束='{time_range['end']}'
+   - 你必须从当前 Schema 中识别实际存在的时间字段（参考字段注释，如 PRODUCE_DATE 表示生产日期、SCORE_TIME 表示评分时间等），使用 Schema 中真实存在的时间字段来构造 WHERE 条件
+   - 严禁使用 Schema 中不存在的时间字段名（例如：查询炉况评分表时不能使用 PRODUCE_DATE，应使用 SCORE_TIME）
+   - 在WHERE子句中添加：{{实际时间字段}} >= '{time_range['start']}' AND {{实际时间字段}} < '{time_range['end']}'
 """
         else:
             time_instruction = """4. 时间范围处理：
@@ -514,7 +517,7 @@ class NL2SQLEngine:
 3. WHERE条件规则（非常重要）：
    - 只在用户问题中明确指定筛选条件时才添加WHERE子句
    - 不要根据字段名或字段值猜测、推断WHERE条件
-   - 例如：用户问"展示不同班次的炉况报告"，不要自行添加WHERE ITEM_NAME='炉况打分'等未明确要求的过滤条件
+   - 如果用户没有指定某个字段的筛选值，就不要添加该字段的WHERE条件
    - 聚合函数（COUNT、AVG、SUM、MAX、MIN等）根据问题语义添加，不受此限制
 {time_instruction}
 5. 限制返回行数不超过{NL2SQLEngine.MAX_ROWS}行（使用LIMIT）
@@ -567,42 +570,14 @@ class NL2SQLEngine:
                 sql = sql.replace(old_condition, new_condition)
                 logger.info(f"时间范围修正完成: {sql[:150]}...")
         else:
-            # 如果没有找到时间范围条件，添加一个
-            logger.info(f"SQL中没有时间范围条件，添加预期时间范围: {expected_start}~{expected_end}")
-            # 查找WHERE子句
-            where_match = re.search(r'\bWHERE\b', sql, re.IGNORECASE)
-            if where_match:
-                # 在WHERE后面添加时间条件
-                where_pos = where_match.end()
-                # 检查是否已经有AND条件
-                remaining = sql[where_pos:].strip()
-                if remaining.upper().startswith('AND'):
-                    # 替换第一个AND为我们的时间条件
-                    time_condition = f"{field_name} >= '{expected_start}' AND {field_name} < '{expected_end}'"
-                    # 需要找到合适的字段名
-                    # 从schema中获取或使用默认字段
-                    field_match = re.search(r'SELECT\s+.*?FROM\s+(\w+)', sql, re.IGNORECASE)
-                    if field_match:
-                        # 使用常见的日期字段名
-                        time_condition = f"PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
-                    else:
-                        time_condition = f"PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
-                    
-                    # 插入时间条件
-                    sql = sql[:where_pos] + f" {time_condition} AND" + sql[where_pos + 3:]
-                else:
-                    # 在WHERE后面添加AND时间条件
-                    time_condition = f"PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
-                    sql = sql[:where_pos] + f" {time_condition} AND" + sql[where_pos:]
-            else:
-                # 没有WHERE子句，添加一个
-                # 查找FROM子句
-                from_match = re.search(r'\bFROM\s+\w+', sql, re.IGNORECASE)
-                if from_match:
-                    from_end = from_match.end()
-                    time_condition = f" WHERE PRODUCE_DATE >= '{expected_start}' AND PRODUCE_DATE < '{expected_end}'"
-                    sql = sql[:from_end] + time_condition + sql[from_end:]
-        
+            # 如果没有找到时间范围条件，不主动插入（避免硬编码错误字段名如 PRODUCE_DATE）
+            # LLM 在 _build_sql_prompt 阶段已被要求使用 Schema 中实际存在的时间字段
+            # 这里保留 LLM 生成的原样，由 SQL 执行阶段的错误兜底处理
+            logger.info(
+                f"SQL中没有时间范围条件，保留 LLM 生成原样（不主动插入，避免字段名错误）"
+            )
+            # 不再硬编码插入 PRODUCE_DATE，避免 Unknown column 错误
+
         return sql
 
     @staticmethod
@@ -683,12 +658,17 @@ class NL2SQLEngine:
         return result
 
     @staticmethod
-    async def _generate_sql_from_prompt(prompt: str, question: str = "") -> str:
+    async def _generate_sql_from_prompt(
+        prompt: str,
+        question: str = "",
+        history: Optional[List[Dict]] = None,
+    ) -> str:
         """
         从Prompt生成SQL（纯LLM调用，不持有数据库会话）
 
         :param prompt: SQL生成Prompt
         :param question: 用户问题（用于时间冲突检测和验证）
+        :param history: 对话历史（P0改造：让LLM生成SQL时能看到上一轮的查询，支持"那下个月呢"等延续性提问）
         :return: 清理后的SQL语句
 
         处理步骤：
@@ -700,7 +680,7 @@ class NL2SQLEngine:
             6. 添加行数限制（如果没有LIMIT子句）
             7. 返回最终SQL
         """
-        sql = await llm_service.chat(prompt)
+        sql = await llm_service.chat(prompt, history=history)
         
         if not sql:
             logger.error("LLM返回SQL为空")
@@ -818,6 +798,7 @@ class NL2SQLEngine:
         question: str,
         datasource_id: int,
         terms: Optional[List[Term]] = None,
+        history: Optional[List[Dict]] = None,
     ) -> str:
         """
         生成SQL语句
@@ -828,6 +809,7 @@ class NL2SQLEngine:
         :param question: 用户问题
         :param datasource_id: 数据源ID
         :param terms: 业务术语列表（可选）
+        :param history: 对话历史（P0改造：用于多轮对话上下文，识别"上个月呢"等延续性提问）
         :return: SQL语句
 
         流程步骤：
@@ -862,7 +844,7 @@ class NL2SQLEngine:
         # 如果筛选后表数量仍然>3，使用Schema Linking进一步筛选
         if len(schemas) > 3:
             try:
-                links = await SchemaLinkingEngine.link(db, question, datasource_id)
+                links = await SchemaLinkingEngine.link(db, question, datasource_id, history=history)
                 if links:
                     # 提取相关表名
                     linked_tables = set([link[0] for link in links])
@@ -908,8 +890,8 @@ class NL2SQLEngine:
         # 构建Prompt（不调用LLM）
         prompt = NL2SQLEngine._build_sql_prompt(schema_text, term_text, question)
 
-        # 调用LLM生成SQL（传入question用于时间冲突检测）
-        sql = await NL2SQLEngine._generate_sql_from_prompt(prompt, question)
+        # 调用LLM生成SQL（传入question用于时间冲突检测，传入history用于多轮对话上下文）
+        sql = await NL2SQLEngine._generate_sql_from_prompt(prompt, question, history=history)
 
         if not sql:
             logger.error(f"SQL生成失败: 问题={question[:30]}..., 返回结果为空")
@@ -1025,16 +1007,18 @@ class NL2SQLEngine:
         db: AsyncSession,
         sql: str,
         datasource: DataSource,
-    ) -> Tuple[bool, str, Optional[List[dict]], Optional[List[dict]]]:
+    ) -> Tuple[bool, str, Optional[List[dict]], Optional[List[dict]], str]:
         """
         校验并执行SQL
 
         执行完整的SQL校验和执行流程，包括安全检查、语法校验和执行。
 
         :param db: 数据库会话
-        :param sql: SQL语句
+        :param sql: LLM生成的原始SQL语句
         :param datasource: 数据源配置
-        :return: (是否成功, 错误信息, 结果数据, 字段元信息)
+        :return: (是否成功, 错误信息, 结果数据, 字段元信息, 实际执行的SQL)
+                 actual_sql_used：始终等于原始SQL（不再做任何兜底放宽），
+                 用于前端溯源和LLM分析上下文一致性。
 
         流程步骤：
             1. 安全检查（拦截危险操作）
@@ -1042,24 +1026,27 @@ class NL2SQLEngine:
             3. 修正中文日期格式（如"2023年8月" → "2023-08-01"）
             4. 获取字段注释（从INFORMATION_SCHEMA）
             5. 执行SQL（根据数据源类型选择不同的驱动）
-            6. 如果无数据且有WHERE条件，自动重试（移除时间过滤）
-            7. 返回执行结果
+            6. 若无数据，直接返回空结果（不再自动放宽/就近切换/移除WHERE）
+               — 用户要求：规定月份没有数据就直接说查询不到
+            7. 返回 (success, error, results, column_meta, actual_sql_used)
 
         支持的数据库类型：
             - mysql: 使用aiomysql
             - postgresql: 使用asyncpg
             - oracle: 使用oracledb
         """
+        original_sql = sql
+
         # 1. 安全检查
         is_safe, error = SQLSecurityFilter.check(sql)
         if not is_safe:
-            return False, error, None, None
+            return False, error, None, None, original_sql
 
         # 2. 语法校验
         dialect = datasource.type if datasource.type in ["mysql", "postgres", "sqlite"] else "mysql"
         is_valid, error = SQLValidator.validate(sql, dialect)
         if not is_valid:
-            return False, error, None, None
+            return False, error, None, None, original_sql
 
         # 2.5 修正中文日期格式（如"2023年8月" → "2023-08-01"）
         import re as _re
@@ -1134,43 +1121,26 @@ class NL2SQLEngine:
         try:
             results = await execute_sql(sql)
             if results is None:
-                return False, f"不支持的数据库类型: {datasource.type}", None, None
+                return False, f"不支持的数据库类型: {datasource.type}", None, None, original_sql
 
-            # 自动重试：如果无数据且有WHERE条件，逐步放宽条件重试
-            if not results and "WHERE" in sql.upper():
-                # 第一步：尝试移除时间过滤条件
-                new_sql = NL2SQLEngine._remove_time_filter(sql)
-                if new_sql != sql:
-                    logger.info(f"无数据，尝试移除时间条件重试，新SQL: {new_sql[:80]}...")
-                    retry_results = await execute_sql(new_sql)
-                    if retry_results:
-                        logger.info(f"移除时间条件后查询到 {len(retry_results)} 条数据")
-                        return True, "（已自动放宽时间范围）", retry_results, column_meta
-                    results = retry_results if retry_results is not None else results
+            # 用户要求：规定月份没有数据就直接说查询不到，不再做任何兜底放宽
+            actual_sql_used = sql
 
-                # 第二步：如果仍无数据，尝试移除整个WHERE子句（处理LLM误加的非时间过滤条件）
-                if not results:
-                    import re as _re2
-                    no_where_sql = _re2.sub(r'\s+WHERE\b.*?(?=\s+GROUP\s+BY|\s+ORDER\s+BY|\s+LIMIT\s|$)', '', new_sql, flags=_re2.IGNORECASE | _re2.DOTALL)
-                    no_where_sql = " ".join(no_where_sql.split())
-                    if no_where_sql != new_sql and no_where_sql != sql:
-                        logger.info(f"无数据，尝试移除WHERE子句重试，新SQL: {no_where_sql[:80]}...")
-                        retry_results = await execute_sql(no_where_sql)
-                        if retry_results:
-                            logger.info(f"移除WHERE子句后查询到 {len(retry_results)} 条数据")
-                            return True, "（已自动移除无效过滤条件）", retry_results, column_meta
+            if not results:
+                logger.info(f"SQL执行成功但无数据，直接返回空结果（不再兜底放宽）: {sql[:80]}...")
 
-            return True, "", results, column_meta
+            return True, "", results, column_meta, actual_sql_used
 
         except Exception as e:
             logger.error(f"SQL执行失败: {e}", exc_info=True)
-            return False, f"SQL执行失败: {str(e)}", None, None
+            return False, f"SQL执行失败: {str(e)}", None, None, original_sql
 
     @staticmethod
     async def query(
         db: AsyncSession,
         question: str,
         datasource_id: int,
+        history: Optional[List[Dict]] = None,
     ) -> Tuple[Optional[str], Optional[List[dict]], Optional[str], Optional[List[dict]]]:
         """
         NL2SQL查询流程
@@ -1180,6 +1150,7 @@ class NL2SQLEngine:
         :param db: 数据库会话
         :param question: 用户问题
         :param datasource_id: 数据源ID
+        :param history: 对话历史（P0改造：传入给generate_sql用于多轮对话上下文）
         :return: (SQL, 结果数据, 错误信息, 字段元信息)
 
         流程步骤：
@@ -1194,6 +1165,9 @@ class NL2SQLEngine:
             - 最多重试2次
             - 每次失败记录错误日志
             - 最后一次失败返回错误信息
+
+        说明：
+            - 规定月份没有数据时直接返回空结果，不再做任何兜底放宽/就近切换
         """
         max_retries = 2
         last_error = None
@@ -1208,8 +1182,8 @@ class NL2SQLEngine:
                 terms = list(term_result.scalars().all())
                 logger.debug(f"获取到术语数量: {len(terms)}")
 
-                # 2. 生成SQL
-                sql = await NL2SQLEngine.generate_sql(db, question, datasource_id, terms)
+                # 2. 生成SQL（传入history用于多轮对话上下文）
+                sql = await NL2SQLEngine.generate_sql(db, question, datasource_id, terms, history=history)
 
                 # 3. 获取数据源
                 ds_stmt = select(DataSource).where(DataSource.id == datasource_id)
@@ -1220,17 +1194,21 @@ class NL2SQLEngine:
                     return sql, None, "数据源不存在", None
 
                 # 4. 校验并执行
-                success, error, results, column_meta = await NL2SQLEngine.validate_and_execute(db, sql, datasource)
+                # validate_and_execute 返回5元组 (success, error, results, column_meta, actual_sql_used)
+                # 不再做任何兜底放宽，无数据直接返回空结果
+                success, error, results, column_meta, actual_sql_used = \
+                    await NL2SQLEngine.validate_and_execute(db, sql, datasource)
 
                 if success:
+                    final_sql = actual_sql_used or sql
                     logger.info(f"NL2SQL查询成功: 问题={question[:30]}..., 结果数={len(results) if results else 0}")
-                    return sql, results, None, column_meta
+                    return final_sql, results, error if error else None, column_meta
                 else:
                     last_error = error
                     logger.warning(f"NL2SQL第{attempt}次尝试失败: {error}")
                     if attempt < max_retries:
                         continue
-                    return sql, None, error, None
+                    return actual_sql_used if actual_sql_used else sql, None, error, None
 
             except Exception as e:
                 last_error = str(e)
