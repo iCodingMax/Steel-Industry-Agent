@@ -103,6 +103,14 @@ class IntentClassifier:
         # 明确执行变体（需同时包含"高炉炉况诊断"完整短语）
         '执行高炉炉况诊断', '运行高炉炉况诊断',
         '使用高炉炉况诊断技能', '调用高炉炉况诊断技能',
+        # P2修复：新增"产品营销文案" Skill 名称
+        # 用户直接说出"产品营销文案"时立即判定为skill意图，避免被LLM误判为knowledge
+        '产品营销文案',
+        # 明确执行变体（需同时包含"产品营销文案"完整短语）
+        '执行产品营销文案', '运行产品营销文案',
+        '使用产品营销文案技能', '调用产品营销文案技能',
+        # 简写变体（"产品文案"、"营销文案"在 _quick_classify 中不作为强关键词，
+        # 因为过于宽泛，会误命中"介绍下产品文案"等普通问题，由 1.5 步骤动态匹配处理）
     ]
 
     # Skill意图普通关键词（需要多个同时命中才判定）
@@ -376,9 +384,14 @@ class IntentClassifier:
             if name:
                 name_keywords = IntentClassifier._extract_keywords(tool.get("name") or "")
                 matched = [kw for kw in name_keywords if kw in question_lower]
-                # 要求命中率≥80%，且至少命中2个关键词
-                if len(matched) >= 2 and len(matched) / max(len(name_keywords), 1) >= 0.8:
-                    logger.info(f"工具相似度匹配: skill (工具名 '{tool['name']}' 关键词命中: {matched})")
+                # P2修复：阈值从 0.8 降低到 0.6
+                # 原因：Skill 名"产品营销文案创作"提取4个关键词（产品/营销/文案/创作），
+                # 用户输入"产品营销文案"命中3个（命中率0.75），原阈值0.8过严不命中。
+                # 降低到0.6后，0.75≥0.6 ✓ 能正确命中。
+                # 同时要求命中数≥2 且命中关键词总长度≥4字符（避免短词误命中）
+                matched_total_len = sum(len(kw) for kw in matched)
+                if len(matched) >= 2 and matched_total_len >= 4 and len(matched) / max(len(name_keywords), 1) >= 0.6:
+                    logger.info(f"工具相似度匹配: skill (工具名 '{tool['name']}' 关键词命中: {matched}, 命中率={len(matched)}/{len(name_keywords)})")
                     return "skill"
 
             # 3. 工具描述关键词匹配（不使用描述匹配，避免普通炉况问题被误判为skill）
@@ -567,7 +580,8 @@ class IntentClassifier:
                         skill_content_kw = ['产品', '文案', '营销', '素材', '介绍', '撰写', '撰写文案',
                                            '生成文案', '宣传', '推广', '定位', '卖点', '目标用户',
                                            '客户评价', '价格', '行动号召', 'CTA']
-                        has_skill_content = any(kw in question for kw in skill_content_kw)
+                        skill_content_hits = [kw for kw in skill_content_kw if kw in question]
+                        has_skill_content = len(skill_content_hits) > 0
                         # 判断是否为 Skill 素材输入（Markdown 结构化 + Skill 关键词）
                         is_skill_content = (has_md_heading or has_md_list or has_md_separator) and has_skill_content
                         is_data_input = is_json or has_multiple_kv or is_data_dense or is_skill_content
@@ -580,19 +594,40 @@ class IntentClassifier:
                             '折线图', '柱状图', '饼图', '表格', '平均值', '合计',
                         ])
                         # 2b. 时间词（数据查询的常见伴随特征，如"2024年9月"）
-                        has_time_kw = any(kw in question for kw in [
+                        #     注意：单独"年"字可能误命中"2-3年"等描述性内容，
+                        #     故要求与数据查询动词共现才算时间词
+                        has_time_kw_alone = any(kw in question for kw in [
                             '年', '月', '日', '上周', '本周', '上月', '本月', '上年度', '本年度',
                         ])
+                        has_time_kw = has_time_kw_alone and has_data_query_kw
                         # 2c. 知识咨询词（RAG意图的强信号）
-                        has_consult_kw = any(kw in question for kw in [
-                            '如何', '怎么', '为什么', '是什么', '什么是',
-                            '应该', '原理', '解释', '说明', '怎样',
+                        #     注意：单独"解释"可能误命中"可追溯可解释"等描述性内容，
+                        #     故要求与疑问词共现才算咨询词
+                        has_consult_question = any(kw in question for kw in [
+                            '如何', '怎么', '为什么', '是什么', '什么是', '怎样',
                         ])
+                        has_consult_other = any(kw in question for kw in [
+                            '应该', '原理', '说明', '定义', '概念',
+                            '规范', '标准', '制度', '规程', '操作',
+                        ])
+                        has_consult_kw = has_consult_question or has_consult_other
 
                         # ===== 判定：仅当含"参数数据"特征且不含任何"自然语言"特征时才保持 skill =====
                         has_natural_lang_feature = (
                             has_data_query_kw or has_time_kw or has_consult_kw
                         )
+                        # P2修复：当 is_skill_content=True（Markdown结构+Skill关键词）且
+                        # Skill 内容关键词命中≥2个时，直接保持 skill，不检查自然语言特征。
+                        # 原因：用户提供的详细产品素材（如产品名称/定位/卖点/客户评价）
+                        # 可能含"年"（2-3年）、"解释"（可追溯可解释）等描述性词，
+                        # 这些不是数据查询或知识咨询信号，不应破坏 Skill 上下文保持。
+                        if is_skill_content and len(skill_content_hits) >= 2:
+                            logger.info(
+                                f"意图分类完成(Skill上下文保持-素材强匹配): "
+                                f"问题={question[:30]}..., 意图=skill, "
+                                f"命中关键词={skill_content_hits}"
+                            )
+                            return "skill"
                         if is_data_input and not has_natural_lang_feature:
                             logger.info(f"意图分类完成(Skill上下文保持-数据输入): 问题={question[:30]}..., 意图=skill")
                             return "skill"
@@ -600,7 +635,7 @@ class IntentClassifier:
                             logger.info(
                                 f"[Skill排查] 上下文命中但当前为自然语言查询/咨询，回到正常分类: "
                                 f"is_data_input={is_data_input}(json={is_json},kv={has_multiple_kv},dense={is_data_dense},skill_content={is_skill_content}), "
-                                f"data_query={has_data_query_kw}, time={has_time_kw}, consult={has_consult_kw}"
+                                f"data_query={has_data_query_kw}, time={has_time_kw}(alone={has_time_kw_alone}), consult={has_consult_kw}"
                             )
                             # 不返回 skill，继续走关键词预判/LLM 分类
             else:
