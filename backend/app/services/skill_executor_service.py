@@ -463,28 +463,16 @@ class SkillExecutorService:
                 # P2修复：首次询问引导回复不应触发续写
                 # Skill 首次执行时若 SKILL.md 定义了数据完整性预检步骤，
                 # LLM 发现用户未提供数据，会输出"请您协助补充以下关键数据..."
-                # 这种引导回复（短且不含5章节），不应触发续写。
+                # 这种引导回复可能很长（如详细列出7个维度需要补充的数据），
+                # 也可能列出5章节作为预告结构，但实质是数据征集而非诊断报告。
                 # 续写只针对"用户已提供数据后的诊断报告不完整"场景。
-                is_data_request_reply = (
-                    len(answer) < 3000
-                    and any(kw in answer for kw in [
-                        '请补充', '请提供', '请协助', '请上传',
-                        '请发送', '请提交', '请填写', '请输入',
-                    ])
-                    and any(kw in answer for kw in [
-                        '数据', '信息', '参数', '指标', '关键',
-                        '以下', '维度',
-                    ])
-                )
-                if is_data_request_reply:
-                    logger.info(
-                        f"Skill [{skill_name}] 检测为数据预检引导回复"
-                        f"（长度={len(answer)}字符，未提供数据），跳过5章节续写逻辑"
-                    )
-                    result["answer"] = answer
-                    logger.info(f"Skill [{skill_name}] 执行完成，回答长度={len(answer)}")
-                    return result
-
+                #
+                # 检测条件（同时满足）：
+                # 1. 回复不含全部5章节标题（不是完整诊断报告，可能为引导回复或不完整报告）
+                #    注：即使引导回复列出5章节预告，只要不是诊断报告本身，
+                #    通过条件2的数据征集类内容即可区分
+                # 2. 回复包含数据征集类动词短语（请补充/请提供/请您告知...）
+                # 3. 回复包含数据征集类名词（数据/信息/参数/指标/关键/以下/维度...）
                 required_sections = [
                     "一、关键指标概览",
                     "二、分项诊断",
@@ -492,6 +480,38 @@ class SkillExecutorService:
                     "四、操作建议",
                     "五、诊断置信度",
                 ]
+                sections_count = sum(1 for s in required_sections if s in answer)
+                has_all_sections = sections_count >= 5  # 完整诊断报告
+
+                # 动词短语：扩充覆盖"请您"、"需要您"等更宽松的表达
+                has_data_request_phrases = any(kw in answer for kw in [
+                    '请补充', '请提供', '请协助', '请上传',
+                    '请发送', '请提交', '请填写', '请输入',
+                    '请告知', '请说明', '请描述', '请列出',
+                    '请告诉我', '请按', '请您', '需要您',
+                ])
+                # 名词：扩充覆盖更多数据类名词
+                has_data_request_objects = any(kw in answer for kw in [
+                    '数据', '信息', '参数', '指标', '关键',
+                    '以下', '维度', '字段', '数值', '数值表',
+                    '原料', '燃料', '风温', '炉温', '铁水',
+                    '焦比', '煤比', '透气性', '压差',
+                ])
+                is_data_request_reply = (
+                    (not has_all_sections)
+                    and has_data_request_phrases
+                    and has_data_request_objects
+                )
+                if is_data_request_reply:
+                    logger.info(
+                        f"Skill [{skill_name}] 检测为数据预检引导回复"
+                        f"（长度={len(answer)}字符，含{sections_count}/5章节标题，"
+                        f"动词命中={has_data_request_phrases}，名词命中={has_data_request_objects}），"
+                        f"跳过5章节续写逻辑"
+                    )
+                    result["answer"] = answer
+                    logger.info(f"Skill [{skill_name}] 执行完成，回答长度={len(answer)}")
+                    return result
                 missing_required = [s for s in required_sections if s not in answer]
                 is_truncated = truncation_marker in answer
                 # 兜底：如果输出过短（<5000字符）且缺失2个以上章节，也视为需要续写
