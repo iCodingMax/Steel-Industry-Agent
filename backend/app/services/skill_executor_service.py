@@ -358,12 +358,15 @@ class SkillExecutorService:
                 model_name = _cfg.XINFERENCE_LLM_MODEL or ''
 
             # 根据模型名自动识别 context_length（已知主流模型的上下文长度）
-            # P2修复：之前对 qwen3 给 40960 太保守。qwen3-32b/14b 官方 context 为 128k，
-            # 模型部署到 Xinference 时通常也会保留大上下文，这里统一按 128k 预估
+            # P2修复：必须与 Xinference 实际部署的 context_length 一致，否则会超出限制
+            # 之前对 qwen3 给 131072 是错误的（实际 Xinference 部署 qwen3 通常为 40960）
             model_context_length = 65536  # 未识别模型默认 64k（原32k加倍）
             _mn = (model_name or '').lower()
             if any(k in _mn for k in ['qwen3', 'qwen2.5', 'qwen2']):
-                model_context_length = 131072   # qwen 系列部署通常是 128k+
+                # 注意：qwen3 官方支持 128k context，但 Xinference 部署时 max_model_len
+                # 可能受 GPU 显存限制设为 40960。需根据实际部署调整。
+                # 若 Xinference 重新部署时调大 max_model_len，这里同步调大。
+                model_context_length = 40960   # 与 Xinference 实际部署一致
             elif any(k in _mn for k in ['glm4', 'glm-4', 'glm5', 'glm-5']):
                 model_context_length = 131072
             elif 'glm' in _mn:
