@@ -229,6 +229,62 @@ class LLMService:
             #   Xinference 的 OpenAI兼容层在解析时尝试访问 delta.text 会触发 KeyError，
             #   因为 thinking 模式下增量内容放在 reasoning_content 而非 content 字段。
             #   解决方案：通过 chat_template_kwargs.enable_thinking=False 显式关闭。
+
+            # P2修复：max_tokens 自动下调，避免 prompt+max_tokens 超过 context_length
+            # 原因：LLM_MAX_TOKENS 设为 40960（等于 context_length）时，
+            #   随着对话轮数增加，prompt 越来越长，prompt+max_tokens 会超过 40960，
+            #   导致 vLLM 报错 [pid=xxx] 'text'。
+            # 方案：估算 messages 总 token 数，自动下调 max_tokens，
+            #   确保 prompt + max_tokens ≤ context_length - safety_margin
+            _model_lower = (model or '').lower()
+
+            # 2a. 识别模型 context_length（与 skill_executor_service.py 保持一致）
+            _model_context_length = 65536  # 未识别模型默认 64k
+            if any(k in _model_lower for k in ['qwen3', 'qwen2.5', 'qwen2']):
+                _model_context_length = 40960   # 与 Xinference 实际部署一致
+            elif any(k in _model_lower for k in ['glm4', 'glm-4', 'glm5', 'glm-5']):
+                _model_context_length = 131072
+            elif 'glm' in _model_lower:
+                _model_context_length = 65536
+            elif any(k in _model_lower for k in ['gemma4', 'gemma-4']):
+                _model_context_length = 131072
+            elif 'gemma' in _model_lower:
+                _model_context_length = 65536
+            elif 'deepseek' in _model_lower or 'gpt' in _model_lower:
+                _model_context_length = 131072
+
+            # 2b. 估算 messages 总 token 数（system_prompt + history + 当前问题）
+            # 中文约1字符≈1.5 token，加上 JSON 格式开销（role/content 等字段）
+            _messages_total_chars = 0
+            for _msg in messages:
+                _messages_total_chars += len(_msg.get('content') or '')
+                _messages_total_chars += 20  # role 等字段开销
+            _estimated_prompt_tokens = int(_messages_total_chars * 1.5)
+
+            # 2c. 计算 available_max_tokens 并自动下调
+            _safety_margin = 1000
+            _available_max_tokens = _model_context_length - _estimated_prompt_tokens - _safety_margin
+            if _available_max_tokens < 1024:
+                # 极端情况：prompt 已接近 context_length，给最小输出空间
+                _available_max_tokens = 1024
+                logger.warning(
+                    f"Prompt过长接近context_length极限: "
+                    f"估算prompt_token={_estimated_prompt_tokens}, "
+                    f"context_length={_model_context_length}, "
+                    f"available={_available_max_tokens}（已降至最低1024）"
+                )
+
+            _original_max_tokens = max_tokens
+            if max_tokens > _available_max_tokens:
+                max_tokens = _available_max_tokens
+                logger.info(
+                    f"max_tokens自动下调: 原值={_original_max_tokens}, "
+                    f"下调后={max_tokens} "
+                    f"(context={_model_context_length}, "
+                    f"估算prompt_token={_estimated_prompt_tokens}, "
+                    f"safety_margin={_safety_margin})"
+                )
+
             request_body = {
                 "model": model,
                 "messages": messages,
@@ -413,6 +469,39 @@ class LLMService:
                 temperature = self.temperature
 
             # 2. 发起流式HTTP请求
+            # P2修复：max_tokens 自动下调（与 chat() 方法保持一致）
+            _model_lower = (model or '').lower()
+            _model_context_length = 65536
+            if any(k in _model_lower for k in ['qwen3', 'qwen2.5', 'qwen2']):
+                _model_context_length = 40960
+            elif any(k in _model_lower for k in ['glm4', 'glm-4', 'glm5', 'glm-5']):
+                _model_context_length = 131072
+            elif 'glm' in _model_lower:
+                _model_context_length = 65536
+            elif any(k in _model_lower for k in ['gemma4', 'gemma-4']):
+                _model_context_length = 131072
+            elif 'gemma' in _model_lower:
+                _model_context_length = 65536
+            elif 'deepseek' in _model_lower or 'gpt' in _model_lower:
+                _model_context_length = 131072
+
+            _messages_total_chars = 0
+            for _msg in messages:
+                _messages_total_chars += len(_msg.get('content') or '')
+                _messages_total_chars += 20
+            _estimated_prompt_tokens = int(_messages_total_chars * 1.5)
+            _available_max_tokens = _model_context_length - _estimated_prompt_tokens - 1000
+            if _available_max_tokens < 1024:
+                _available_max_tokens = 1024
+            if max_tokens > _available_max_tokens:
+                logger.info(
+                    f"chat_stream max_tokens自动下调: 原值={max_tokens}, "
+                    f"下调后={_available_max_tokens} "
+                    f"(context={_model_context_length}, "
+                    f"估算prompt_token={_estimated_prompt_tokens})"
+                )
+                max_tokens = _available_max_tokens
+
             # 对qwen3系列模型禁用thinking模式，避免Xinference解析reasoning_content时触发KeyError 'text'
             request_body = {
                 "model": model,
