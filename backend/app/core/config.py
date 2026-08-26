@@ -1,21 +1,60 @@
 """
 核心配置模块
+
+多环境支持：
+  通过 ENV 环境变量选择不同的 .env 文件：
+    ENV=development  → 加载 .env.dev
+    ENV=sit          → 加载 .env.sit
+    ENV=production   → 加载 .env.pro
+    未设置/其他值     → 加载 .env.dev（默认开发环境）
+
+启动示例：
+  # Windows (PowerShell)
+  $env:ENV="development"; python main.py
+  $env:ENV="sit"; python main.py
+  $env:ENV="production"; python main.py
+
+  # Linux/macOS
+  ENV=development python main.py
+  ENV=sit python main.py
+  ENV=production python main.py
+
+  # Docker
+  docker-compose up -e ENV=production
 """
+import os
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# ==================== 多环境映射 ====================
+# ENV 环境变量 → .env 文件名映射
+_ENV_FILE_MAP = {
+    "development": ".env.dev",
+    "dev": ".env.dev",
+    "sit": ".env.sit",
+    "staging": ".env.sit",
+    "production": ".env.pro",
+    "prod": ".env.pro",
+}
+
+# 获取当前环境标识（默认开发环境）
+_CURRENT_ENV = os.getenv("ENV", "development").lower()
+# 确定要加载的 .env 文件
+_ENV_FILE = _ENV_FILE_MAP.get(_CURRENT_ENV, ".env.dev")
 
 
 class Settings(BaseSettings):
     """全局配置类"""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
     )
 
-    ENV: str = "development"
+    ENV: str = _CURRENT_ENV
     API_PREFIX: str = "/api/v1"
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -71,7 +110,17 @@ class Settings(BaseSettings):
     CHAT_HISTORY_LIMIT: int = 10
 
     def model_post_init(self, __context) -> None:
-        """初始化后处理：PGVECTOR配置默认跟随PG配置"""
+        """初始化后处理：PGVECTOR配置默认跟随PG配置 + 环境日志"""
+        # 打印当前加载的环境配置信息（便于排查）
+        import sys
+        print(
+            f"[Settings] 环境: {self.ENV}, "
+            f"配置文件: {_ENV_FILE}, "
+            f"PG: {self.PG_HOST}:{self.PG_PORT}/{self.PG_DB}, "
+            f"Xinference: {self.XINFERENCE_BASE_URL}"
+        )
+        sys.stdout.flush()
+
         if not self.PGVECTOR_HOST:
             self.PGVECTOR_HOST = self.PG_HOST
         if self.PGVECTOR_PORT == 0:

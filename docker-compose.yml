@@ -109,7 +109,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./backend/.env:/app/.env:ro
+      - ./backend/.env.${ENV:-production}:/app/.env.${ENV:-production}:ro
       - uploads_data:/app/uploads
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]

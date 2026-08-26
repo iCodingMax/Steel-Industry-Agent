@@ -8,6 +8,24 @@
   2. 生命周期管理 —— lifespan 异步上下文管理器处理启动/关闭
   3. 延迟导入 —— lifespan 内部延迟导入 auth_service 和 seed_data，避免循环依赖
 
+多环境支持：
+  通过 ENV 环境变量选择不同的 .env 文件：
+    ENV=development  → 加载 .env.dev
+    ENV=sit          → 加载 .env.sit
+    ENV=production   → 加载 .env.pro
+    未设置/其他值     → 加载 .env.dev（默认开发环境）
+
+  启动示例：
+    # Windows (PowerShell)
+    $env:ENV="development"; python main.py
+    $env:ENV="sit"; python main.py
+    $env:ENV="production"; python main.py
+
+    # Linux/macOS
+    ENV=development python main.py
+    ENV=sit python main.py
+    ENV=production python main.py
+
 启动流程（按顺序执行）：
   init_db()                → 初始化 PostgreSQL 表结构 + 自动迁移缺失列
   init_default_admin()     → 创建默认管理员账号（首次启动）
@@ -114,7 +132,18 @@ def create_app() -> FastAPI:
 app = create_app()
 
 if __name__ == "__main__":
-    # 开发环境直接运行（生产环境用 uvicorn 命令行启动）
+    # 多环境启动：通过 ENV 环境变量切换配置
+    #
+    # Windows (PowerShell):
+    #   $env:ENV="development"; python main.py   # 开发环境（默认）
+    #   $env:ENV="sit"; python main.py           # 测试环境
+    #   $env:ENV="production"; python main.py    # 生产环境
+    #
+    # Linux/macOS:
+    #   ENV=development python main.py
+    #   ENV=sit python main.py
+    #   ENV=production python main.py
+
     import uvicorn
     uvicorn.run(
         app,

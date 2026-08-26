@@ -28,6 +28,11 @@ var/
 
 # Environment
 .env.local
+backend/.env.dev
+backend/.env.sit
+backend/.env.pro
+backend/.env
+!backend/.env.example
 
 # Database
 *.db
@@ -50,3 +55,6 @@ frontend/.vite/deps/
 
 # 文档存储目录
 backend/storage/documents/
+code-guide/
+docs/
+steel-agent-architecture/
