@@ -39,6 +39,13 @@ llama-index-vector-stores-postgres>=0.2.0   # pgvector 向量存储
 llama-index-embeddings-openai>=0.2.0         # OpenAI 兼容嵌入（Xinference）
 llama-index-llms-openai>=0.2.0               # OpenAI 兼容 LLM（Xinference）
 
+# ==================== LangGraph（Agent 编排） ====================
+langgraph>=0.2.0         # Agent 状态图编排
+langchain-core>=0.3.0    # LangChain 核心（LangGraph 依赖）
+
+# ==================== YAML 解析 ====================
+pyyaml>=6.0              # SKILL.md frontmatter 解析
+
 # ==================== 文档解析 ====================
 pypdf>=4.0.0             # PDF 文本提取
 python-docx>=1.1.0       # Word 文档解析

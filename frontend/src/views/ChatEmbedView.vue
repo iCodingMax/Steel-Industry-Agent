@@ -391,7 +391,7 @@ const appId = computed(() => {
   }
   return parseInt(route.params.appId as string)
 })
-const appName = ref('工业智能助手平台')
+const appName = ref('工业智能体平台')
 const greetingMessage = ref('')
 const app = ref<Application | null>(null)
 const llmConfigs = ref<any[]>([])
@@ -906,7 +906,7 @@ async function loadAppConfig() {
     }
     
     app.value = appData
-    appName.value = appData.name || '工业智能助手平台'
+    appName.value = appData.name || '工业智能体平台'
     greetingMessage.value = appData.greetingMessage || ''
   } catch (error) {
     console.error('加载应用配置失败', error)

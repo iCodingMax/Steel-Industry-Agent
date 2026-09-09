@@ -1,7 +1,7 @@
 """
 工具配置 Schema
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, Dict, Any
 
 
@@ -15,9 +15,18 @@ class ToolConfigBase(BaseModel):
 
 
 class MCPConfig(BaseModel):
-    """MCP Server 配置 (MaxKB 格式)
+    """MCP Server 配置 (兼容 Claude Code / MaxKB 格式)
     
-    格式示例:
+    格式示例 (Claude Code 风格):
+    {
+        "mcp_server_mysql": {
+            "url": "http://127.0.0.1:8010/mcp",
+            "type": "http",
+            "headers": {"Authorization": "Bearer blast_furnace"}
+        }
+    }
+    
+    格式示例 (MaxKB 风格):
     {
         "amap-amap-sse": {
             "url": "http://mcp.amap.com/sse?key=xxx",
@@ -25,8 +34,13 @@ class MCPConfig(BaseModel):
         }
     }
     """
+    model_config = {"extra": "allow"}  # 允许额外字段（如 headers, bearer_token, type）
+    
     url: str = Field(description="MCP Server URL")
-    transport: str = Field(default="sse", description="传输协议: sse/streamable-http")
+    transport: Optional[str] = Field(default=None, description="传输协议: sse/streamable-http（可省略，type会自动映射）")
+    type: Optional[str] = Field(default=None, description="Claude Code 风格: http → streamable-http, sse → sse")
+    headers: Optional[Dict[str, str]] = Field(default=None, description="HTTP 请求头（含 Authorization 认证）")
+    bearer_token: Optional[str] = Field(default=None, description="简化认证：自动构造 Authorization: Bearer xxx")
 
     @field_validator('url')
     @classmethod
@@ -34,7 +48,6 @@ class MCPConfig(BaseModel):
         """清洗URL：去除首尾空格、反引号等非法字符"""
         if not v:
             raise ValueError("URL不能为空")
-        # 去除首尾空格、反引号、引号等常见复制粘贴引入的非法字符
         v = v.strip().strip('`').strip('"').strip("'").strip()
         if not v:
             raise ValueError("URL不能为空")
@@ -42,12 +55,29 @@ class MCPConfig(BaseModel):
             raise ValueError(f"URL必须以http://或https://开头，当前值: {v}")
         return v
 
-    @field_validator('transport')
-    @classmethod
-    def validate_transport(cls, v: str) -> str:
-        if v not in ['sse', 'streamable-http']:
-            raise ValueError(f"不支持的传输协议: {v}，仅支持 sse 和 streamable-http")
-        return v
+    @model_validator(mode='after')
+    def normalize_transport_and_type(self) -> 'MCPConfig':
+        """
+        统一 transport/type 别名，自动归一化
+        
+        映射规则:
+          - type="http" / transport="http" → "streamable-http"
+          - type="sse" / transport="sse" → "sse"
+          - 默认 → "streamable-http"（优先现代协议）
+        """
+        # 优先用 transport，其次 type
+        raw = self.transport or self.type
+        raw = (raw or '').lower().strip()
+        
+        if raw in ('sse', 'eventsource', 'event-source'):
+            self.transport = 'sse'
+        else:
+            # http / streamable-http / 其他未知值 → 统一为 streamable-http
+            self.transport = 'streamable-http'
+        
+        # 同步 type 字段为归一化后的值
+        self.type = self.transport
+        return self
 
 
 class MCPCreate(BaseModel):

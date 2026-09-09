@@ -421,6 +421,532 @@ class LLMService:
             logger.error(f"LLM调用失败: {e}")
             raise Exception(f"大模型调用失败: {str(e)}")
 
+    # prompt-based 工具调用标记（用于不支持原生 function-calling 的模型）
+    _TOOL_CALL_START = "<function_call>"
+    _TOOL_CALL_END = "</function_call>"
+
+    @staticmethod
+    def _format_tools_for_prompt(tools: List[Dict]) -> str:
+        """
+        将 OpenAI 格式的 tools 列表转成可读的文本描述（用于 prompt-based 降级）
+
+        :param tools: OpenAI tools 格式列表
+        :return: 注入 system prompt 的工具描述文本
+        """
+        lines = ["你可以调用以下工具来获取外部数据。如果需要调用工具，请严格按照规定格式输出，不要调用则正常回答：\n"]
+        for i, t in enumerate(tools, 1):
+            func = t.get("function", {})
+            name = func.get("name", "")
+            desc = func.get("description", "")[:300]
+            params = func.get("parameters", {})
+
+            # 参数描述
+            props = params.get("properties", {}) if isinstance(params, dict) else {}
+            required_fields = params.get("required", []) if isinstance(params, dict) else []
+            param_lines = []
+            for pname, pinfo in props.items():
+                if isinstance(pinfo, dict):
+                    ptype = pinfo.get("type", "any")
+                    pdesc = pinfo.get("description", "")[:100]
+                    marker = "*" if pname in required_fields else " "
+                    param_lines.append(f"  - {marker} {pname}({ptype}): {pdesc}")
+                else:
+                    param_lines.append(f"  - {pname}")
+
+            lines.append(f"{i}. **{name}**: {desc}")
+            if param_lines:
+                lines.append("   参数：")
+                lines.extend(param_lines)
+            lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _parse_tool_calls_from_text(content: str) -> List[Dict]:
+        """
+        从 LLM 文本回复中解析结构化的工具调用标记
+
+        支持多种标签格式（LLM 有时会偏离 prompt 指定的格式）：
+        1. <function_call>{"name":"...","arguments":{...}}</function_call>  （标准格式）
+        2. <tool_call>{"name":"...","arguments":{...}}</tool_call>          （LLM 自发变体）
+        3. 多个标记可串联出现
+
+        :param content: LLM 纯文本回复
+        :return: OpenAI tool_calls 格式列表
+        """
+        tool_calls = []
+        if not content:
+            return tool_calls
+
+        import re as _re
+        # 兼容 <function_call> 和 <tool_call> 两种标签（LLM 有时会自发换标签）
+        _start_alt = r'(?:function_call|tool_call|invoke|call_tool)'
+        _end_alt = r'(?:/function_call|/tool_call|/invoke|/call_tool)'
+        pattern = _re.compile(
+            r'<' + _start_alt + r'>(.*?)<' + _end_alt + r'>',
+            _re.DOTALL | _re.IGNORECASE,
+        )
+
+        for idx, match in enumerate(pattern.finditer(content)):
+            json_str = match.group(1).strip()
+            try:
+                parsed = json.loads(json_str)
+                tool_name = parsed.get("name", "") or parsed.get("tool", "")
+                tool_args = parsed.get("arguments", {}) or parsed.get("args", {})
+                if isinstance(tool_args, str):
+                    try:
+                        tool_args = json.loads(tool_args)
+                    except (json.JSONDecodeError, ValueError):
+                        tool_args = {"raw": tool_args}
+                if not tool_name:
+                    logger.warning(f"解析 tool_call JSON 缺少 name 字段: {json_str[:100]}")
+                    continue
+                tool_calls.append({
+                    "id": f"call_via_prompt_{idx}_{abs(hash(json_str)) % 1000000}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(tool_args, ensure_ascii=False),
+                    },
+                })
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"解析 tool_call JSON 失败: {json_str[:100]}, error={e}")
+
+        return tool_calls
+
+    async def chat_with_tools(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        config: Optional[Dict] = None,
+        tool_choice: Optional[str] = "auto",
+    ) -> Dict:
+        """
+        带函数调用的同步对话（支持自动降级）
+
+        执行策略（两层防御）：
+          第1层：优先使用原生 OpenAI tools 参数（如果模型支持）
+          第2层：如果原生方式失败（500 + text/plain / /generate 报错 / pickling 错误），
+                 自动降级为 prompt-based 模式——将工具描述注入 system prompt，
+                 让 LLM 用结构化 JSON 标记 <function_call>...</function_call> 输出工具调用
+
+        降级检测规则（任一触发即降级）：
+          - HTTP 500 且响应 content-type 非 JSON（text/plain 等）
+          - FastAPI detail 包含 "/generate" 或 "ContentTypeError" 或 "cannot be pickled"
+          - 模型名属于已知不支持 function-calling 的列表（qwen3-*, xinference/qwen 等）
+
+        :param messages: 完整的 OpenAI 消息列表
+        :param tools: OpenAI 格式的工具定义列表
+        :param config: 应用级 LLM 配置
+        :param tool_choice: "auto" | "required" | "none"
+        :return: {content, tool_calls, finish_reason, model}
+        """
+        # 如果没有工具，直接走普通 chat
+        if not tools:
+            content = await self._chat_plain(messages, config)
+            return {
+                "content": content,
+                "tool_calls": [],
+                "finish_reason": "stop",
+                "model": (config or {}).get("model") or self.model,
+            }
+
+        # 第0步：预判是否需要降级（已知不支持原生 function-calling 的模型）
+        model_name = (config or {}).get("model") or self.model
+        _model_lower = (model_name or "").lower()
+        # Xinference 部署的 qwen3/qwen2 等目前已知不支持原生 tools 参数
+        # （vLLM 的 --enable-auto-tool-choice 未开启时会返回 500）
+        _force_prompt_models = ("qwen3", "qwen2", "qwen2.5")  # Xinference 部署
+        _should_try_native = not any(k in _model_lower for k in _force_prompt_models)
+
+        # ---- 第1层：原生 function-calling ----
+        if _should_try_native:
+            native_result = await self._chat_with_tools_native(
+                messages, tools, config, tool_choice, model_name
+            )
+            if native_result.get("fallback_triggered"):
+                logger.warning(
+                    f"原生 function-calling 失败，自动降级为 prompt-based 模式: "
+                    f"{native_result.get('fallback_reason', '未知')}"
+                )
+                # 继续到第2层
+            else:
+                del native_result["fallback_triggered"]
+                return native_result
+
+        # ---- 第2层：prompt-based 降级 ----
+        logger.info(f"使用 prompt-based 工具调用模式: model={model_name}, tools={len(tools)}个")
+        return await self._chat_with_tools_via_prompt(messages, tools, config, model_name)
+
+    async def _chat_plain(
+        self,
+        messages: List[Dict],
+        config: Optional[Dict] = None,
+    ) -> str:
+        """内部工具：将 messages 作为整体发送给 chat（不做 prompt 改写）"""
+        if config:
+            base_url = config.get('base_url') or self.base_url
+            api_key = config.get('api_key') or self.api_key
+            model = config.get('model') or self.model
+            max_tokens = config.get('max_tokens') or self.max_tokens
+            temperature = config.get('temperature')
+            if temperature is None:
+                temperature = self.temperature
+        else:
+            base_url, api_key, model = self.base_url, self.api_key, self.model
+            max_tokens = self.max_tokens
+            temperature = self.temperature
+
+        body = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if "qwen3" in (model or "").lower():
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+
+        # max_tokens 自动下调（复用 chat() 的逻辑）
+        _model_lower = (model or '').lower()
+        _model_context_length = 65536
+        if any(k in _model_lower for k in ['qwen3', 'qwen2.5', 'qwen2']):
+            _model_context_length = 40960
+        elif any(k in _model_lower for k in ['glm4', 'glm-4', 'glm5', 'glm-5']):
+            _model_context_length = 131072
+        elif 'glm' in _model_lower:
+            _model_context_length = 65536
+        elif 'deepseek' in _model_lower or 'gpt' in _model_lower:
+            _model_context_length = 131072
+        total_chars = sum(len(m.get("content") or "") + 50 for m in messages)
+        estimated_tokens = int(total_chars * 1.5)
+        available = _model_context_length - estimated_tokens - 1000
+        if max_tokens > max(1024, available):
+            max_tokens = max(1024, available)
+            body["max_tokens"] = max_tokens
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            raw_data = await response.aread()
+            try:
+                data = json.loads(raw_data)
+            except (json.JSONDecodeError, ValueError):
+                raise Exception(
+                    f"响应JSON解析失败: HTTP {response.status_code}, "
+                    f"content-type={response.headers.get('content-type')}, "
+                    f"raw前500={(raw_data[:500] if isinstance(raw_data, (bytes, bytearray)) else str(raw_data)[:500]).decode('utf-8', errors='replace')}"
+                )
+            if isinstance(data, dict) and "detail" in data and "choices" not in data:
+                detail = data["detail"]
+                if isinstance(detail, list):
+                    detail = "; ".join(str(x) for x in detail)
+                raise Exception(f"大模型服务返回错误: {detail}")
+            response.raise_for_status()
+            if not data or "choices" not in data or not data["choices"]:
+                raise Exception("大模型返回格式异常")
+            content = data["choices"][0]["message"].get("content") or ""
+            return content if isinstance(content, str) else str(content)
+
+    async def _chat_with_tools_native(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        config: Optional[Dict],
+        tool_choice: str,
+        model_name: str,
+    ) -> Dict:
+        """
+        原生 function-calling 调用（第1层）
+
+        返回值中可能包含 fallback_triggered=True 表示需要降级
+        """
+        result_base: Dict[str, Any] = {
+            "content": "",
+            "tool_calls": [],
+            "finish_reason": "",
+            "model": model_name,
+            "fallback_triggered": False,
+            "fallback_reason": "",
+        }
+
+        try:
+            if config:
+                base_url = config.get('base_url') or self.base_url
+                api_key = config.get('api_key') or self.api_key
+                model = config.get('model') or self.model
+                max_tokens = config.get('max_tokens') or self.max_tokens
+                temperature = config.get('temperature')
+                if temperature is None:
+                    temperature = self.temperature
+            else:
+                base_url, api_key, model = self.base_url, self.api_key, self.model
+                max_tokens = self.max_tokens
+                temperature = self.temperature
+
+            # max_tokens 自动下调
+            _model_lower = (model or '').lower()
+            _model_context_length = 65536
+            if any(k in _model_lower for k in ['qwen3', 'qwen2.5', 'qwen2']):
+                _model_context_length = 40960
+            elif any(k in _model_lower for k in ['glm4', 'glm-4', 'glm5', 'glm-5']):
+                _model_context_length = 131072
+            elif 'glm' in _model_lower:
+                _model_context_length = 65536
+            elif 'deepseek' in _model_lower or 'gpt' in _model_lower:
+                _model_context_length = 131072
+
+            _messages_total_chars = sum(len(m.get('content') or '') + 50 for m in messages)
+            _estimated_prompt_tokens = int(_messages_total_chars * 1.5) + len(tools) * 500
+            _available_max_tokens = _model_context_length - _estimated_prompt_tokens - 1000
+            if _available_max_tokens < 1024:
+                _available_max_tokens = 1024
+            if max_tokens > _available_max_tokens:
+                logger.info(f"native chat_with_tools max_tokens 自动下调: {max_tokens} → {_available_max_tokens}")
+                max_tokens = _available_max_tokens
+
+            request_body = {
+                "model": model,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if "qwen3" in (model or "").lower():
+                request_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+            logger.info(
+                f"原生 chat_with_tools 调用: model={model!r}, "
+                f"messages={len(messages)}条, tools={len(tools)}个"
+            )
+
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request_body,
+                )
+                raw_bytes = await response.aread()
+                content_type = response.headers.get('content-type', '')
+                status_code = response.status_code
+
+                # ---- 降级检测 ----
+                # 规则1: HTTP 500 且 content-type 非 JSON
+                if status_code >= 500 and 'json' not in content_type.lower():
+                    raw_preview = raw_bytes[:500].decode('utf-8', errors='replace') if isinstance(raw_bytes, (bytes, bytearray)) else str(raw_bytes)[:500]
+                    logger.warning(
+                        f"原生 function-calling 返回 {status_code} 且非JSON响应，触发降级: "
+                        f"content-type={content_type}, raw前200={raw_preview[:200]}"
+                    )
+                    result_base["fallback_triggered"] = True
+                    result_base["fallback_reason"] = f"HTTP {status_code} + non-JSON({content_type})"
+                    return result_base
+
+                # 尝试解析 JSON
+                try:
+                    data = json.loads(raw_bytes) if isinstance(raw_bytes, (bytes, bytearray)) else json.loads(raw_bytes)
+                except (json.JSONDecodeError, ValueError):
+                    # JSON 解析失败也降级
+                    raw_preview = raw_bytes[:500].decode('utf-8', errors='replace') if isinstance(raw_bytes, (bytes, bytearray)) else str(raw_bytes)[:500]
+                    logger.warning(
+                        f"原生 function-calling 响应JSON解析失败，触发降级: "
+                        f"status={status_code}, content-type={content_type}, raw前200={raw_preview[:200]}"
+                    )
+                    result_base["fallback_triggered"] = True
+                    result_base["fallback_reason"] = f"JSON decode fail, status={status_code}"
+                    return result_base
+
+                # 规则2: FastAPI detail 包含已知 function-calling 不支持的特征
+                if isinstance(data, dict) and "detail" in data and "choices" not in data:
+                    error_detail = str(data["detail"])
+                    _fallback_keywords = (
+                        "/generate", "ContentTypeError", "cannot be pickled",
+                        "function_call", "unexpected mimetype",
+                    )
+                    if any(kw.lower() in error_detail.lower() for kw in _fallback_keywords):
+                        logger.warning(
+                            f"原生 function-calling FastAPI 错误包含 function-calling 不支持特征，触发降级: "
+                            f"detail={error_detail[:300]}"
+                        )
+                        result_base["fallback_triggered"] = True
+                        result_base["fallback_reason"] = f"FastAPI detail: {error_detail[:200]}"
+                        return result_base
+
+                # 非降级场景的其他错误：正常抛出
+                if status_code >= 400:
+                    if isinstance(data, dict) and "detail" in data:
+                        detail = data["detail"]
+                        if isinstance(detail, list):
+                            detail = "; ".join(str(x) for x in detail)
+                        raise Exception(f"大模型function-calling调用失败(HTTP {status_code}): {detail}")
+                    raise Exception(f"大模型function-calling调用失败(HTTP {status_code})")
+
+                response.raise_for_status()
+
+                # 格式校验
+                if (not data
+                    or "choices" not in data
+                    or not isinstance(data.get("choices"), list)
+                    or len(data["choices"]) == 0
+                    or not isinstance(data["choices"][0], dict)
+                    or "message" not in data["choices"][0]):
+                    raise Exception("大模型返回格式异常：缺少 choices/message 结构")
+
+                message = data["choices"][0]["message"]
+                content = message.get("content") or ""
+                if not isinstance(content, str):
+                    content = str(content) if content else ""
+
+                tool_calls = message.get("tool_calls")
+                if tool_calls is None and message.get("function_call"):
+                    fc = message["function_call"]
+                    tool_calls = [{
+                        "id": fc.get("id", f"call_{abs(hash(json.dumps(fc))) % 1000000}"),
+                        "type": "function",
+                        "function": {
+                            "name": fc.get("name", ""),
+                            "arguments": fc.get("arguments", "{}"),
+                        },
+                    }]
+                if not isinstance(tool_calls, list):
+                    tool_calls = []
+
+                finish_reason = data["choices"][0].get("finish_reason", "")
+
+                logger.info(
+                    f"原生 chat_with_tools 成功: content长度={len(content)}, "
+                    f"tool_calls={len(tool_calls)}, finish_reason={finish_reason}"
+                )
+
+                result_base.update({
+                    "content": content,
+                    "tool_calls": tool_calls,
+                    "finish_reason": finish_reason,
+                    "model": model_name,
+                })
+                return result_base
+
+        except Exception as e:
+            # 其他异常也尝试降级一次（而不是直接抛出）
+            logger.warning(
+                f"原生 function-calling 异常，尝试降级: {type(e).__name__}: {str(e)[:200]}"
+            )
+            result_base["fallback_triggered"] = True
+            result_base["fallback_reason"] = f"exception: {type(e).__name__}"
+            return result_base
+
+    async def _chat_with_tools_via_prompt(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        config: Optional[Dict],
+        model_name: str,
+    ) -> Dict:
+        """
+        Prompt-based 工具调用（第2层降级方案）
+
+        策略：
+        1. 在最后一个 system 消息末尾追加工具描述和输出格式指令
+        2. 发送普通 chat 请求（不带 tools 参数）
+        3. 从返回文本中解析 <function_call>...</function_call> 标记
+
+        也会处理 messages 中已有的 tool 角色消息（前一轮工具调用结果），
+        将其转为自然语言描述后放入 messages，确保上下文连贯。
+        """
+        # 构建降级用的工具描述 prompt
+        tools_prompt = self._format_tools_for_prompt(tools)
+        format_instructions = f"""
+
+## 工具调用输出格式（重要）
+当你需要调用某个工具时，不要直接输出结果，而是按以下格式输出工具调用请求：
+
+{LLMService._TOOL_CALL_START}
+{{"name": "工具名称", "arguments": {{"参数名": "参数值"}}}}
+{LLMService._TOOL_CALL_END}
+
+规则：
+- 如果不需要调用工具，直接输出你的分析和回答即可（不要输出 tool_call 标记）
+- 工具调用标记可以和分析文本同时出现
+- arguments 必须是合法的 JSON 对象（字符串/数字/布尔/null/数组/对象）
+- 一个回答中可以出现多个工具调用标记
+"""
+
+        # 将工具描述注入到 system message 末尾
+        # 如果没有 system message，创建一个
+        injected_messages = []
+        system_injected = False
+        for msg in messages:
+            msg_copy = dict(msg)
+            role = msg_copy.get("role")
+            content = msg_copy.get("content", "") or ""
+
+            if role == "system" and not system_injected:
+                msg_copy["content"] = content + "\n\n" + tools_prompt + format_instructions
+                system_injected = True
+                injected_messages.append(msg_copy)
+            elif role == "tool":
+                # 将 tool 角色消息转为自然语言的 assistant→user 对
+                # （prompt-based 模式下没有 tool 角色，LLM 需要看到工具返回结果作为上下文）
+                # 方式：把 tool 结果作为 user 消息追加（带上工具名标注）
+                tool_content = f"[上一轮工具调用结果] 工具返回: {content[:3000]}"
+                injected_messages.append({"role": "user", "content": tool_content})
+            else:
+                injected_messages.append(msg_copy)
+
+        if not system_injected:
+            # 没有 system 消息，插入一条
+            system_msg = {
+                "role": "system",
+                "content": tools_prompt + format_instructions,
+            }
+            # 找插入点：messages 开头（如果第一个不是 system）
+            if injected_messages and injected_messages[0].get("role") == "user":
+                injected_messages.insert(0, system_msg)
+            else:
+                injected_messages.insert(0, system_msg)
+
+        # 发送普通 chat
+        try:
+            content = await self._chat_plain(injected_messages, config)
+        except Exception as e:
+            logger.error(f"prompt-based chat 调用失败: {type(e).__name__}: {e}")
+            raise Exception(f"prompt-based 工具调用模式失败: {type(e).__name__}: {str(e)}")
+
+        # 解析 tool_calls 标记
+        tool_calls = self._parse_tool_calls_from_text(content)
+        finish_reason = "tool_calls" if tool_calls else "stop"
+
+        # 清理 content：把 tool_call 标记从正文中移除（让用户看到干净的分析）
+        clean_content = content
+        if tool_calls:
+            import re as _re
+            clean_content = _re.sub(
+                re.escape(LLMService._TOOL_CALL_START) + r'.*?' + re.escape(LLMService._TOOL_CALL_END),
+                '',
+                content,
+                flags=_re.DOTALL,
+            ).strip()
+
+        logger.info(
+            f"prompt-based chat_with_tools 完成: content长度={len(clean_content)}, "
+            f"解析到 tool_calls={len(tool_calls)}"
+        )
+
+        return {
+            "content": clean_content,
+            "tool_calls": tool_calls,
+            "finish_reason": finish_reason,
+            "model": model_name,
+        }
+
     async def chat_stream(
         self,
         prompt: str,

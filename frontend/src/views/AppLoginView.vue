@@ -89,7 +89,7 @@
       </div>
 
       <div class="login-footer">
-        <span>© {{ currentYear }} 工业智能助手平台</span>
+        <span>© {{ currentYear }} 工业智能体平台</span>
       </div>
     </div>
   </div>

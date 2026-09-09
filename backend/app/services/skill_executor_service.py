@@ -23,8 +23,16 @@ import json
 import zipfile
 import tempfile
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from loguru import logger
+
+# YAML frontmatter 解析（SKILL.md 扩展协议）
+try:
+    import yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
+    logger.warning("pyyaml 未安装，SKILL.md frontmatter 解析将跳过。请执行: pip install pyyaml")
 
 # 项目根目录（backend/ 的上级目录）
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
@@ -73,6 +81,110 @@ class SkillExecutorService:
         return files_content
 
     @staticmethod
+    def _parse_frontmatter(skill_md_content: str) -> Dict[str, Any]:
+        """
+        从 SKILL.md 内容中解析 YAML frontmatter（扩展协议）
+
+        SKILL.md frontmatter 协议：
+        ```yaml
+        ---
+        execution_mode: agent          # single(默认,单轮) | agent(Agent模式)
+        mcp_tools:                      # Agent模式可用的MCP工具声明
+          - name: 高炉实时数据查询
+            purpose: 获取各高炉实时传感器数据
+          - name: 天气查询
+            purpose: 获取当前天气
+        max_iterations: 10              # Agent最大迭代次数（默认10）
+        ---
+        ```
+
+        设计目标：
+        - 无 frontmatter → 现有单轮模式，完全向后兼容
+        - `execution_mode: agent` → 触发 LangGraph Agent 模式
+        - pyyaml 未安装时安全降级为单轮模式
+
+        :param skill_md_content: SKILL.md 原始内容
+        :return: 解析后的 frontmatter 字典，包含 execution_mode/mcp_tools/max_iterations
+        """
+        result = {
+            "execution_mode": "single",      # 默认单轮模式
+            "mcp_tools": [],                # 声明的 MCP 工具列表
+            "max_iterations": 10,           # Agent 最大迭代次数
+            "has_frontmatter": False,       # 是否存在 frontmatter
+            "skill_md_body": skill_md_content,  # 去除 frontmatter 后的正文
+        }
+
+        # frontmatter 正则匹配：以 --- 开头、--- 结尾的 YAML 块
+        # 要求必须在文件开头（前面可有空行）
+        fm_pattern = re.compile(
+            r'^\s*---\s*\n(.*?)\n---\s*\n?',
+            re.DOTALL  # 让 . 也匹配换行符
+        )
+        match = fm_pattern.match(skill_md_content)
+
+        if not match:
+            # 无 frontmatter，直接返回默认值
+            return result
+
+        yaml_text = match.group(1)
+        result["skill_md_body"] = skill_md_content[match.end():]
+        result["has_frontmatter"] = True
+
+        if not _YAML_AVAILABLE:
+            logger.warning("pyyaml 未安装，跳过 frontmatter YAML 解析，降级为单轮模式")
+            return result
+
+        try:
+            parsed = yaml.safe_load(yaml_text) or {}
+            if not isinstance(parsed, dict):
+                logger.warning(f"frontmatter 解析结果非 dict（{type(parsed).__name__}），降级为单轮模式")
+                return result
+
+            # execution_mode：只接受 single/agent，其他值视为 single
+            exec_mode = parsed.get('execution_mode', 'single')
+            if exec_mode not in ('single', 'agent'):
+                logger.warning(f"frontmatter execution_mode={exec_mode!r} 非法，降级为 single")
+                exec_mode = 'single'
+            result["execution_mode"] = exec_mode
+
+            # mcp_tools：必须是 list
+            mcp_tools = parsed.get('mcp_tools', [])
+            if isinstance(mcp_tools, list):
+                # 过滤无效项，保留 name+purpose 结构
+                cleaned_tools = []
+                for t in mcp_tools:
+                    if isinstance(t, dict) and t.get('name'):
+                        cleaned_tools.append({
+                            "name": str(t['name']).strip(),
+                            "purpose": str(t.get('purpose', t.get('description', ''))).strip(),
+                        })
+                result["mcp_tools"] = cleaned_tools
+            elif isinstance(mcp_tools, str) and mcp_tools.strip():
+                # 简写形式：mcp_tools: 工具名1,工具名2
+                result["mcp_tools"] = [
+                    {"name": n.strip(), "purpose": ""}
+                    for n in mcp_tools.split(',') if n.strip()
+                ]
+
+            # max_iterations
+            max_iter = parsed.get('max_iterations', 10)
+            try:
+                result["max_iterations"] = max(3, min(int(max_iter), 30))  # 限制 3-30
+            except (ValueError, TypeError):
+                result["max_iterations"] = 10
+
+            logger.info(
+                f"SKILL.md frontmatter 解析: execution_mode={result['execution_mode']}, "
+                f"mcp_tools={len(result['mcp_tools'])}个, max_iterations={result['max_iterations']}"
+            )
+
+        except yaml.YAMLError as e:
+            logger.warning(f"frontmatter YAML 解析失败: {e}，降级为单轮模式")
+            # 解析失败不影响单轮模式执行
+
+        return result
+
+    @staticmethod
     def _parse_skill_files(files_content: Dict[str, str]) -> Dict[str, any]:
         """
         解析 Skill 包文件，分类提取关键内容
@@ -86,12 +198,19 @@ class SkillExecutorService:
             "scripts": List[str],       # 脚本内容列表
         }
         """
-        result = {
+        result: Dict[str, Any] = {
             "skill_md": "",
             "references": [],
             "input_template": "",
             "latest_data": "",
             "scripts": [],
+            "frontmatter": {
+                "execution_mode": "single",
+                "mcp_tools": [],
+                "max_iterations": 10,
+                "has_frontmatter": False,
+                "skill_md_body": "",
+            },
         }
 
         for filepath, content in files_content.items():
@@ -101,6 +220,11 @@ class SkillExecutorService:
             # 1. SKILL.md — Skill 定义文件
             if norm_path.endswith('/SKILL.md') or norm_path.endswith('SKILL.md'):
                 result["skill_md"] = content
+                # 解析 YAML frontmatter（扩展协议）
+                result["frontmatter"] = SkillExecutorService._parse_frontmatter(content)
+                # 如果有 frontmatter，skill_md 正文部分用于 prompt 构建
+                if result["frontmatter"]["has_frontmatter"]:
+                    result["skill_md"] = result["frontmatter"]["skill_md_body"]
                 continue
 
             # 2. references/ 目录下的 .md 文件
@@ -242,15 +366,22 @@ class SkillExecutorService:
         question: str,
         history: Optional[List[Dict[str, str]]] = None,
         llm_config: Optional[Dict[str, any]] = None,
+        db=None,  # Optional[AsyncSession] — Agent 模式需要查询 MCP 工具
+        tool_config_ids: Optional[List[int]] = None,  # Agent 模式需要筛选 MCP 工具
     ) -> Dict[str, any]:
         """
-        执行 Skill
+        执行 Skill（统一入口，支持单轮模式和 Agent 模式）
+
+        执行模式判断逻辑：
+        - SKILL.md frontmatter 声明 execution_mode: agent → Agent 模式（LangGraph ReAct）
+        - 无 frontmatter 或 execution_mode: single → 单轮模式（现有逻辑）
 
         完整流程：
         1. 解压 ZIP 包，提取文件内容
-        2. 解析分类文件（SKILL.md / references / assets）
-        3. 构建 Skill 执行 prompt
-        4. 调用 LLM 执行诊断分析
+        2. 解析分类文件（SKILL.md / references / assets + frontmatter）
+        3. 根据 execution_mode 分支执行：
+           - single: 构建 prompt → 单次 LLM 调用 → 续写检测
+           - agent: 调用 SkillAgentExecutor → LangGraph ReAct 循环 → MCP 工具调用
 
         :param zip_path: Skill ZIP 文件路径
         :param skill_name: Skill 名称
@@ -258,10 +389,13 @@ class SkillExecutorService:
         :param question: 用户问题
         :param history: 对话历史
         :param llm_config: 应用级LLM配置（base_url, api_key, model 等），覆盖默认配置
+        :param db: 数据库会话（Agent 模式需要查询 MCP 工具，单轮模式可忽略）
+        :param tool_config_ids: 工具配置ID列表（Agent 模式需要筛选 MCP 类型的工具）
         :return: 执行结果 {
             "answer": str,           # LLM 生成的诊断报告
             "skill_files": List[str], # 使用的文件列表
             "success": bool,
+            "execution_mode": str,    # 实际执行模式 single/agent
         }
         """
         result = {
@@ -319,7 +453,8 @@ class SkillExecutorService:
                 f"参考文档={len(parsed['references'])}个, "
                 f"输入模板={'有' if parsed['input_template'] else '无'}, "
                 f"最新数据={'有' if parsed['latest_data'] else '无'}, "
-                f"脚本={len(parsed['scripts'])}个"
+                f"脚本={len(parsed['scripts'])}个, "
+                f"execution_mode={parsed['frontmatter']['execution_mode']}"
             )
         except Exception as e:
             logger.error(f"Skill文件解析异常: {skill_name}, {type(e).__name__}: {e}", exc_info=True)
@@ -327,6 +462,74 @@ class SkillExecutorService:
             result["success"] = False
             return result
 
+        # 3.5 执行模式判断（frontmatter 协议扩展）
+        execution_mode = parsed["frontmatter"].get("execution_mode", "single")
+        result["execution_mode"] = execution_mode
+
+        if execution_mode == "agent":
+            # ========== Agent 模式：LangGraph ReAct ==========
+            logger.info(
+                f"Skill [{skill_name}] 触发 Agent 模式，"
+                f"声明的 MCP 工具={parsed['frontmatter']['mcp_tools']}, "
+                f"max_iterations={parsed['frontmatter']['max_iterations']}, "
+                f"tool_config_ids={tool_config_ids}, "
+                f"db={'有' if db else '无'}"
+            )
+
+            # Agent 模式需要 db 和 tool_config_ids 来加载 MCP 工具
+            if db is None:
+                logger.warning(
+                    f"Skill [{skill_name}] frontmatter 声明 agent 模式但未提供 db，"
+                    f"无法加载 MCP 工具，降级为单轮模式"
+                )
+                execution_mode = "single"
+                result["execution_mode"] = "single"
+
+            if execution_mode == "agent":
+                try:
+                    from app.services.skill_agent_executor import SkillAgentExecutor
+                    agent_executor = SkillAgentExecutor()
+                    agent_result = await agent_executor.execute(
+                        skill_name=skill_name,
+                        skill_description=skill_description,
+                        skill_md_body=parsed["skill_md"],
+                        references=parsed["references"],
+                        input_template=parsed["input_template"],
+                        latest_data=parsed["latest_data"],
+                        question=question,
+                        history=history,
+                        llm_config=llm_config,
+                        db=db,
+                        tool_config_ids=tool_config_ids or [],
+                        declared_mcp_tools=parsed["frontmatter"]["mcp_tools"],
+                        max_iterations=parsed["frontmatter"]["max_iterations"],
+                    )
+                    result["answer"] = agent_result.get("answer", "")
+                    result["success"] = agent_result.get("success", True)
+                    result["agent_trace"] = agent_result.get("trace", [])
+                    logger.info(
+                        f"Skill [{skill_name}] Agent 模式执行完成, "
+                        f"answer长度={len(result['answer'])}, "
+                        f"迭代次数={len(agent_result.get('trace', []))}"
+                    )
+                    return result
+                except ImportError as ie:
+                    logger.error(
+                        f"SkillAgentExecutor 导入失败: {ie}, 降级为单轮模式"
+                    )
+                    # 降级到单轮模式继续执行
+                    execution_mode = "single"
+                    result["execution_mode"] = "single"
+                except Exception as ae:
+                    logger.error(
+                        f"Skill [{skill_name}] Agent 模式执行异常: {type(ae).__name__}: {ae}",
+                        exc_info=True
+                    )
+                    result["answer"] = f"Skill Agent 模式执行失败：{type(ae).__name__}: {str(ae)}"
+                    result["success"] = False
+                    return result
+
+        # ========== 单轮模式（默认）==========
         # 4. 构建 Skill 执行 prompt
         try:
             prompt = SkillExecutorService._build_skill_prompt(

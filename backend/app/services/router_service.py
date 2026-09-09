@@ -206,6 +206,78 @@ class IntentClassifier:
                 logger.info(f"关键词预判: skill (强关键词命中: {keyword})")
                 return "skill"
 
+        # 2.5 Skill名称触发模式检测
+        # 用户问题中出现"XX技能/skill"、"执行XX"、"运行XX"等明确Skill调用意图时，
+        # 直接判定为 skill 意图（比 data/knowledge 关键词优先级更高）。
+        # 这是最可靠的信号——用户明确说了"XX技能"就是想调 Skill，
+        # 不应该被"对比""历史"等 data 关键词干扰。
+        #
+        # 实现注意：不能用 Python re 的变长负向后顾（(?<!a|bb|ccc)），
+        # Python re 只支持固定宽度 lookbehind，会直接抛 PatternError 被 try-except 吞掉。
+        # 改用先正向匹配，再用 Python 后置检查排除疑问/泛指短语。
+        try:
+            _SEP = r'\s，。？！、；：'
+            # 模式1: "XX技能" —— 正向匹配"技能"前有≥2个非分隔符字符
+            # 负向前瞻排除后面跟着"列表/介绍/适合/可以/？"等
+            _pat1 = re.compile(
+                r'[^' + _SEP + r']{2,}技能'
+                r'(?!列表|介绍|体系|分类|目录|有哪些|是|有|的|\?|？|适合|可以|能|会|用于|用来|做|干|什么|哪些|哪个)',
+                re.IGNORECASE,
+            )
+            # 模式2: "XXskill"
+            _pat2 = re.compile(
+                r'[^' + _SEP + r']{2,}skill(?!s|列表|介绍)',
+                re.IGNORECASE,
+            )
+            # 模式3: "执行XX" / "运行XX" / "使用XX" / "调用XX" / "启动XX"
+            _pat3 = re.compile(
+                r'(?:执行|运行|使用|调用|启动)[\s]?'
+                r'[^' + _SEP + r']{2,}?'
+                r'(?:技能|skill)?'
+                r'(?:[，。？！、；：]|$)',
+                re.IGNORECASE,
+            )
+
+            _matched = bool(_pat1.search(question_lower)
+                            or _pat2.search(question_lower)
+                            or _pat3.search(question_lower))
+
+            if _matched:
+                # 后置排除（替代变长负向后顾，Python re 不支持）
+                # 检查匹配到的位置前面是否有疑问/泛指短语
+                _exclude_prefix_phrases = [
+                    '你有什么', '我有什么', '有什么', '有哪些',
+                    '哪些', '什么', '哪个',
+                    '你有', '我有', '有个', '一个', '这个', '那个',
+                ]
+                _prefix_ok = True
+                for _ep in _exclude_prefix_phrases:
+                    if _pat1.search(question_lower):
+                        # 找到匹配位置，检查前面
+                        _ep_match = _pat1.search(question_lower)
+                        _start_pos = _ep_match.start()
+                        if _start_pos >= len(_ep) and question_lower[_start_pos - len(_ep):_start_pos] == _ep:
+                            _prefix_ok = False
+                            logger.info(f"Skill触发模式排除: 前缀'{_ep}'命中，不是Skill意图")
+                            break
+
+                # 排除：询问类表达
+                _exclude_inquire = [
+                    '什么技能', '哪些技能', '技能有哪些', '技能列表',
+                    '技能介绍', '技能体系', '技能分类', '技能目录',
+                    '你有什么技能', '你有哪些技能',
+                ]
+                _is_inquire = any(x in question_lower for x in _exclude_inquire)
+
+                if _prefix_ok and not _is_inquire:
+                    logger.info(
+                        f"🎯 关键词预判: 命中Skill名称触发模式 → 直接返回skill意图, "
+                        f"问题={question[:60]}..."
+                    )
+                    return "skill"
+        except Exception as _re_err:
+            logger.warning(f"Skill触发模式正则匹配异常(忽略): {type(_re_err).__name__}: {_re_err}")
+
         # 3. 检查MCP/Skill普通关键词
         mcp_score = sum(1 for kw in IntentClassifier.MCP_KEYWORDS if kw.lower() in question_lower)
         skill_score = sum(1 for kw in IntentClassifier.SKILL_KEYWORDS if kw.lower() in question_lower)
@@ -828,17 +900,6 @@ class RouterService:
     ) -> Dict:
         """
         执行Skill工具调用
-
-        参考工具管理中Skill的名称、描述和文件信息，使用LLM分析用户问题
-        并基于Skill配置生成响应。
-
-        :param db: 数据库会话
-        :param tool_config_ids: 工具配置ID列表（将自动筛选skill类型）
-        :param question: 用户问题
-        :param system_prompt: 系统提示词
-        :param history: 对话历史（多轮对话上下文）
-        :param llm_config: 应用级LLM配置（base_url, api_key, model 等）
-        :return: 工具调用结果，包含 answer, tool_calls, tool_results 等
         """
         result = {
             "answer": "",
@@ -847,8 +908,11 @@ class RouterService:
             "success": True
         }
 
+        logger.info(f"[_execute_skill入口] tool_config_ids={tool_config_ids}, question={question[:50]!r}")
+
         # 筛选skill类型的工具
         skill_ids = await RouterService._filter_tool_ids_by_type(db, tool_config_ids, "skill")
+        logger.info(f"[_execute_skill] skill_ids={skill_ids} (从 tool_config_ids={tool_config_ids} 过滤 type='skill')")
 
         if not skill_ids:
             result["answer"] = "抱歉，当前应用未配置Skills工具。请先在应用设置中添加Skills工具。"
@@ -1067,6 +1131,8 @@ class RouterService:
                                         question=question,
                                         history=history,
                                         llm_config=llm_config,
+                                        db=db,
+                                        tool_config_ids=tool_config_ids,
                                     )
                                     result["answer"] = exec_result.get("answer", "Skill执行未返回结果")
                                     result["success"] = exec_result.get("success", False)
@@ -1103,6 +1169,8 @@ class RouterService:
                                             question=question,
                                             history=history,
                                             llm_config=llm_config,
+                                            db=db,
+                                            tool_config_ids=tool_config_ids,
                                         )
                                         result["answer"] = exec_result.get("answer", "Skill执行未返回结果")
                                         result["success"] = exec_result.get("success", False)
@@ -1221,6 +1289,8 @@ class RouterService:
                 question=question,
                 history=history,
                 llm_config=llm_config,
+                db=db,
+                tool_config_ids=tool_config_ids,
             )
 
             result["answer"] = exec_result.get("answer", "Skill执行未返回结果")
@@ -1280,7 +1350,7 @@ class RouterService:
             4. 返回统一格式的结果
         """
         start_time = time.time()
-        logger.info(f"开始路由分发: 问题={question[:50]}...")
+        logger.info(f"开始路由分发: 问题={question[:50]}..., tool_config_ids={tool_config_ids}, app_id=???")
 
         # 1. 意图分类（传入db和tool_config_ids以便获取工具描述，传入history用于上下文感知）
         intent = await IntentClassifier.classify(question, db, tool_config_ids, history=history)

@@ -106,10 +106,19 @@ async def test_mcp_connection(
             # 兼容 MCPConfig 对象和 dict 两种情况
             if hasattr(service_config, 'url'):
                 url = service_config.url
-                transport = service_config.transport
+                transport = getattr(service_config, 'transport', None) or getattr(service_config, 'type', 'sse')
+                # 兼容 type: "http" → streamable-http
+                if transport == 'http':
+                    transport = 'streamable-http'
+                service_config_dict = service_config.model_dump() if hasattr(service_config, 'model_dump') else {}
             elif isinstance(service_config, dict):
                 url = service_config.get("url", "")
-                transport = service_config.get("transport", "sse")
+                transport = service_config.get("transport") or service_config.get("type", "sse")
+                if transport == 'http':
+                    transport = 'streamable-http'
+                service_config_dict = service_config
+            else:
+                service_config_dict = {}
         
         if not url:
             return error_response(message="MCP配置缺少URL")
@@ -117,6 +126,9 @@ async def test_mcp_connection(
         # 清洗URL（去除可能残留的空格和反引号）
         url = url.strip().strip('`').strip()
         transport = (transport or "sse").strip()
+        
+        # 提取认证 headers
+        auth_headers = mcp_client_service._build_auth_headers(service_config_dict)
         
         # 检查URL格式
         if not url.startswith(("http://", "https://")):
@@ -127,8 +139,10 @@ async def test_mcp_connection(
         start_time = time.time()
         
         try:
-            # 第一步：初始化MCP会话（验证SSE连接和协议握手）
-            init_success = await mcp_client_service._initialize_mcp_session(url, transport)
+            # 第一步：初始化MCP会话（验证SSE连接和协议握手，注入认证 headers）
+            init_success = await mcp_client_service._initialize_mcp_session(
+                url, transport, extra_headers=auth_headers
+            )
 
             elapsed_time = round(time.time() - start_time, 2)
 
@@ -145,12 +159,13 @@ async def test_mcp_connection(
                     "message": f"连接失败：无法建立MCP会话（SSE连接超时或协议握手失败）"
                 }, message="MCP连接测试失败：无法建立会话")
 
-            # 第二步：获取工具列表（初始化成功后）
+            # 第二步：获取工具列表（初始化成功后，注入认证 headers）
             test_tools = await mcp_client_service._fetch_mcp_tools(
                 url=url,
                 transport=transport,
                 service_name=service_name or "test_service",
-                server_name="connection_test"
+                server_name="connection_test",
+                extra_headers=auth_headers,
             )
 
             elapsed_time = round(time.time() - start_time, 2)

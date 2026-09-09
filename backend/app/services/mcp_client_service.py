@@ -58,6 +58,68 @@ class MCPClientService:
         return cls._request_id
 
     @staticmethod
+    def _build_auth_headers(service_config: Dict[str, Any]) -> Dict[str, str]:
+        """
+        从 MCP 服务配置中提取认证 headers
+
+        支持的认证方式（按优先级）：
+        1. headers 字段：直接指定完整 headers（如 {"Authorization": "Bearer xxx"}）
+        2. bearer_token 字段：自动构造 Authorization: Bearer {token}
+        3. api_key 字段 + api_key_header 字段：构造自定义 API Key header
+        4. api_key 字段（无 api_key_header）：默认 X-API-Key header
+
+        mcp_config 格式扩展：
+        {
+            "服务名": {
+                "url": "http://127.0.0.1:8010/mcp",
+                "transport": "sse",
+                "headers": {"Authorization": "Bearer my-token"},  // 方式1
+                "bearer_token": "my-token",                         // 方式2
+                "api_key": "sk-xxx",                                // 方式3/4
+                "api_key_header": "X-Custom-Key"                    // 方式3
+            }
+        }
+
+        :param service_config: 单个 MCP 服务的配置 dict
+        :return: 认证 headers dict（可能为空 dict）
+        """
+        headers: Dict[str, str] = {}
+
+        if not service_config:
+            return headers
+
+        # 方式1：直接指定完整 headers
+        custom_headers = service_config.get('headers')
+        if custom_headers and isinstance(custom_headers, dict):
+            for k, v in custom_headers.items():
+                if v is not None:
+                    headers[str(k)] = str(v)
+            return headers
+
+        # 方式2：Bearer Token
+        bearer_token = service_config.get('bearer_token')
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+            return headers
+
+        # 方式3/4：API Key
+        api_key = service_config.get('api_key')
+        if api_key:
+            api_key_header = service_config.get('api_key_header', 'X-API-Key')
+            headers[api_key_header] = api_key
+
+        return headers
+
+    @staticmethod
+    def _merge_headers(*header_dicts: Dict[str, str]) -> Dict[str, str]:
+        """合并多个 headers dict，后者覆盖前者"""
+        merged: Dict[str, str] = {}
+        for h in header_dicts:
+            if h:
+                merged.update(h)
+        return merged
+
+    @staticmethod
     def _build_base_url(url: str, path: str) -> str:
         """
         将相对路径拼接为完整URL
@@ -78,7 +140,8 @@ class MCPClientService:
     async def _mcp_sse_session(
         url: str,
         payload: Dict[str, Any],
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         通过 MCP SSE 协议发送 JSON-RPC 请求并获取响应
@@ -92,6 +155,7 @@ class MCPClientService:
         :param url: MCP Server SSE URL
         :param payload: JSON-RPC 请求体
         :param timeout: 总超时时间
+        :param extra_headers: 额外认证 headers（如 Authorization）
         :return: JSON-RPC 响应数据或 None
         """
         client = None
@@ -111,9 +175,14 @@ class MCPClientService:
             async def _read_sse_stream():
                 """后台读取 SSE 流，提取 endpoint URL 和 JSON-RPC 响应"""
                 try:
+                    # GET SSE 连接（注入认证 headers）
+                    sse_headers = MCPClientService._merge_headers(
+                        {"Accept": "text/event-stream"},
+                        extra_headers or {}
+                    )
                     async with client.stream(
                         "GET", url,
-                        headers={"Accept": "text/event-stream"}
+                        headers=sse_headers
                     ) as response:
                         if response.status_code != 200:
                             logger.warning(f"MCP SSE连接失败: status={response.status_code}, url={url}")
@@ -203,15 +272,19 @@ class MCPClientService:
                 logger.warning(f"未获取到MCP endpoint URL: {url}")
                 return None
 
-            # POST 到 endpoint URL 发送 JSON-RPC 请求
+            # POST 到 endpoint URL 发送 JSON-RPC 请求（注入认证 headers）
             try:
+                post_headers = MCPClientService._merge_headers(
+                    {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                    extra_headers or {}
+                )
                 post_response = await client.post(
                     endpoint_url,
                     json=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream",
-                    }
+                    headers=post_headers
                 )
 
                 # 某些 MCP Server 直接通过 POST 返回 JSON 响应
@@ -304,7 +377,13 @@ class MCPClientService:
                     continue
                 
                 url = service_config.get('url', '')
-                transport = service_config.get('transport', 'sse')
+                # 兼容 Claude Code 格式：type 字段作为 transport 别名
+                transport = service_config.get('transport') or service_config.get('type', 'sse')
+                # 兼容 http → streamable-http 映射
+                if transport == 'http':
+                    transport = 'streamable-http'
+                # 提取认证 headers
+                auth_headers = MCPClientService._build_auth_headers(service_config)
                 
                 if not url:
                     continue
@@ -315,26 +394,13 @@ class MCPClientService:
                 # 尝试获取工具列表
                 try:
                     service_tools = await MCPClientService._fetch_mcp_tools(
-                        url, transport, service_name, config.name
+                        url, transport, service_name, config.name,
+                        extra_headers=auth_headers,
                     )
                     tools.extend(service_tools)
                 except Exception as e:
                     logger.warning(f"获取MCP工具列表失败: {service_name}, 错误={e}")
-                    # 即使获取工具列表失败，也记录配置信息供后续使用
-                    tools.append({
-                        'server_id': config.id,
-                        'server_name': config.name,
-                        'service_name': service_name,
-                        'tool_name': f"{service_name}_default",
-                        'description': f"MCP服务: {config.name}",
-                        'parameters': {
-                            "type": "object",
-                            "properties": {},
-                            "description": f"通过MCP协议调用 {config.name} 的功能"
-                        },
-                        'url': url,
-                        'transport': transport,
-                    })
+                    # 不再追加幽灵工具，避免 LLM 在无真实数据时编造诊断报告
         
         return tools
 
@@ -343,7 +409,8 @@ class MCPClientService:
         url: str,
         transport: str,
         service_name: str,
-        server_name: str
+        server_name: str,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         从 MCP Server 获取工具列表
@@ -352,31 +419,18 @@ class MCPClientService:
         :param transport: 传输协议 (sse/streamable-http)
         :param service_name: 服务名
         :param server_name: 服务器名
+        :param extra_headers: 额外认证 headers
         :return: 工具列表
         """
         tools = []
         
         try:
             # 先初始化MCP会话
-            init_success = await MCPClientService._initialize_mcp_session(url, transport)
+            init_success = await MCPClientService._initialize_mcp_session(url, transport, extra_headers)
             if not init_success:
-                logger.warning(f"MCP会话初始化失败: {url}")
-                # 仍然返回默认工具，允许后续尝试调用
-                tools.append({
-                    'server_id': None,
-                    'server_name': server_name,
-                    'service_name': service_name,
-                    'tool_name': f"{service_name}_tool",
-                    'description': f"来自 {server_name} 的MCP工具",
-                    'parameters': {
-                        "type": "object",
-                        "properties": {},
-                        "description": f"通过MCP协议调用 {server_name} 的功能"
-                    },
-                    'url': url,
-                    'transport': transport,
-                })
-                return tools
+                logger.warning(f"MCP会话初始化失败: {url}，不返回幽灵工具")
+                # 不再返回幽灵工具，避免 LLM 在无真实数据时编造诊断报告
+                return []
 
             # 构建 JSON-RPC 请求：tools/list
             request_id = MCPClientService._get_next_id()
@@ -392,13 +446,15 @@ class MCPClientService:
                 url=url,
                 payload=payload,
                 transport=transport,
-                timeout=15.0
+                timeout=15.0,
+                extra_headers=extra_headers,
             )
             
             if response_data:
                 # 解析工具列表
                 tools = MCPClientService._parse_tools_list(
-                    response_data, service_name, server_name, url, transport
+                    response_data, service_name, server_name, url, transport,
+                    extra_headers=extra_headers,
                 )
                 
         except httpx.ConnectError as e:
@@ -408,27 +464,19 @@ class MCPClientService:
         except Exception as e:
             logger.debug(f"获取MCP工具列表异常: {url}, 错误={e}")
         
-        # 如果无法获取工具列表，生成默认工具信息（允许后续调用尝试）
+        # 如果无法获取工具列表，返回空列表（不再生成幽灵工具）
+        # 避免 LLM 在无真实数据时编造诊断报告
         if not tools:
-            tools.append({
-                'server_id': None,
-                'server_name': server_name,
-                'service_name': service_name,
-                'tool_name': f"{service_name}_tool",
-                'description': f"来自 {server_name} 的MCP工具",
-                'parameters': {
-                    "type": "object",
-                    "properties": {},
-                    "description": f"通过MCP协议调用 {server_name} 的功能"
-                },
-                'url': url,
-                'transport': transport,
-            })
+            logger.warning(f"MCP Server 工具列表获取失败: {url}，返回空列表")
         
         return tools
 
     @staticmethod
-    async def _initialize_mcp_session(url: str, transport: str) -> bool:
+    async def _initialize_mcp_session(
+        url: str,
+        transport: str,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> bool:
         """
         初始化 MCP 会话（发送 initialize 请求和 initialized 通知）
         
@@ -436,6 +484,7 @@ class MCPClientService:
         
         :param url: MCP Server URL
         :param transport: 传输协议
+        :param extra_headers: 额外认证 headers
         :return: 初始化是否成功
         """
         try:
@@ -459,11 +508,17 @@ class MCPClientService:
                 url=url,
                 payload=init_payload,
                 transport=transport,
-                timeout=10.0
+                timeout=10.0,
+                extra_headers=extra_headers,
             )
 
             if not init_response:
-                logger.debug(f"MCP initialize无响应: {url}")
+                # 打印调试信息，确认 headers 是否传递
+                has_auth = 'Authorization' in (extra_headers or {})
+                logger.debug(
+                    f"MCP initialize无响应: {url}, transport={transport}, "
+                    f"extra_headers={extra_headers}, has_authorization={has_auth}"
+                )
                 return False
 
             # 检查初始化是否成功
@@ -487,7 +542,8 @@ class MCPClientService:
                 url=url,
                 payload=notify_payload,
                 transport=transport,
-                timeout=5.0
+                timeout=5.0,
+                extra_headers=extra_headers,
             )
 
             return True
@@ -501,7 +557,8 @@ class MCPClientService:
         url: str,
         payload: Dict[str, Any],
         transport: str = "sse",
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         发送 JSON-RPC 请求到 MCP Server
@@ -510,38 +567,55 @@ class MCPClientService:
         - sse: GET建立SSE连接 → POST发送请求 → SSE接收响应
         - streamable-http: 直接POST发送请求
         
+        自动降级：当 SSE 路径失败（405/404/超时）时，自动 fallback 到 streamable-http
+        
         :param url: MCP Server URL
         :param payload: JSON-RPC 请求体
         :param transport: 传输协议
         :param timeout: 超时时间
+        :param extra_headers: 额外认证 headers（如 Authorization）
         :return: 响应数据或None
         """
+        # 统一 transport 别名
+        if transport == 'http':
+            transport = 'streamable-http'
+        
         if transport == "sse":
-            return await MCPClientService._mcp_sse_session(url, payload, timeout)
-        else:
-            # Streamable HTTP: 直接POST
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        url,
-                        json=payload,
-                        headers={
-                            "Content-Type": "application/json",
-                            "Accept": "application/json, text/event-stream",
-                        }
-                    )
-                    if response.status_code == 200:
-                        content_type = response.headers.get("content-type", "")
-                        if "text/event-stream" in content_type:
-                            return MCPClientService._parse_sse_event(response.text)
-                        else:
-                            return response.json()
+            # 先尝试 SSE
+            result = await MCPClientService._mcp_sse_session(url, payload, timeout, extra_headers)
+            if result is not None:
+                return result
+            # SSE 失败（可能服务端不支持 SSE），自动降级到 streamable-http
+            logger.debug(f"SSE路径失败，自动降级为streamable-http: {url}")
+            transport = "streamable-http"
+        
+        # Streamable HTTP: 直接POST（注入认证 headers）
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                req_headers = MCPClientService._merge_headers(
+                    {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                    extra_headers or {}
+                )
+                response = await client.post(
+                    url,
+                    json=payload,
+                    headers=req_headers
+                )
+                if response.status_code == 200:
+                    content_type = response.headers.get("content-type", "")
+                    if "text/event-stream" in content_type:
+                        return MCPClientService._parse_sse_event(response.text)
                     else:
-                        logger.warning(f"MCP Server返回错误: status={response.status_code}, url={url}")
-                        return None
-            except Exception as e:
-                logger.error(f"MCP请求异常: {url}, 错误={e}")
-                return None
+                        return response.json()
+                else:
+                    logger.warning(f"MCP Server返回错误: status={response.status_code}, url={url}")
+                    return None
+        except Exception as e:
+            logger.error(f"MCP请求异常: {url}, 错误={e}")
+            return None
 
     @staticmethod
     def _parse_sse_event(content: str) -> Optional[Dict[str, Any]]:
@@ -593,7 +667,8 @@ class MCPClientService:
         service_name: str,
         server_name: str,
         url: str,
-        transport: str
+        transport: str,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         解析工具列表响应
@@ -603,6 +678,7 @@ class MCPClientService:
         :param server_name: 服务器名
         :param url: MCP Server URL
         :param transport: 传输协议
+        :param extra_headers: 额外认证 headers
         :return: 工具列表
         """
         tools = []
@@ -639,6 +715,7 @@ class MCPClientService:
                 'parameters': parameters,
                 'url': url,
                 'transport': transport,
+                'extra_headers': extra_headers,
             })
         
         return tools
@@ -651,7 +728,7 @@ class MCPClientService:
         """
         调用 MCP 工具
         
-        :param tool_info: 工具信息（包含 url, transport, service_name, tool_name 等）
+        :param tool_info: 工具信息（包含 url, transport, service_name, tool_name, extra_headers 等）
         :param arguments: 工具调用参数
         :return: 工具调用结果
         """
@@ -659,6 +736,8 @@ class MCPClientService:
         transport = tool_info.get('transport', 'sse')
         service_name = tool_info.get('service_name', '')
         tool_name = tool_info.get('tool_name', '')
+        # 提取认证 headers（从工具信息中透传下来）
+        extra_headers = tool_info.get('extra_headers') or {}
         
         # 对于 MaxKB 格式，工具名可能包含服务名前缀
         actual_tool_name = tool_name
@@ -666,8 +745,10 @@ class MCPClientService:
             actual_tool_name = actual_tool_name[len(service_name) + 1:]
         
         try:
-            # 先初始化MCP会话
-            init_success = await MCPClientService._initialize_mcp_session(url, transport)
+            # 先初始化MCP会话（注入认证 headers）
+            init_success = await MCPClientService._initialize_mcp_session(
+                url, transport, extra_headers=extra_headers
+            )
             if not init_success:
                 logger.warning(f"MCP会话初始化失败，尝试直接调用: {url}")
 
@@ -683,12 +764,13 @@ class MCPClientService:
                 }
             }
             
-            # 发送请求
+            # 发送请求（注入认证 headers）
             response_data = await MCPClientService._send_jsonrpc_request(
                 url=url,
                 payload=payload,
                 transport=transport,
-                timeout=30.0
+                timeout=30.0,
+                extra_headers=extra_headers,
             )
             
             if response_data is None:

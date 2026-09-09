@@ -4,9 +4,9 @@
       <div class="login-left">
         <div class="brand-info">
           <div class="brand-logo">
-            <img src="@/assets/login-logo-dark.png" alt="工业智能助手平台" class="logo-image" />
+            <img src="@/assets/login-logo-dark.png" alt="工业智能体平台" class="logo-image" />
           </div>
-          <h1 class="brand-title">工业智能助手平台</h1>
+          <h1 class="brand-title">工业智能体平台</h1>
           <p class="brand-desc">Industrial Intelligent Assistant Platform</p>
         </div>
         <div class="features">

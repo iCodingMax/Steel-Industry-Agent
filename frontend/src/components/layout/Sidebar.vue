@@ -2,7 +2,7 @@
   <div class="sidebar">
     <div class="sidebar-header">
       <div class="logo">
-        <span class="logo-text">工业智能助手平台</span>
+        <span class="logo-text">工业智能体平台</span>
       </div>
     </div>
     <div class="sidebar-menu">
