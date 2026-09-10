@@ -1,9 +1,9 @@
 """
-转炉炼钢示例数据初始化脚本
+转炉炼钢示例数据初始化模块
 
-使用方式：
-    cd backend
-    python seed_data.py
+使用方式（系统启动时由 main.py lifespan 自动调用）：
+    from app.services.seed_data import seed
+    await seed()
 
 功能：
     1. 创建转炉炼钢示例数据源
@@ -11,11 +11,6 @@
     3. 自动同步数据源表结构
 """
 import asyncio
-import sys
-import os
-
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.core.database import SystemAsyncSession, init_db
 from app.core.config import settings

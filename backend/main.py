@@ -1,5 +1,5 @@
 """
-工业智能助手平台 - FastAPI 应用入口
+工业智能体平台 - FastAPI 应用入口
 
 职责：创建 FastAPI 应用实例，注册中间件/异常处理/路由，管理应用生命周期。
 
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     yield 之后 = 关闭阶段：释放数据库连接池
     """
     logger.info("=" * 60)
-    logger.info("工业智能助手平台启动中...")
+    logger.info("工业智能体平台启动中...")
     logger.info(f"运行环境: {settings.ENV}")
     logger.info("=" * 60)
 
@@ -71,8 +71,8 @@ async def lifespan(app: FastAPI):
     async with SystemAsyncSession() as db:
         await auth_service.init_default_admin(db)
 
-    # 第三步：填充种子数据（LLM配置、示例知识库等）
-    from seed_data import seed
+    # 第三步：填充种子数据（示例数据源、指标、维度、术语）
+    from app.services.seed_data import seed
     await seed()
 
     logger.success("系统启动成功!")
@@ -97,8 +97,8 @@ def create_app() -> FastAPI:
       4. 健康检查 —— 独立于 /api/v1 的 /health 端点，用于容器编排探活
     """
     app = FastAPI(
-        title="Industrial Intelligent Assistant Platform API",
-        description="工业智能助手平台 - RAG + ChatBI 融合推理",
+        title="Industrial Agent Platform API",
+        description="工业智能体平台 - RAG + ChatBI 融合推理",
         version="0.1.0",
         lifespan=lifespan,
     )

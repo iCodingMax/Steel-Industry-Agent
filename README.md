@@ -1,4 +1,4 @@
-# Industrial Intelligent Assistant Platform 工业智能助手平台
+# Industrial Agent Platform 工业智能体平台
 
 钢铁行业工序级融合智能问答系统，集成 **RAG 工艺知识问答**、**ChatBI 智能问数**、**MCP 工具调用**、**Skill 技能执行** 四大能力，提供统一对话入口，自动识别用户意图并路由分发，支持纯知识查询、纯数据查询、知识+数据融合分析、工具调用、技能执行五种模式。
 
@@ -265,10 +265,14 @@ Steel-Industry-Agent/
 │   │   └── utils/                   # 工具函数
 │   ├── uploads/skills/              # Skill 技能包存储
 │   ├── .env.example                 # 环境变量模板
-│   ├── seed_data.py                 # 种子数据初始化
 │   ├── main.py                      # 应用入口
 │   ├── requirements.txt             # Python 依赖
 │   └── Dockerfile
+├── sql/                             # 数据库初始化/变更脚本
+│   ├── V20250901_01__create_tool_config_table.sql
+│   └── V20250901_02__add_tool_config_ids_to_applications.sql
+├── scripts/                         # 运维脚本
+│   └── init_pg.sh                   # PostgreSQL 初始化（Docker 挂载）
 ├── frontend/                        # 前端服务
 │   ├── src/
 │   │   ├── api/                     # API 接口层

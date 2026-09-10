@@ -7,7 +7,7 @@
             <img src="@/assets/login-logo-dark.png" alt="工业智能体平台" class="logo-image" />
           </div>
           <h1 class="brand-title">工业智能体平台</h1>
-          <p class="brand-desc">Industrial Intelligent Assistant Platform</p>
+          <p class="brand-desc">Industrial Agent Platform</p>
         </div>
         <div class="features">
           <div class="feature-item">

@@ -11,12 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install poetry
+# 依赖统一由 requirements.txt 管理（本地开发与镜像构建同源，避免双轨漂移）
+COPY requirements.txt ./
 
-COPY pyproject.toml poetry.lock* ./
-
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-dev --no-interaction --no-ansi
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

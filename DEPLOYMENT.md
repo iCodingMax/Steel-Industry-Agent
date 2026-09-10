@@ -1,4 +1,4 @@
-# Industrial Intelligent Assistant Platform - 部署文档
+# Industrial Agent Platform - 部署文档
 
 ## 一、环境要求
 
@@ -588,7 +588,7 @@ Oracle数据库的Schema同步通过以下视图获取表结构信息：
     "timestamp": "2024-01-15T10:30:00Z",
     "version": "1.0.0",
     "checks": {
-        "service": {"status": "healthy", "message": "Industrial Intelligent Assistant Platform"},
+        "service": {"status": "healthy", "message": "Industrial Agent Platform"},
         "database": {"status": "healthy", "message": "PostgreSQL连接正常"},
         "business_database": {"status": "healthy", "message": "MySQL连接正常"},
         "redis": {"status": "healthy", "message": "Redis连接正常"}

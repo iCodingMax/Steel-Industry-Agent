@@ -18,7 +18,7 @@ router = APIRouter(prefix="/health", tags=["health"])
 async def health_check():
     """健康检查"""
     checks = {
-        "service": {"status": "healthy", "message": "Industrial Intelligent Assistant Platform"},
+        "service": {"status": "healthy", "message": "Industrial Agent Platform"},
         "database": {"status": "unknown", "message": ""},
         "redis": {"status": "unknown", "message": ""},
         "postgres": {"status": "unknown", "message": ""},

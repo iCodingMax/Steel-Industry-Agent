@@ -55,9 +55,5 @@ frontend/.vite/deps/
 
 # 文档存储目录
 backend/storage/documents/
-code-guide/
-docs/
-steel-agent-architecture/
-blast-furnace-diagnosis/
-data-platform-diagnosis/
 backend/uploads/
+docs/
