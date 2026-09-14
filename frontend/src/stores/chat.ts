@@ -10,6 +10,23 @@ export interface ThinkingStep {
   description: string
 }
 
+// 智能体步骤条：单次工具调用（executing → success/failed 两阶段合并为一条）
+export interface AgentStep {
+  iteration: number
+  tool: string
+  status: 'executing' | 'success' | 'failed'
+  detail?: string
+}
+
+// 智能体反思记录：R1重试 / R2空数据降级 / R3循环熔断
+export interface AgentReflection {
+  rule: string
+  tool: string
+  iteration: number
+  outcome: string
+  detail: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -27,6 +44,12 @@ export interface ChatMessage {
   thinkingSteps?: ThinkingStep[]  // 思考过程步骤
   toolCalls?: any[]  // 工具调用信息（MCP/Skill通用）
   toolResults?: any[]  // 工具调用结果（MCP/Skill通用）
+  agentPlan?: { tools: string[]; maxIterations: number; message?: string }  // 智能体执行计划（plan事件）
+  agentSteps?: AgentStep[]  // 智能体工具调用步骤（step事件）
+  agentReflections?: AgentReflection[]  // 智能体反思记录（reflect事件）
+  needsClarification?: boolean  // 澄清追问标记（clarify事件）
+  clarifyQuestion?: string  // 追问内容
+  elapsedTime?: number  // 响应耗时（毫秒，done事件）
 }
 
 export interface ChatSession {
@@ -36,6 +59,7 @@ export interface ChatSession {
   updatedAt: Date
   messageCount: number
   intentType?: string
+  status?: string  // 会话状态：active/awaiting_input（挂起中，clarify追问等待用户补充）
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -111,6 +135,7 @@ export const useChatStore = defineStore('chat', () => {
             updatedAt: new Date(s.updatedAt),
             messageCount: 0,
             intentType: s.intentType,
+            status: s.status,
           }))
           .sort((a: ChatSession, b: ChatSession) => Number(b.id) - Number(a.id))
       }
@@ -275,6 +300,53 @@ export const useChatStore = defineStore('chat', () => {
             case 'intent':
               // 意图识别结果
               msg.intent = event.intent
+              break
+            case 'plan':
+              // 智能体执行计划：工具清单 + 迭代上限（步骤条骨架）
+              msg.agentPlan = {
+                tools: event.tools || [],
+                maxIterations: event.max_iterations || 0,
+                message: event.message,
+              }
+              break
+            case 'step': {
+              // 智能体工具调用步骤：executing入列，success/failed更新末条状态
+              if (!msg.agentSteps) msg.agentSteps = []
+              const lastStep = msg.agentSteps[msg.agentSteps.length - 1]
+              if (
+                event.status !== 'executing' &&
+                lastStep &&
+                lastStep.tool === event.tool &&
+                lastStep.iteration === event.iteration &&
+                lastStep.status === 'executing'
+              ) {
+                lastStep.status = event.status
+                lastStep.detail = event.detail || ''
+              } else {
+                msg.agentSteps.push({
+                  iteration: event.iteration,
+                  tool: event.tool,
+                  status: event.status,
+                  detail: event.detail || '',
+                })
+              }
+              break
+            }
+            case 'reflect':
+              // 智能体反思记录：R1重试 / R2空数据降级 / R3循环熔断
+              if (!msg.agentReflections) msg.agentReflections = []
+              msg.agentReflections.push({
+                rule: event.rule,
+                tool: event.tool,
+                iteration: event.iteration,
+                outcome: event.outcome,
+                detail: event.detail,
+              })
+              break
+            case 'clarify':
+              // 澄清追问：智能体向用户提问（会话已挂起，回复后自动合并原问题）
+              msg.needsClarification = true
+              msg.clarifyQuestion = event.question
               break
             case 'thinking':
               // 思考过程步骤

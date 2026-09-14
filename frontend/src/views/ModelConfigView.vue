@@ -129,6 +129,13 @@
         <el-form-item label="温度参数">
           <el-input-number v-model="configForm.temperature" :min="0" :max="2" :step="0.1" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="思考模式" v-if="configForm.modelType === 'llm'">
+          <el-select v-model="configForm.enableThinking" placeholder="模型默认" clearable style="width: 100%">
+            <el-option label="模型默认（qwen3系自动关闭）" :value="null" />
+            <el-option label="强制开启" :value="true" />
+            <el-option label="强制关闭" :value="false" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="configForm.status" active-value="active" inactive-value="inactive" active-text="启用" inactive-text="停用" />
         </el-form-item>
@@ -191,6 +198,7 @@ const configForm = reactive<LLMConfigForm>({
   maxTokens: 2048,
   temperature: 0.7,
   topP: undefined,
+  enableThinking: null,
   extraParams: {},
   isDefault: false,
   description: '',
@@ -297,6 +305,7 @@ function handleAddModel() {
     maxTokens: 2048,
     temperature: 0.7,
     topP: undefined,
+    enableThinking: null,
     extraParams: {},
     isDefault: false,
     description: '',
@@ -318,6 +327,7 @@ function handleCardAction(command: string, model: any) {
       maxTokens: model.maxTokens || 2048,
       temperature: model.temperature || 0.7,
       topP: model.topP,
+      enableThinking: model.enableThinking === undefined ? null : model.enableThinking,
       extraParams: model.extraParams || {},
       isDefault: model.isDefault,
       description: model.description || '',

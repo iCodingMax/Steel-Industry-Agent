@@ -89,6 +89,26 @@
             <span v-if="message.isStreaming" class="streaming-cursor">|</span>
           </div>
 
+          <!-- 智能体执行面板（plan/step/reflect事件，agent模式） -->
+          <AgentStepsPanel
+            v-if="message.agentPlan || (message.agentSteps && message.agentSteps.length > 0)"
+            :plan="message.agentPlan"
+            :steps="message.agentSteps || []"
+            :reflections="message.agentReflections || []"
+          />
+
+          <!-- 澄清追问卡片（clarify事件：会话已挂起，用户回复后自动合并原问题继续处理） -->
+          <div v-if="message.needsClarification" class="clarify-card">
+            <div class="clarify-icon">
+              <el-icon><QuestionFilled /></el-icon>
+            </div>
+            <div class="clarify-body">
+              <div class="clarify-title">智能体需要更多信息</div>
+              <div class="clarify-question">{{ message.clarifyQuestion || message.content }}</div>
+              <div class="clarify-hint">直接在输入框回复即可，系统将自动结合您的原始问题继续处理</div>
+            </div>
+          </div>
+
           <!-- 知识引用 -->
           <div v-if="message.references && message.references.length > 0" class="references-section">
             <div class="references-header" @click="toggleReferences">
@@ -300,13 +320,14 @@
 
 <script setup lang="ts">import { ref, computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { CopyDocument, Edit, ArrowRight, ArrowDown, List, Loading, CircleCheck, Document, TrendCharts, PieChart, Download, Clock, Refresh, Tools } from '@element-plus/icons-vue';
+import { CopyDocument, Edit, ArrowRight, ArrowDown, List, Loading, CircleCheck, Document, TrendCharts, PieChart, Download, Clock, Refresh, Tools, QuestionFilled } from '@element-plus/icons-vue';
 import * as XLSX from 'xlsx';
 import { marked } from 'marked';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import ChartCard from '@/components/chart/ChartCard.vue';
 import AvatarImage from '@/components/AvatarImage.vue';
+import AgentStepsPanel from '@/components/chat/AgentStepsPanel.vue';
 import { copyToClipboard } from '@/utils/clipboard';
 
 // 配置marked选项
@@ -1491,6 +1512,58 @@ watch(() => [props.message.dataResult, props.message.columnMeta], () => {
       line-height: 18px;
       word-break: break-word;
       white-space: normal;
+    }
+  }
+
+  // 澄清追问卡片（clarify事件：会话挂起awaiting_input期间的提示）
+  .clarify-card {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 12px;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+
+    .clarify-icon {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #fef3c7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      .el-icon {
+        font-size: 18px;
+        color: #d97706;
+      }
+    }
+
+    .clarify-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .clarify-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #92400e;
+      margin-bottom: 4px;
+    }
+
+    .clarify-question {
+      font-size: 13px;
+      color: #78350f;
+      line-height: 20px;
+      word-break: break-word;
+    }
+
+    .clarify-hint {
+      font-size: 12px;
+      color: #b45309;
+      margin-top: 6px;
     }
   }
 

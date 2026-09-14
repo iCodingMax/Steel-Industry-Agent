@@ -38,7 +38,10 @@
                 @blur="confirmRename(session.id)"
               />
             </div>
-            <div v-else class="session-name">{{ session.title || '新对话' }}</div>
+            <div v-else class="session-name">
+              {{ session.title || '新对话' }}
+              <span v-if="session.status === 'awaiting_input'" class="session-pending-tag">挂起中</span>
+            </div>
             <div class="session-time">{{ formatTime(session.updatedAt) }}</div>
           </div>
           <div v-if="editingSessionId !== session.id" class="session-actions" @click.stop>
@@ -665,6 +668,8 @@ async function handleSend() {
   try {
     await chatStore.sendUserMessage(content)
     inputText.value = ''
+    // 刷新会话列表：同步挂起态标识（clarify追问挂起/恢复后status变化）
+    chatStore.fetchSessions()
   } catch (e) {
     console.error('发送消息失败', e)
   } finally {
@@ -846,6 +851,18 @@ watch(
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+
+        .session-pending-tag {
+          display: inline-block;
+          margin-left: 4px;
+          padding: 0 5px;
+          font-size: 10px;
+          font-weight: 600;
+          color: #d97706;
+          background: #fef3c7;
+          border-radius: 8px;
+          vertical-align: 1px;
+        }
       }
 
       .session-time {

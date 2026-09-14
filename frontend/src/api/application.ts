@@ -25,6 +25,8 @@ export interface Application {
   maxTokens: number
   temperature: number
   topP: number
+  agentMode?: string         // 执行模式: classic(意图分类路由)/agent(智能体ReAct循环)
+  agentMaxIterations?: number // Agent模式最大推理迭代次数
   createdAt?: string
   updatedAt?: string
   createdBy?: number
@@ -60,6 +62,8 @@ export interface ApplicationCreateForm {
   maxTokens?: number
   temperature?: number
   topP?: number
+  agentMode?: string
+  agentMaxIterations?: number
 }
 
 export interface ApplicationUpdateForm {
@@ -84,6 +88,8 @@ export interface ApplicationUpdateForm {
   maxTokens?: number
   temperature?: number
   topP?: number
+  agentMode?: string
+  agentMaxIterations?: number
 }
 
 export interface AppPromptCreateForm {

@@ -11,6 +11,8 @@ export interface LLMConfigForm {
   maxTokens?: number
   temperature?: number
   topP?: number
+  /** 思考模式三态：true开启 / false关闭 / undefined模型默认（qwen3系自动关思考） */
+  enableThinking?: boolean | null
   extraParams?: Record<string, any>
   isDefault?: boolean
   description?: string

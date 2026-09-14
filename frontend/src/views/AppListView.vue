@@ -3,10 +3,17 @@
     <template v-if="!currentApp">
       <div class="page-header">
         <h2 class="page-title">应用管理</h2>
-        <el-button type="primary" @click="handleCreate">
-          <el-icon><Plus /></el-icon>
-          新建应用
-        </el-button>
+        <div class="header-right">
+          <!-- P3-3 列表页类型筛选（方案 2.8.3）：按类型维度过滤应用 -->
+          <el-select v-model="typeFilter" class="type-filter" style="width: 140px" placeholder="全部类型">
+            <el-option label="全部类型" value="all" />
+            <el-option v-for="(meta, mode) in TYPE_META" :key="mode" :label="meta.label" :value="mode" />
+          </el-select>
+          <el-button type="primary" @click="handleCreate">
+            <el-icon><Plus /></el-icon>
+            新建应用
+          </el-button>
+        </div>
       </div>
 
       <div v-if="loading" class="page-loading">
@@ -14,14 +21,17 @@
       </div>
 
       <div v-else class="app-grid">
-        <div v-for="app in applications" :key="app.id" class="app-card" @click="handleDetail(app)">
-          <div class="app-icon">
-            <el-icon :size="28"><Setting /></el-icon>
+        <div v-for="app in filteredApplications" :key="app.id" class="app-card" @click="handleDetail(app)">
+          <div class="app-icon" :class="`icon-${normalizeAgentMode(app.agentMode)}`">
+            <el-icon :size="28"><component :is="TYPE_META[normalizeAgentMode(app.agentMode)].icon" /></el-icon>
           </div>
           <div class="app-info">
             <h3 class="app-name">{{ app.name }}</h3>
             <p class="app-desc">{{ app.description || '暂无描述' }}</p>
             <div class="app-meta">
+              <span class="app-type-badge" :class="normalizeAgentMode(app.agentMode)">
+                {{ TYPE_META[normalizeAgentMode(app.agentMode)].label }}
+              </span>
               <span class="app-model">
                 <el-icon><Monitor /></el-icon>
                 {{ app.modelName }}
@@ -86,6 +96,47 @@
 
                 <el-card shadow="never" class="form-card">
                   <template #header>
+                    <div class="mode-card-header">
+                      <span class="card-title">应用类型</span>
+                      <!-- P3-3 类型只读徽标（方案 2.8.3）：类型创建后不可变，编辑页不再提供修改控件 -->
+                      <span class="app-type-badge" :class="normalizeAgentMode(appForm.agentMode)">
+                        {{ TYPE_META[normalizeAgentMode(appForm.agentMode)].label }}
+                      </span>
+                    </div>
+                  </template>
+                  <p class="form-tip mode-desc">{{ TYPE_META[normalizeAgentMode(appForm.agentMode)].scene }}</p>
+                  <!-- classic→chatbi 受控升级入口（方案 2.8.2 逃生通道，后端 update 校验放行） -->
+                  <!-- classic 关联设置不露数据源入口，升级区块自带选择器（升级请求允许携带 datasourceIds） -->
+                  <div v-if="normalizeAgentMode(appForm.agentMode) === 'classic'" class="chatbi-upgrade">
+                    <p class="upgrade-title">需要问数能力？可升级为数据助手（不可回退，知识库绑定将清空）</p>
+                    <div class="upgrade-row">
+                      <el-select
+                        v-model="appForm.datasourceIds"
+                        multiple
+                        placeholder="选择数据源（升级后生效）"
+                        size="default"
+                        class="upgrade-ds-select"
+                      >
+                        <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
+                      </el-select>
+                      <el-button
+                        type="primary"
+                        plain
+                        :disabled="!(appForm.datasourceIds || []).length"
+                        @click="handleChatbiUpgrade"
+                      >
+                        升级为数据助手
+                      </el-button>
+                    </div>
+                  </div>
+                  <el-form-item v-if="appForm.agentMode === 'agent'" label="最大迭代轮数">
+                    <el-input-number v-model="appForm.agentMaxIterations" :min="3" :max="30" style="width: 200px" />
+                    <span class="slider-value" style="margin-left: 10px;">轮（防死循环上限，默认8）</span>
+                  </el-form-item>
+                </el-card>
+
+                <el-card shadow="never" class="form-card">
+                  <template #header>
                     <span class="card-title">AI模型设置</span>
                   </template>
                   <el-row :gutter="20">
@@ -143,7 +194,9 @@
                   <template #header>
                     <span class="card-title">关联设置</span>
                   </template>
-                  <el-form-item label="关联知识库">
+                  <!-- P3-3 条件分区（方案 2.8.1 闸门2）：各类型只露能力域内绑定入口 -->
+                  <!-- ChatBot/Agent：知识库入口（chatbi 不渲染，不可见即不可配） -->
+                  <el-form-item v-if="appForm.agentMode !== 'chatbi'" label="关联知识库">
                     <div class="kb-row">
                       <el-select v-model="appForm.knowledgeBaseIds" multiple placeholder="请选择知识库" style="flex: 1">
                         <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
@@ -155,7 +208,8 @@
                     </div>
                     <p class="form-tip">选择后，智能助手将基于这些知识库的内容进行回答</p>
                   </el-form-item>
-                  <el-form-item label="关联数据库">
+                  <!-- ChatBI/Agent：数据源入口（classic 不渲染） -->
+                  <el-form-item v-if="appForm.agentMode !== 'classic'" label="关联数据库">
                     <el-select v-model="appForm.datasourceIds" multiple placeholder="请选择数据源" style="width: 100%">
                       <el-option v-for="ds in datasources" :key="ds.id" :label="ds.name" :value="ds.id" />
                     </el-select>
@@ -163,7 +217,7 @@
                   </el-form-item>
                 </el-card>
 
-                <el-card shadow="never" class="form-card">
+                <el-card shadow="never" class="form-card" v-if="appForm.agentMode === 'agent'">
                   <template #header>
                     <span class="card-title">工具设置</span>
                   </template>
@@ -299,8 +353,37 @@
     </div>
     </template>
 
-    <el-dialog v-model="createDialogVisible" title="新建应用" width="500px" destroy-on-close>
-      <el-form :model="createForm" label-width="100px" :rules="createRules" ref="createFormRef">
+    <el-dialog v-model="createDialogVisible" title="新建应用" width="560px" destroy-on-close>
+      <!-- P3-3 创建入口两步式（方案 2.8.3）：第一步类型三选一卡片，选定后进入共用表单；类型创建后不可变 -->
+      <!-- 第一步：类型选择 -->
+      <div v-if="createStep === 1" class="type-select-step">
+        <div
+          v-for="(meta, mode) in TYPE_META"
+          :key="mode"
+          class="type-card"
+          :class="{ active: createForm.agentMode === mode }"
+          @click="createForm.agentMode = mode"
+        >
+          <div class="type-card-icon" :class="`icon-${mode}`">
+            <el-icon :size="26"><component :is="meta.icon" /></el-icon>
+          </div>
+          <div class="type-card-body">
+            <div class="type-card-title">
+              {{ meta.label }}
+              <el-tag v-if="mode === 'agent'" size="small" type="warning" effect="plain">多轮调用，成本较高</el-tag>
+            </div>
+            <div class="type-card-scene">{{ meta.scene }}</div>
+            <div class="type-card-cap">{{ meta.capability }}</div>
+          </div>
+        </div>
+        <p class="form-tip type-lock-tip">应用类型创建后不可变更，请按业务场景选择</p>
+      </div>
+      <!-- 第二步：共用表单（三类型 80% 字段共享） -->
+      <el-form v-else :model="createForm" label-width="100px" :rules="createRules" ref="createFormRef">
+        <el-form-item label="应用类型">
+          <el-tag :class="createForm.agentMode" effect="light">{{ TYPE_META[normalizeAgentMode(createForm.agentMode)].label }}</el-tag>
+          <el-button link type="primary" size="small" style="margin-left: 8px" @click="createStep = 1">重选类型</el-button>
+        </el-form-item>
         <el-form-item label="应用名称" prop="name">
           <el-input v-model="createForm.name" placeholder="请输入应用名称" />
         </el-form-item>
@@ -314,8 +397,14 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSubmitCreate" :loading="creating">创建</el-button>
+        <el-button v-if="createStep === 1" @click="createDialogVisible = false">取消</el-button>
+        <el-button v-if="createStep === 1" type="primary" :disabled="!createForm.agentMode" @click="handleCreateNext">
+          下一步
+        </el-button>
+        <template v-else>
+          <el-button @click="createStep = 1">上一步</el-button>
+          <el-button type="primary" @click="handleSubmitCreate" :loading="creating">创建</el-button>
+        </template>
       </template>
     </el-dialog>
 
@@ -440,6 +529,9 @@ import {
   Message,
   Check,
   Loading,
+  ChatDotRound,
+  DataAnalysis,
+  MagicStick,
 } from '@element-plus/icons-vue'
 import {
   getApplications,
@@ -470,6 +562,43 @@ const embeddingModels = ref<LLMConfigForm[]>([])
 const rerankModels = ref<LLMConfigForm[]>([])
 const mcpTools = ref<any[]>([])
 const skillTools = ref<any[]>([])
+
+// ===================== P3-3 应用类型化（方案 2.8）=====================
+// 三类型元数据：classic(对话助手)/chatbi(数据助手)/agent(智能体)，类型创建后不可变
+const TYPE_META = {
+  classic: {
+    label: 'ChatBot 对话助手',
+    icon: ChatDotRound,
+    scene: '知识问答 · 固定流程',
+    capability: '基于知识库检索回答，意图分类路由，不接入数据源与外部工具',
+  },
+  chatbi: {
+    label: 'ChatBI 数据助手',
+    icon: DataAnalysis,
+    scene: '专业问数 · 图表可视化',
+    capability: '自然语言生成 SQL 查询数据库，自动推荐图表类型，支持多轮追问',
+  },
+  agent: {
+    label: 'Agent 智能体',
+    icon: MagicStick,
+    scene: '跨库分析 · 多步任务',
+    capability: 'ReAct 自主决策循环，可组合知识检索/数据查询/MCP/Skills 工具',
+  },
+} as const
+type AgentMode = keyof typeof TYPE_META
+
+// 存量 agentMode 归一化（NULL/未知值按 classic 处理，与后端语义一致）
+function normalizeAgentMode(mode?: string): AgentMode {
+  return mode && mode in TYPE_META ? (mode as AgentMode) : 'classic'
+}
+
+// 列表页类型筛选（'all' 不限）
+const typeFilter = ref<string>('all')
+const filteredApplications = computed(() =>
+  typeFilter.value === 'all'
+    ? applications.value
+    : applications.value.filter(app => normalizeAgentMode(app.agentMode) === typeFilter.value),
+)
 
 const currentApp = ref<Application | null>(null)
 const activeTab = ref('settings')
@@ -502,6 +631,8 @@ const appForm = reactive<ApplicationUpdateForm & { mcpIds: number[], skillIds: n
   maxTokens: 8192,
   temperature: 0.7,
   topP: 0.9,
+  agentMode: 'classic',
+  agentMaxIterations: 8,
 })
 
 const appRules: FormRules = {
@@ -528,6 +659,8 @@ function checkPromptOverflow() {
 
 const createDialogVisible = ref(false)
 const createFormRef = ref<FormInstance>()
+// P3-3 创建对话框两步式：1=类型选择卡片，2=共用表单
+const createStep = ref<1 | 2>(1)
 const createForm = reactive<ApplicationCreateForm>({
   name: '',
   description: '',
@@ -540,6 +673,7 @@ const createForm = reactive<ApplicationCreateForm>({
   maxTokens: 8192,
   temperature: 0.7,
   topP: 0.9,
+  agentMode: '',
 })
 
 const createRules: FormRules = {
@@ -1089,8 +1223,20 @@ function handleCreate() {
     maxTokens: 8192,
     temperature: 0.7,
     topP: 0.9,
+    agentMode: '',
   })
+  // P3-3：每次打开重置到类型选择第一步
+  createStep.value = 1
   createDialogVisible.value = true
+}
+
+// P3-3：类型选择卡片点击"下一步"进入共用表单
+function handleCreateNext() {
+  if (!createForm.agentMode) {
+    ElMessage.warning('请先选择应用类型')
+    return
+  }
+  createStep.value = 2
 }
 
 async function handleSubmitCreate() {
@@ -1111,6 +1257,38 @@ async function handleSubmitCreate() {
     ElMessage.error(error?.response?.data?.detail || '创建失败')
   } finally {
     creating.value = false
+  }
+}
+
+// P3-3：classic→chatbi 受控升级（方案 2.8.2 逃生通道）
+// 后端 update 校验放行该定向转换（须已绑数据源）；升级即类型切换，不可回退
+async function handleChatbiUpgrade() {
+  if (!currentApp.value) return
+  try {
+    await ElMessageBox.confirm(
+      '升级为数据助手后将获得专业问数能力（意图白名单变为 {data, chat}），该操作不可回退，确定继续吗？',
+      '升级为数据助手',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  saving.value = true
+  try {
+    // 升级请求按目标类型 chatbi 校验：知识库/工具随请求清空（数据源已选在表单中）
+    appForm.mcpIds = []
+    appForm.skillIds = []
+    await updateApplication(currentApp.value.id, buildUpdatePayload('chatbi'))
+    ElMessage.success('已升级为数据助手')
+    // 同步本地状态（currentApp 与表单），避免返回列表后显示旧类型
+    currentApp.value.agentMode = 'chatbi'
+    appForm.agentMode = 'chatbi'
+    appForm.knowledgeBaseIds = []
+    await loadApplications()
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || '升级失败')
+  } finally {
+    saving.value = false
   }
 }
 
@@ -1144,6 +1322,8 @@ function handleDetail(app: Application) {
       maxTokens: app.maxTokens,
       temperature: app.temperature,
       topP: app.topP,
+      agentMode: app.agentMode || 'classic',
+      agentMaxIterations: app.agentMaxIterations ?? 8,
     })
     authConfig.requireAuth = app.requireAuth ?? true
     // 检测系统提示词是否溢出
@@ -1176,6 +1356,16 @@ function backToList() {
   loadApplications()
 }
 
+// P3-3：组装 update 请求载荷——合并工具 ID + 越界绑定保存即清空（方案 2.8.1 存量豁免：
+// 前端不露的越界绑定入口，保存时随表单当前值提交空数组，实现"只减不增"引导清理）
+function buildUpdatePayload(agentModeOverride?: string): ApplicationUpdateForm & { toolConfigIds: number[] } {
+  const toolConfigIds = [...appForm.mcpIds, ...appForm.skillIds]
+  const mode = agentModeOverride || appForm.agentMode || 'classic'
+  // chatbi 升级请求按目标类型校验，知识库须随请求清空
+  const knowledgeBaseIds = mode === 'chatbi' ? [] : appForm.knowledgeBaseIds
+  return { ...appForm, agentMode: mode, knowledgeBaseIds, toolConfigIds }
+}
+
 async function handleSave() {
   if (!appFormRef.value || !currentApp.value) return
   try {
@@ -1186,9 +1376,7 @@ async function handleSave() {
 
   saving.value = true
   try {
-    // 合并mcpIds和skillIds到toolConfigIds
-    const toolConfigIds = [...appForm.mcpIds, ...appForm.skillIds]
-    await updateApplication(currentApp.value.id, { ...appForm, toolConfigIds })
+    await updateApplication(currentApp.value.id, buildUpdatePayload())
     ElMessage.success('应用保存成功')
     await loadApplications()
   } catch (error: any) {
@@ -1209,10 +1397,8 @@ async function handlePublish() {
   appForm.status = 'active'
   publishing.value = true
   try {
-    // 合并mcpIds和skillIds到toolConfigIds
-    const toolConfigIds = [...appForm.mcpIds, ...appForm.skillIds]
     // 发布时自动保存配置（与handleSave逻辑一致），避免用户漏点保存按钮
-    await updateApplication(currentApp.value.id, { ...appForm, toolConfigIds })
+    await updateApplication(currentApp.value.id, buildUpdatePayload())
     ElMessage.success('应用已发布')
     await loadApplications()
   } catch (error: any) {
@@ -2552,6 +2738,181 @@ onMounted(() => {
     overflow-x: auto;
     white-space: pre-wrap;
     word-break: break-all;
+  }
+}
+
+/* ===================== P3-3 应用类型化样式 ===================== */
+.page-header .header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 类型徽标：classic 蓝 / chatbi 青 / agent 紫，与 el-tag 色系对齐 */
+.app-type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  &.classic {
+    background: rgba(59, 130, 246, 0.1);
+    color: #3b82f6;
+  }
+
+  &.chatbi {
+    background: rgba(20, 184, 166, 0.1);
+    color: #0d9488;
+  }
+
+  &.agent {
+    background: rgba(99, 102, 241, 0.1);
+    color: #6366f1;
+  }
+}
+
+/* 列表卡片图标按类型着色 */
+.app-icon {
+  &.icon-classic {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(59, 130, 246, 0.2));
+    color: #3b82f6;
+  }
+
+  &.icon-chatbi {
+    background: linear-gradient(135deg, rgba(20, 184, 166, 0.1), rgba(20, 184, 166, 0.2));
+    color: #0d9488;
+  }
+
+  &.icon-agent {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(99, 102, 241, 0.2));
+    color: #6366f1;
+  }
+}
+
+/* 编辑页"应用类型"卡头部布局 */
+.mode-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.mode-desc {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #475569;
+}
+
+/* classic→chatbi 升级区块 */
+.chatbi-upgrade {
+  padding: 12px 16px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  margin-bottom: 16px;
+
+  .upgrade-title {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: #64748b;
+  }
+
+  .upgrade-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+
+    .upgrade-ds-select {
+      flex: 1;
+    }
+  }
+}
+
+/* 新建对话框第一步：类型选择卡片 */
+.type-select-step {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  .type-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 16px;
+    border: 2px solid $card-border;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:hover {
+      border-color: #93c5fd;
+      background: rgba(59, 130, 246, 0.03);
+    }
+
+    &.active {
+      border-color: $primary-color;
+      background: rgba(59, 130, 246, 0.06);
+    }
+
+    .type-card-icon {
+      flex-shrink: 0;
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      &.icon-classic {
+        background: rgba(59, 130, 246, 0.12);
+        color: #3b82f6;
+      }
+
+      &.icon-chatbi {
+        background: rgba(20, 184, 166, 0.12);
+        color: #0d9488;
+      }
+
+      &.icon-agent {
+        background: rgba(99, 102, 241, 0.12);
+        color: #6366f1;
+      }
+    }
+
+    .type-card-body {
+      flex: 1;
+      min-width: 0;
+
+      .type-card-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        color: $text-primary;
+      }
+
+      .type-card-scene {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #3b82f6;
+        font-weight: 500;
+      }
+
+      .type-card-cap {
+        margin-top: 4px;
+        font-size: 12px;
+        color: $text-secondary;
+        line-height: 1.5;
+      }
+    }
+  }
+
+  .type-lock-tip {
+    text-align: center;
   }
 }
 </style>
