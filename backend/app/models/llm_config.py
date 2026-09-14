@@ -43,6 +43,8 @@ class LLMConfig(Base):
     max_tokens = Column(Integer, default=2048, comment="最大输出token")
     temperature = Column(Float, default=0.7, comment="温度参数")
     top_p = Column(Float, nullable=True, comment="Top-p采样")
+    # P0-5 思考模式三态：True=强制开启 / False=强制关闭 / NULL=按模型默认（qwen3 系自动关思考）
+    enable_thinking = Column(Boolean, nullable=True, comment="思考模式: true开启/false关闭/null模型默认")
     extra_params = Column(JSONB, nullable=True, comment="额外参数(JSON)")
     is_default = Column(Boolean, default=False, comment="是否默认配置")
     status = Column(String(20), default="active", comment="状态: active/inactive")
@@ -63,6 +65,7 @@ class LLMConfig(Base):
             "maxTokens": self.max_tokens,
             "temperature": self.temperature,
             "topP": self.top_p,
+            "enableThinking": self.enable_thinking,
             "extraParams": self.extra_params if self.extra_params else {},
             "isDefault": self.is_default,
             "status": self.status,

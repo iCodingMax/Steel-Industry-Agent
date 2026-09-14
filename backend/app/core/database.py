@@ -92,6 +92,14 @@ async def init_db() -> None:
     import app.models.session  # noqa: F401
     import app.models.audit_log  # noqa: F401
     import app.models.tool_config  # noqa: F401
+    import app.models.agent_memory  # noqa: F401
+
+    try:
+        # 确保系统库已启用 pgvector 扩展（agent_memories 向量列依赖）
+        async with system_engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    except Exception as e:
+        logger.warning(f"pgvector 扩展创建失败（环境无权限时可改用 sql/ 脚本手动执行）: {e}")
 
     try:
         async with system_engine.begin() as conn:
@@ -210,6 +218,29 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN applications.top_k IS '引用分段数(1-10之间)'"
                 ))
                 logger.info("已为 applications 表添加 top_k 列")
+            # 智能体升级一期：agent_mode / agent_max_iterations（存量环境自动补列）
+            if 'agent_mode' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN agent_mode VARCHAR(10) DEFAULT 'classic'"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.agent_mode IS '执行模式: classic(意图分类路由分发)/agent(智能体ReAct循环)'"
+                ))
+                sync_conn.execute(text(
+                    "UPDATE applications SET agent_mode = 'classic' WHERE agent_mode IS NULL"
+                ))
+                logger.info("已为 applications 表添加 agent_mode 列")
+            if 'agent_max_iterations' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN agent_max_iterations INTEGER DEFAULT 8"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.agent_max_iterations IS 'Agent模式最大推理迭代次数(防死循环,默认8)'"
+                ))
+                sync_conn.execute(text(
+                    "UPDATE applications SET agent_max_iterations = 8 WHERE agent_max_iterations IS NULL"
+                ))
+                logger.info("已为 applications 表添加 agent_max_iterations 列")
 
         # users 表添加 user_source 字段
         if 'users' in inspector.get_table_names():
@@ -261,6 +292,41 @@ async def _auto_add_columns(conn) -> None:
                     "COMMENT ON COLUMN sessions.chat_user_id IS '对话用户ID(嵌入模式使用，可为空)'"
                 ))
                 logger.info("已为 sessions 表添加 chat_user_id 列")
+            # 智能体升级一期：summarized_context（会话记忆滚动摘要）
+            if 'summarized_context' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE sessions ADD COLUMN summarized_context TEXT"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN sessions.summarized_context IS '会话记忆滚动摘要(LLM压缩后的历史上下文)'"
+                ))
+                sync_conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions (status)"
+                ))
+                logger.info("已为 sessions 表添加 summarized_context 列")
+            # 智能体升级二期（S3挂起态）：pending_clarification（澄清追问挂起上下文）
+            if 'pending_clarification' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE sessions ADD COLUMN pending_clarification JSONB DEFAULT NULL"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN sessions.pending_clarification IS "
+                    "'澄清追问挂起上下文(JSON): question/original_question/message_id/created_at'"
+                ))
+                logger.info("已为 sessions 表添加 pending_clarification 列")
+
+        # llm_configs 表：P0-5 思考模式三态配置（可空 boolean，NULL=按模型默认）
+        if 'llm_configs' in inspector.get_table_names():
+            existing_cols = {col['name'] for col in inspector.get_columns('llm_configs')}
+            if 'enable_thinking' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE llm_configs ADD COLUMN enable_thinking BOOLEAN DEFAULT NULL"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN llm_configs.enable_thinking IS "
+                    "'思考模式三态: true开启/false关闭/null按模型默认(qwen3系自动关思考)'"
+                ))
+                logger.info("已为 llm_configs 表添加 enable_thinking 列")
 
         # tool_configs 表：将绝对路径迁移为相对路径
         # 旧数据使用 os.getcwd() 存储绝对路径，需转换为相对于项目根目录的路径

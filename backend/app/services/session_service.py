@@ -33,7 +33,9 @@
   A: 因为会话列表要按「最新消息时间」排序（最近活跃的会话排前面），
      但有些会话可能还没有消息，需要用 updated_at 兜底。这需要 LEFT JOIN 子查询。
 """
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from datetime import datetime, timezone
+
 from loguru import logger
 
 from sqlalchemy import select, delete, func
@@ -169,6 +171,130 @@ class SessionService:
         await db.refresh(session)
         logger.info(f"更新会话标题成功: ID={session_id}, 标题={title}")
         return session
+
+    # ==================== S3挂起态：clarify追问挂起/恢复 ====================
+
+    # 挂起有效期（小时）：超过后挂起作废，用户输入按普通新问题处理
+    AWAITING_INPUT_TTL_HOURS = 24
+    # P2-10：单任务追问次数硬上限（含本次），达到后拒绝挂起
+    MAX_CLARIFY_COUNT = 2
+
+    @staticmethod
+    async def set_awaiting_input(
+        db: AsyncSession,
+        session: Session,
+        question: str,
+        original_question: str,
+        message_id: Optional[int] = None,
+        clarify_base: int = 0,
+    ) -> bool:
+        """
+        将会话置为挂起态（awaiting_input）—— 智能体clarify追问后调用
+
+        P2-10 追问次数硬上限：挂起上下文中记录 clarify_count = clarify_base + 1（含本次），
+        达到 MAX_CLARIFY_COUNT（默认2）时拒绝挂起——调用方应直接以追问文本
+        作为最终回答返回，防止无限追问循环。
+
+        计数基数说明：恢复挂起（try_resume_awaiting）时 pending 上下文已被清空，
+        旧计数经返回值透传给 MasterAgent 后需由调用方回传至此（clarify_base），
+        保证跨恢复周期的计数连续。
+
+        :param db: 数据库会话
+        :param session: 会话对象（原地修改）
+        :param question: 智能体的追问内容
+        :param original_question: 触发追问的原始用户问题
+        :param message_id: 追问消息ID（assistant消息，便于前端定位）
+        :param clarify_base: 追问计数基数（恢复挂起透传的旧计数，全新任务为0）
+        :return: True=挂起成功；False=达到硬上限拒绝挂起（会话保持active）
+        """
+        # P2-10：累计追问计数（基数 + 本次；基数由恢复链路透传，保证计数连续）
+        clarify_count = int(clarify_base) + 1
+        if clarify_count >= SessionService.MAX_CLARIFY_COUNT:
+            logger.warning(
+                f"[S3挂起] 追问次数达到硬上限({SessionService.MAX_CLARIFY_COUNT})，"
+                f"拒绝挂起: session_id={session.id}"
+            )
+            return False
+
+        session.status = "awaiting_input"
+        session.pending_clarification = {
+            "question": question,
+            "original_question": original_question,
+            "message_id": message_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "clarify_count": clarify_count,
+        }
+        await db.commit()
+        logger.info(
+            f"[S3挂起] 会话进入等待用户输入: session_id={session.id}, "
+            f"追问={question[:50]}, 累计追问次数={clarify_count}"
+        )
+        return True
+
+    @staticmethod
+    async def try_resume_awaiting(
+        db: AsyncSession,
+        session: Session,
+        user_input: str,
+    ) -> Optional[Tuple[str, int]]:
+        """
+        尝试恢复挂起会话 —— 挂起状态下用户回复时调用
+
+        恢复逻辑：
+            1. 非挂起态（status != awaiting_input 或无挂起上下文）→ 返回None（普通新问题）
+            2. 挂起超过TTL（默认24h）→ 挂起作废：恢复active并清空挂起数据，
+               返回None（用户输入按普通新问题处理）
+            3. 有效挂起 → 恢复active并清空挂起数据，返回
+               ("原始问题+用户补充"的合并问题, 累计追问次数) 元组
+               （P2-10：clarify_count 透传给 MasterAgent，≥1 注入禁再追问提示词）
+
+        :param db: 数据库会话
+        :param session: 会话对象（原地修改）
+        :param user_input: 用户本次输入（对追问的补充回答）
+        :return: (合并后的恢复问题, 累计追问次数)；非挂起态或已过期返回None
+        """
+        # 1. 非挂起态直接返回（普通新问题）
+        pending = getattr(session, "pending_clarification", None)
+        if session.status != "awaiting_input" or not pending:
+            return None
+
+        # 2. 挂起有效期检查（超时作废，回退普通问题）
+        try:
+            created_at = datetime.fromisoformat(pending.get("created_at", ""))
+            expired = (
+                datetime.now(timezone.utc) - created_at
+            ).total_seconds() > SessionService.AWAITING_INPUT_TTL_HOURS * 3600
+        except (ValueError, TypeError):
+            # created_at缺失/格式异常：视为无效挂起，作废处理
+            expired = True
+        if expired:
+            logger.info(
+                f"[S3挂起] 挂起已超过{SessionService.AWAITING_INPUT_TTL_HOURS}h过期作废: "
+                f"session_id={session.id}"
+            )
+            session.status = "active"
+            session.pending_clarification = None
+            await db.commit()
+            return None
+
+        # 3. 有效挂起：恢复active，返回（合并问题, 累计追问次数）
+        original_question = pending.get("original_question") or ""
+        # P2-10：提取累计追问次数，透传给 MasterAgent（≥1 注入禁再追问提示词）
+        clarify_count = int(pending.get("clarify_count") or 1)
+        logger.info(
+            f"[S3挂起] 恢复挂起会话: session_id={session.id}, "
+            f"原始问题={original_question[:50]}, 用户补充={user_input[:50]}, "
+            f"累计追问次数={clarify_count}"
+        )
+        session.status = "active"
+        session.pending_clarification = None
+        await db.commit()
+        merged_question = (
+            f"【原始问题】{original_question}\n"
+            f"【用户补充】{user_input}\n"
+            "请结合用户补充的信息，继续处理原始问题。"
+        )
+        return merged_question, clarify_count
 
     @staticmethod
     async def delete(db: AsyncSession, session_id: int) -> None:

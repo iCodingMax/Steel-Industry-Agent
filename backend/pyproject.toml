@@ -31,6 +31,10 @@ llama-index-readers-file = "*"
 pypdf = "^4.0.0"
 python-docx = "^1.1.0"
 
+# LangGraph Agent编排依赖（P0-1：与 requirements.txt 同步声明，实测 1.2.11，锁定 1.2+ 且 <2.0）
+langgraph = ">=1.2,<2.0"
+langchain-core = ">=0.3.0"
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.0"
 pytest-asyncio = "^0.23.0"

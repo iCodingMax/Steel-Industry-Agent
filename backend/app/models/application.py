@@ -68,6 +68,9 @@ class Application(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True, comment="创建人ID")
     access_hash = Column(String(16), unique=True, nullable=True, comment="公开访问hash（16位随机十六进制）")
+    # 智能体模式配置（LangGraph MasterAgent 升级）
+    agent_mode = Column(String(10), default="classic", server_default="classic", comment="执行模式: classic(意图分类路由分发)/agent(智能体ReAct循环)")
+    agent_max_iterations = Column(Integer, default=8, server_default="8", comment="Agent模式最大推理迭代次数(防死循环,默认8)")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -109,6 +112,8 @@ class Application(Base):
             "maxTokens": self.max_tokens,
             "temperature": self.temperature / 10.0,
             "topP": self.top_p / 10.0,
+            "agentMode": self.agent_mode if self.agent_mode else "classic",
+            "agentMaxIterations": self.agent_max_iterations if self.agent_max_iterations is not None else 8,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "createdBy": self.created_by,

@@ -5,14 +5,15 @@
 
 主要组件：
 1. IntentClassifier：意图分类器
-   - 使用关键词预判断 + LLM对用户问题进行意图分类（knowledge/data/mcp/skill/hybrid/chat）
-   - 支持混合问题拆分为数据子问题和知识子问题
+   - 使用关键词预判断 + LLM对用户问题进行意图分类（knowledge/data/mcp/skill/chat）
    - LLM分类时参考工具管理中已配置的MCP/Skills名称和描述
 
 2. RouterService：路由分发服务
    - 根据意图分类结果将问题分发到对应处理通道
-   - 支持闲聊对话通道、知识问答通道、数据查询通道、MCP工具调用通道、Skill工具调用通道、混合分析通道
-   - 融合混合分析的结果，生成统一回答
+   - 支持闲聊对话通道、知识问答通道、数据查询通道、MCP工具调用通道、Skill工具调用通道
+
+M4改造：hybrid（混合分析）通道已下线，分类器收敛为5类意图，
+历史会话中已存的 hybrid intent 消息仅做只读兼容展示，不再产生新值。
 
 核心流程：
     用户问题
@@ -24,8 +25,7 @@
         ├── knowledge → knowledge_qa_service.answer()         # 知识问答
         ├── data      → chatbi_service.query()                # 数据查询
         ├── mcp       → mcp_client_service.execute_tool_calls()  # MCP工具调用
-        ├── skill     → RouterService._execute_skill()        # Skill工具调用
-        └── hybrid    → 并行调用知识+数据通道，融合结果
+        └── skill     → RouterService._execute_skill()        # Skill工具调用
 """
 import json
 import re
@@ -46,6 +46,42 @@ from app.services.tool_config_service import resolve_skill_path
 from app.schemas.knowledge import KnowledgeQuery
 
 
+# ===================== P3-5 调试通道建议类型（方案 2.8.4 / 风险表） =====================
+# ChatBot 存量应用 data 类问题被白名单收敛到 knowledge 分支且未绑知识库时，
+# 引导话术按问题特征给出建议应用类型（单点问数→ChatBI、跨域综合→Agent）；
+# 判据复用 DATA_KEYWORDS 的"数据查询动词/量词"特征，与分类器口径一致。
+
+# 跨域综合特征词（多意图复合/工具协同类问题，建议 Agent 类型）
+# 注意：不放单字词（如"再"），避免自然语言高频子串误命中
+_CROSS_DOMAIN_KEYWORDS = [
+    '综合', '结合', '关联', '并且', '同时', '然后', '一起',
+    '分析并', '查询并', '对比并',
+]
+
+
+def build_suggested_app_type_hint(question: Optional[str]) -> str:
+    """
+    按问题特征生成建议应用类型的引导片段（P3-5，方案 2.8.4）
+
+    仅用于应用调试通道（创建者可见），渠道无关（embed 等对外渠道不追加）：
+    - 命中数据查询特征词且无跨域复合特征 → 建议创建 ChatBI（专业问数）应用
+    - 数据查询特征与跨域复合特征共现 → 建议创建 Agent（跨域综合分析）应用
+    - 其余情况 → 返回空串（不追加建议，保持原引导话术）
+
+    :param question: 用户原始问题（classify 收敛前的问题文本）
+    :return: 建议类型引导片段（空串表示无需建议）
+    """
+    if not question:
+        return ""
+    has_data_kw = any(kw in question for kw in IntentClassifier.DATA_KEYWORDS)
+    if not has_data_kw:
+        return ""
+    has_cross_kw = any(kw in question for kw in _CROSS_DOMAIN_KEYWORDS)
+    if has_cross_kw:
+        return "此类跨域综合分析问题建议创建 Agent（智能助手）类型应用以获得多工具自主决策能力。"
+    return "此类单点数据查询问题建议创建 ChatBI（数据助手）类型应用以获得专业问数能力。"
+
+
 class IntentClassifier:
     """
     意图分类器
@@ -55,14 +91,16 @@ class IntentClassifier:
     - data：数据查询意图（生产数据、指标数值、统计报表等）
     - mcp：MCP工具调用意图（通过MCP协议调用外部服务，如地图、天气等）
     - skill：Skill工具调用意图（执行本地技能脚本，如代码执行、文件处理等）
-    - hybrid：混合意图（同时包含知识问答与数据查询两种意图）
+    - chat：闲聊意图（问候、自我介绍、感谢等）
+
+    M4改造：hybrid（混合意图）已下线，原连接词+双意图共现的预判逻辑删除，
+    知识+数据复合问题统一兜底走 knowledge 通道。
 
     分类依据（优先级从高到低）：
     1. 强MCP关键词：天气、地图等单个命中即判定为mcp
     2. 强Skill关键词：执行代码、运行脚本等单个命中即判定为skill
-    3. 混合意图：有连接词且同时包含knowledge和data关键词（仅knowledge+data）
-    4. 单一意图：仅包含一种意图的关键词
-    5. LLM分类：对复杂问题进行深度语义理解（参考工具管理中的MCP/Skills名称与描述）
+    3. 单一意图：仅包含一种意图的关键词
+    4. LLM分类：对复杂问题进行深度语义理解（参考工具管理中的MCP/Skills名称与描述）
     """
 
     # 强MCP关键词：单个命中即判定为mcp意图（最高优先级）
@@ -172,8 +210,10 @@ class IntentClassifier:
         0. 强chat关键词：你好、介绍下自己等，单个命中即判定为chat（最高优先级）
         1. 强MCP关键词：天气、地图等单个命中即判定为mcp
         2. 强Skill关键词：执行代码、运行脚本等单个命中即判定为skill
-        3. 混合意图：有连接词且同时包含knowledge和data关键词（仅knowledge+data）
-        4. 单一意图：仅包含一种意图的关键词
+        3. 单一意图：仅包含一种意图的关键词
+
+        M4改造：原混合意图（hybrid）预判已下线——连接词+knowledge/data关键词
+        共现的问题不再判定为hybrid，落入None后由LLM分类兜底。
 
         :param question: 用户问题
         :return: 预判的意图类型或None（无法通过关键词判断）
@@ -292,17 +332,9 @@ class IntentClassifier:
             logger.info(f"关键词预判: skill (score={skill_score})")
             return "skill"
 
-        # 4. 检查data和knowledge关键词
+        # 5. 检查data和knowledge关键词
         data_score = sum(1 for kw in IntentClassifier.DATA_KEYWORDS if kw.lower() in question_lower)
         knowledge_score = sum(1 for kw in IntentClassifier.KNOWLEDGE_KEYWORDS if kw.lower() in question_lower)
-
-        # 5. 混合意图：仅当有连接词且同时包含knowledge和data关键词，且无MCP/Skill命中
-        hybrid_connectors = ['并且', '同时', '另外', '以及', '还有', '、', ';', '；']
-        has_connector = any(c in question for c in hybrid_connectors)
-
-        if has_connector and data_score > 0 and knowledge_score > 0 and mcp_score == 0 and skill_score == 0:
-            logger.info(f"关键词预判: hybrid (data={data_score}, knowledge={knowledge_score})")
-            return "hybrid"
 
         # 6. 单一意图判断
         if mcp_score > 0 and data_score == 0 and knowledge_score == 0 and skill_score == 0:
@@ -519,15 +551,67 @@ class IntentClassifier:
 
         return mcp_tools, skill_tools
 
+    # P3-6 类型→意图白名单（方案 2.8.6，决策 D11）：三类型收敛意图空间
+    # classic → {knowledge, chat}；chatbi → {data, chat}；agent 不经过 classify（无白名单）
+    INTENT_WHITELIST = {
+        'classic': {'knowledge', 'chat'},   # 越界意图降级为 knowledge
+        'chatbi': {'data', 'chat'},         # 越界意图降级为 data
+    }
+    # 越界意图的降级目标（复用既有分支引导：classic 未绑知识库走
+    # "请先选择知识库"，chatbi 未绑数据源走"请先指定数据源"——3-7 修复后行为，
+    # 均无需新增分支）
+    INTENT_FALLBACK = {
+        'classic': 'knowledge',
+        'chatbi': 'data',
+    }
+
     @staticmethod
     async def classify(
         question: str,
         db: Optional[AsyncSession] = None,
         tool_config_ids: Optional[List[int]] = None,
         history: Optional[List[Dict[str, str]]] = None,
+        agent_mode: Optional[str] = None,
     ) -> str:
         """
-        意图分类
+        意图分类（P3-6 白名单收敛入口）
+
+        在原始分类结果之上按应用类型做意图白名单拦截（方案 2.8.6）：
+        - classic → 只放行 {knowledge, chat}，越界降级为 knowledge
+        - chatbi → 只放行 {data, chat}，越界降级为 data
+        - agent / None / 未知类型 → 不拦截（agent 模式主通道已分流，不经过本方法）
+
+        :param question: 用户问题
+        :param db: 数据库会话（用于获取工具描述，可选）
+        :param tool_config_ids: 工具配置ID列表（可选，限定工具范围）
+        :param history: 对话历史（用于上下文感知，检测Skill多轮交互）
+        :param agent_mode: 应用类型（classic/chatbi/agent，None 或未知值时不拦截）
+        :return: 意图类型（knowledge/data/mcp/skill/chat，经白名单收敛）
+        """
+        intent = await IntentClassifier._classify_raw(question, db, tool_config_ids, history)
+
+        # P3-6 白名单拦截：agent_mode 命中白名单表且分类结果越界时降级
+        # （存量混合绑定的运行时兜底：越界意图即使被分类器命中也不执行，
+        #   降级复用既有分支引导，日志保留原意图供审计）
+        whitelist = IntentClassifier.INTENT_WHITELIST.get(agent_mode)
+        if whitelist and intent not in whitelist:
+            fallback = IntentClassifier.INTENT_FALLBACK[agent_mode]
+            logger.info(
+                f"意图白名单拦截(P3-6): 类型={agent_mode}, 原意图={intent} 越界"
+                f"（白名单={sorted(whitelist)}），降级为 {fallback}"
+            )
+            return fallback
+        return intent
+
+    @staticmethod
+    async def _classify_raw(
+        question: str,
+        db: Optional[AsyncSession] = None,
+        tool_config_ids: Optional[List[int]] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
+        """
+        意图分类（原始分类逻辑，不含类型白名单拦截）
 
         分类优先级（从高到低）：
         0. 上下文感知：检测到Skill交互上下文时，保持skill意图（多轮对话支持）
@@ -539,7 +623,7 @@ class IntentClassifier:
         :param db: 数据库会话（用于获取工具描述，可选）
         :param tool_config_ids: 工具配置ID列表（可选，限定工具范围）
         :param history: 对话历史（用于上下文感知，检测Skill多轮交互）
-        :return: 意图类型（knowledge/data/mcp/skill/hybrid/chat）
+        :return: 意图类型（knowledge/data/mcp/skill/chat）
         """
         # 0. 上下文感知：检测Skill交互上下文，保持skill意图
         # 当上一轮assistant回复表明正在进行Skill交互（如"请提供以上信息"），
@@ -771,81 +855,6 @@ class IntentClassifier:
         logger.info(f"意图分类完成(LLM): 问题={question[:30]}..., 意图={intent}")
         return intent
 
-    @staticmethod
-    async def split_hybrid_question(question: str) -> Tuple[str, str]:
-        """
-        将混合问题拆分为数据子问题和知识子问题
-
-        对于hybrid类型的问题，将其拆分为两个独立的子问题，
-        分别路由到数据查询通道和知识问答通道。
-
-        :param question: 用户原始混合问题
-        :return: (数据子问题, 知识子问题)
-
-        拆分逻辑：
-            1. 使用LLM将混合问题拆分为数据部分和知识部分
-            2. 解析LLM返回的格式（"数据问题：xxx" 和 "知识问题：xxx"）
-            3. 如果拆分失败，使用原问题作为两个子问题
-        """
-        prompt = f"""请将以下混合问题拆分为两部分：数据查询部分和知识问答部分。
-
-用户问题：{question}
-
-拆分规则（非常重要）：
-1. 数据问题：提取涉及"展示"、"查询"、"统计"、"图表"等数据查询需求的部分
-   - 必须从原问题中逐字提取，不要添加、修改或补充任何原问题中没有的内容
-   - 不要将知识问答部分的上下文混入数据问题
-   - 必须完整保留所有时间范围信息（如"2023年8月"、"2025年9月第一周"等）
-   - 必须完整保留所有查询条件和统计要求
-   - 示例："使用折线图展示2023年8月的每日吹炼次数" 是正确的数据问题
-   - 错误示例："使用折线图展示" 或 "2023年8月的每日吹炼次数"（不完整）
-   - 错误示例：将知识部分的"炉况打分"等术语混入数据问题
-2. 知识问题：提取涉及"如何"、"应该"、"解释"、"什么是"、"原理"、"调整"等知识问答需求的部分
-   - 保留完整的问题上下文
-
-请按以下格式返回，每行一个：
-数据问题：xxx
-知识问题：xxx
-
-如果某部分不存在，则留空。只返回结果，不要解释。
-
-示例1（数据在前）：
-用户问题："使用折线图展示2023年8月的每日吹炼次数；当前压差不稳，炉料质量不是很好，应该如何调整以减少炉况波动?"
-拆分结果：
-数据问题：使用折线图展示2023年8月的每日吹炼次数
-知识问题：当前压差不稳，炉料质量不是很好，应该如何调整以减少炉况波动?
-
-示例2（数据在后）：
-用户问题："当前压差不稳，炉料质量不是很好，应该如何调整以减少炉况波动?使用折线图展示2023年8月的每日吹炼次数"
-拆分结果：
-数据问题：使用折线图展示2023年8月的每日吹炼次数
-知识问题：当前压差不稳，炉料质量不是很好，应该如何调整以减少炉况波动?
-"""
-
-        result = await llm_service.chat(prompt)
-        logger.info(f"混合问题拆分结果: {result[:50]}...")
-
-        data_question = ""
-        knowledge_question = ""
-
-        # 解析LLM返回的格式
-        for line in result.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("数据问题：") or line.startswith("数据问题:"):
-                data_question = line.split("：", 1)[-1].split(":", 1)[-1].strip()
-            elif line.startswith("知识问题：") or line.startswith("知识问题:"):
-                knowledge_question = line.split("：", 1)[-1].split(":", 1)[-1].strip()
-
-        # 如果拆分失败，使用原问题作为两个子问题
-        if not data_question and not knowledge_question:
-            logger.warning(f"混合问题拆分失败，使用原问题: {question[:30]}...")
-            data_question = question
-            knowledge_question = question
-
-        logger.info(f"拆分完成: 数据问题={data_question[:30]}..., 知识问题={knowledge_question[:30]}...")
-        return data_question, knowledge_question
-
-
 class RouterService:
     """
     路由分发服务
@@ -856,7 +865,9 @@ class RouterService:
     2. 数据查询通道（data意图）：调用chatbi_service
     3. MCP工具调用通道（mcp意图）：调用mcp_client_service
     4. Skill工具调用通道（skill意图）：基于Skill配置生成响应
-    5. 混合分析通道（hybrid意图）：并行调用知识+数据通道，融合结果
+
+    M4改造：混合分析通道（hybrid意图）已下线——该能力由agent模式的
+    MasterAgent多轮工具循环承接，classic模式不再拆分复合问题。
 
     返回值统一格式：(回答内容, 知识引用, SQL溯源, 查询耗时, 数据结果, 字段元信息, 推荐图表类型)
     """
@@ -1322,6 +1333,7 @@ class RouterService:
         history: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
         llm_config: Optional[Dict[str, any]] = None,
+        agent_mode: Optional[str] = None,
     ) -> Tuple[str, List[dict], List[dict], float, Optional[List[dict]], Optional[List[dict]], Optional[str]]:
         """
         路由分发
@@ -1336,6 +1348,7 @@ class RouterService:
         :param history: 对话历史（多轮对话上下文，格式 [{"role": "user/assistant", "content": "..."}]）
         :param system_prompt: 应用系统提示词（约束LLM行为，闲聊时使用）
         :param llm_config: 应用级LLM配置（base_url, api_key, model 等），Skill执行时使用
+        :param agent_mode: 应用类型（P3-6：透传给 classify 做意图白名单拦截，agent 类型不经过本方法）
         :return: (回答内容, 知识引用, SQL溯源, 查询耗时, 数据结果, 字段元信息, 推荐图表类型)
 
         路由逻辑：
@@ -1345,15 +1358,17 @@ class RouterService:
                - data: 调用chatbi_service进行数据查询
                - mcp: 调用mcp_client_service进行MCP工具调用
                - skill: 调用_execute_skill进行Skill工具调用
-               - hybrid: 并行调用知识+数据通道，融合结果
             3. 各通道均传入history，使LLM能理解多轮对话上下文
             4. 返回统一格式的结果
+
+        M4改造：hybrid通道已下线，未知/存量hybrid意图统一落入knowledge兜底分支。
         """
         start_time = time.time()
-        logger.info(f"开始路由分发: 问题={question[:50]}..., tool_config_ids={tool_config_ids}, app_id=???")
+        logger.info(f"开始路由分发: 问题={question[:50]}..., tool_config_ids={tool_config_ids}, agent_mode={agent_mode}")
 
-        # 1. 意图分类（传入db和tool_config_ids以便获取工具描述，传入history用于上下文感知）
-        intent = await IntentClassifier.classify(question, db, tool_config_ids, history=history)
+        # 1. 意图分类（传入db和tool_config_ids以便获取工具描述，传入history用于上下文感知，
+        #    传入agent_mode用于P3-6类型白名单拦截）
+        intent = await IntentClassifier.classify(question, db, tool_config_ids, history=history, agent_mode=agent_mode)
         logger.info(f"意图分类结果: {intent}")
 
         # 初始化返回变量
@@ -1395,6 +1410,13 @@ class RouterService:
                         logger.warning(f"知识库不存在: ID={knowledge_base_id}")
                 else:
                     answer = "请先选择知识库进行知识问答。"
+                    # P3-5 调试通道建议类型（方案 2.8.4）：send_message 为主应用调试
+                    # 通道（创建者可见），data 类问题被白名单收敛到 knowledge 分支
+                    # 且未绑知识库时，按问题特征给出建议应用类型
+                    if agent_mode == "classic":
+                        _hint = build_suggested_app_type_hint(question)
+                        if _hint:
+                            answer = f"{answer}{_hint}"
                     logger.warning("未指定知识库，无法进行知识问答")
 
             elif intent == "data":
@@ -1438,18 +1460,10 @@ class RouterService:
                 answer = skill_result.get("answer", "Skill工具调用失败")
                 logger.info(f"Skill工具调用完成: 成功={skill_result.get('success')}")
 
-            elif intent == "hybrid":
-                # 混合分析通道：仅包含知识问答+数据查询，先拆分子问题，再分别路由
-                logger.info("路由到混合分析通道")
-                data_question, knowledge_question = await IntentClassifier.split_hybrid_question(question)
-
-                knowledge_answer = ""
-                explanation = ""
-                results = None
-
-                # 执行知识问答（使用拆分后的知识子问题）
-                if knowledge_question and knowledge_base_id:
-                    logger.info("执行混合分析-知识问答部分")
+            else:
+                # Fallback：未知意图/存量hybrid，统一走知识问答兜底（M4改造）
+                logger.info(f"未知或已下线意图({intent})，降级路由到知识问答通道")
+                if knowledge_base_id:
                     kb_stmt = select(KnowledgeBase).where(KnowledgeBase.id == knowledge_base_id)
                     kb_result = await db.execute(kb_stmt)
                     kb = kb_result.scalar_one_or_none()
@@ -1457,37 +1471,18 @@ class RouterService:
                     if kb:
                         query = KnowledgeQuery(
                             knowledgeBaseId=knowledge_base_id,
-                            question=knowledge_question,
-                            topK=3,
+                            question=question,
+                            topK=5,
                         )
-                        knowledge_answer, refs, _ = await knowledge_qa_service.answer(db, query, kb, history=history)
+                        answer, refs, query_time = await knowledge_qa_service.answer(db, query, kb, history=history)
                         references = [ref.model_dump() for ref in refs]
-                        logger.info(f"混合分析-知识问答完成: 引用数={len(references)}")
-
-                # 执行数据查询（使用拆分后的数据子问题）
-                if data_question and datasource_id:
-                    logger.info("执行混合分析-数据查询部分")
-                    explanation, results, traces, _, _, column_meta, chart_type = await chatbi_service.query(
-                        db, data_question, datasource_id, history=history
-                    )
-                    data_result = results
-                    sql_traces = traces
-                    logger.info(f"混合分析-数据查询完成: 结果数={len(results) if results else 0}")
-
-                # 融合结果（将知识回答和数据分析整合为统一回答）
-                parts = []
-                if knowledge_answer:
-                    parts.append(f"【知识解答】\n{knowledge_answer}")
-                if explanation:
-                    parts.append(f"【数据分析】\n{explanation}")
-
-                answer = "\n\n".join(parts) if parts else "抱歉，无法找到相关信息或数据。"
-                logger.info("混合分析结果融合完成")
-
-            else:
-                # Fallback：未知意图，返回友好提示
-                answer = "抱歉，无法理解您的问题。请尝试重新描述。"
-                logger.warning(f"未知意图: {intent}")
+                        logger.info(f"兜底知识问答完成: 引用数={len(references)}")
+                    else:
+                        answer = "抱歉，指定的知识库不存在。"
+                        logger.warning(f"知识库不存在: ID={knowledge_base_id}")
+                else:
+                    answer = "抱歉，无法理解您的问题。请尝试重新描述。"
+                    logger.warning("未知意图且未指定知识库，无法兜底")
 
             # 计算总耗时
             query_time = time.time() - start_time

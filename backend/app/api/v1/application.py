@@ -3,7 +3,7 @@
 提供应用的CRUD操作和集成设置接口
 """
 import uuid
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,32 @@ from app.middlewares.auth_deps import get_current_user
 from app.middlewares.exception_handler import BusinessException, success_response
 
 router = APIRouter()
+
+# P3-4/3-6b：应用类型值域（三类型定型，见方案 2.8）
+AGENT_MODE_DOMAIN = ("classic", "chatbi", "agent")
+
+
+def _reject_binding_increase(
+    new_ids: Optional[List[int]],
+    existing_ids: Optional[List[int]],
+    message: str,
+) -> None:
+    """
+    P3-6b 绑定强校验（update 侧）：越界绑定只允许减少/清空，不允许新增
+
+    存量豁免设计（方案 2.8.1）：存量混合绑定不清数据，运行时白名单兜底，
+    编辑保存引导清空（只减不增）——故仅拦截"新增越界绑定"方向。
+
+    :param new_ids: 本次请求携带的绑定ID列表（None 表示未传，沿用存量）
+    :param existing_ids: 存量绑定ID列表
+    :param message: 拦截时的错误提示
+    :raises BusinessException: 携带存量中不存在的绑定ID时抛 400
+    """
+    if not new_ids:
+        return
+    existing = set(existing_ids or [])
+    if any(i not in existing for i in new_ids):
+        raise BusinessException(code=400, message=message)
 
 
 class ApplicationCreate(BaseModel):
@@ -37,6 +63,7 @@ class ApplicationCreate(BaseModel):
     maxTokens: int = Field(8192, description="最大生成token数")
     temperature: float = Field(0.7, description="温度参数(0.0-2.0)")
     topP: float = Field(0.9, description="top_p参数(0.0-1.0)")
+    agentMode: str = Field("classic", pattern="^(classic|chatbi|agent)$", description="应用类型: classic(对话助手)/chatbi(数据助手)/agent(智能体)，创建时定型")
 
 
 class ApplicationUpdate(BaseModel):
@@ -62,6 +89,8 @@ class ApplicationUpdate(BaseModel):
     maxTokens: int = Field(None, description="最大生成token数")
     temperature: float = Field(None, description="温度参数(0.0-2.0)")
     topP: float = Field(None, description="top_p参数(0.0-1.0)")
+    agentMode: str = Field(None, pattern="^(classic|chatbi|agent)$", description="应用类型（P3-4 不可变：仅放行 classic→chatbi 定向升级，其余变更抛400）")
+    agentMaxIterations: int = Field(None, ge=3, le=30, description="Agent模式最大推理迭代次数(3-30,默认8)")
 
 
 class AppPromptCreate(BaseModel):
@@ -125,7 +154,7 @@ async def get_application(
     app = result.scalar_one_or_none()
     
     if not app:
-        raise BusinessException(status_code=404, detail="应用不存在")
+        raise BusinessException(code=404, message="应用不存在")
     
     prompts_result = await db.execute(
         select(AppPrompt).where(AppPrompt.application_id == app_id).order_by(AppPrompt.sort_order)
@@ -149,8 +178,15 @@ async def create_application(
     try:
         existing = await db.execute(select(Application).where(Application.name == data.name))
         if existing.scalar_one_or_none():
-            raise BusinessException(status_code=400, detail="应用名称已存在")
-        
+            raise BusinessException(code=400, message="应用名称已存在")
+
+        # P3-6b 绑定强校验（闸门1，方案 2.8.1 绑定约束表）：类型定型即能力域定型
+        agent_mode = data.agentMode  # schema pattern 已保证值域合法
+        if agent_mode == "classic" and (data.datasourceIds or data.toolConfigIds):
+            raise BusinessException(code=400, message="对话助手不支持数据源/工具配置")
+        if agent_mode == "chatbi" and (data.knowledgeBaseIds or data.toolConfigIds):
+            raise BusinessException(code=400, message="数据助手不支持知识库/工具配置")
+
         app = Application(
             name=data.name,
             description=data.description,
@@ -169,6 +205,7 @@ async def create_application(
             temperature=int(data.temperature * 10),
             top_p=int(data.topP * 10),
             api_key=str(uuid.uuid4()).replace("-", ""),
+            agent_mode=agent_mode,
             created_by=user.id,
         )
         
@@ -194,12 +231,54 @@ async def update_application(
     app = result.scalar_one_or_none()
     
     if not app:
-        raise BusinessException(status_code=404, detail="应用不存在")
+        raise BusinessException(code=404, message="应用不存在")
     
     if data.name and data.name != app.name:
         existing = await db.execute(select(Application).where(Application.name == data.name))
         if existing.scalar_one_or_none():
-            raise BusinessException(status_code=400, detail="应用名称已存在")
+            raise BusinessException(code=400, message="应用名称已存在")
+
+    # P3-4 类型不可变校验（方案 2.8.2）：
+    #   agent_mode 与存量不一致 → 400（行为契约稳定，变更走"另存新应用"）
+    #   唯一例外：classic→chatbi 定向升级（方案 2.8.8 受控路径，
+    #   本次请求或存量须已绑定数据源——升级后 data 分支依赖该绑定）
+    current_mode = app.agent_mode or "classic"
+    is_chatbi_upgrade = data.agentMode == "chatbi" and current_mode == "classic"
+    if data.agentMode is not None and data.agentMode != current_mode and not is_chatbi_upgrade:
+        raise BusinessException(
+            code=400,
+            message=f"应用类型不可变（当前 {current_mode}），如需其他类型请另存为新应用",
+        )
+    if is_chatbi_upgrade:
+        if not (data.datasourceIds or app.datasource_ids):
+            raise BusinessException(
+                code=400,
+                message="升级为数据助手前请先绑定数据源",
+            )
+        logger.info(f"应用 {app_id} 执行 classic→chatbi 定向升级")
+
+    # P3-6b 越界绑定只减不增（存量豁免：只拦增量不追溯存量，方案 2.8.1）
+    # 类型判定基准：升级请求按目标类型 chatbi 校验（升级即切换能力域，
+    # 数据源绑定方向放开，知识库/工具仍只减不增）
+    effective_mode = "chatbi" if is_chatbi_upgrade else current_mode
+    if effective_mode == "classic":
+        _reject_binding_increase(
+            data.datasourceIds, app.datasource_ids,
+            "对话助手不支持数据源配置（存量绑定仅允许清空）",
+        )
+        _reject_binding_increase(
+            data.toolConfigIds, app.tool_config_ids,
+            "对话助手不支持工具配置（存量绑定仅允许清空）",
+        )
+    elif effective_mode == "chatbi":
+        _reject_binding_increase(
+            data.knowledgeBaseIds, app.knowledge_base_ids,
+            "数据助手不支持知识库配置（存量绑定仅允许清空）",
+        )
+        _reject_binding_increase(
+            data.toolConfigIds, app.tool_config_ids,
+            "数据助手不支持工具配置（存量绑定仅允许清空）",
+        )
     
     field_mapping = {
         'name': data.name,
@@ -223,6 +302,8 @@ async def update_application(
         'max_tokens': data.maxTokens,
         'temperature': int(data.temperature * 10) if data.temperature is not None else None,
         'top_p': int(data.topP * 10) if data.topP is not None else None,
+        'agent_mode': data.agentMode,
+        'agent_max_iterations': data.agentMaxIterations,
     }
     
     for field, value in field_mapping.items():
@@ -244,10 +325,10 @@ async def delete_application(
     """删除应用及其关联的提示词"""
     result = await db.execute(select(Application).where(Application.id == app_id))
     app = result.scalar_one_or_none()
-    
+
     if not app:
-        raise BusinessException(status_code=404, detail="应用不存在")
-    
+        raise BusinessException(code=404, message="应用不存在")
+
     await db.execute(delete(AppPrompt).where(AppPrompt.application_id == app_id))
     await db.execute(delete(Application).where(Application.id == app_id))
     await db.commit()
@@ -266,8 +347,8 @@ async def regenerate_api_key(
     app = result.scalar_one_or_none()
     
     if not app:
-        raise BusinessException(status_code=404, detail="应用不存在")
-    
+        raise BusinessException(code=404, message="应用不存在")
+
     new_key = str(uuid.uuid4()).replace("-", "")
     app.api_key = new_key
     
@@ -286,7 +367,7 @@ async def get_app_prompts(
     """获取应用关联的所有提示词"""
     result = await db.execute(select(Application).where(Application.id == app_id))
     if not result.scalar_one_or_none():
-        raise BusinessException(status_code=404, detail="应用不存在")
+        raise BusinessException(code=404, message="应用不存在")
     
     prompts_result = await db.execute(
         select(AppPrompt).where(AppPrompt.application_id == app_id).order_by(AppPrompt.sort_order)
@@ -306,7 +387,7 @@ async def create_app_prompt(
     """为应用创建新提示词"""
     result = await db.execute(select(Application).where(Application.id == app_id))
     if not result.scalar_one_or_none():
-        raise BusinessException(status_code=404, detail="应用不存在")
+        raise BusinessException(code=404, message="应用不存在")
     
     prompt = AppPrompt(
         application_id=app_id,
@@ -339,7 +420,7 @@ async def update_app_prompt(
     prompt = result.scalar_one_or_none()
     
     if not prompt:
-        raise BusinessException(status_code=404, detail="提示词不存在")
+        raise BusinessException(code=404, message="提示词不存在")
     
     if data.name is not None:
         prompt.name = data.name
@@ -372,8 +453,8 @@ async def delete_app_prompt(
     prompt = result.scalar_one_or_none()
     
     if not prompt:
-        raise BusinessException(status_code=404, detail="提示词不存在")
-    
+        raise BusinessException(code=404, message="提示词不存在")
+
     await db.execute(delete(AppPrompt).where(AppPrompt.id == prompt_id))
     await db.commit()
     
@@ -391,11 +472,11 @@ async def get_iframe_url(
     app = result.scalar_one_or_none()
     
     if not app:
-        raise BusinessException(status_code=404, detail="应用不存在")
-    
+        raise BusinessException(code=404, message="应用不存在")
+
     if app.status != "active":
-        raise BusinessException(status_code=400, detail="应用未启用")
-    
+        raise BusinessException(code=400, message="应用未启用")
+
     # 确保access_hash存在
     if not app.access_hash:
         app.access_hash = generate_access_hash()
@@ -416,12 +497,12 @@ async def get_application_by_hash(
     """通过access_hash获取应用信息，公开接口无需认证"""
     result = await db.execute(select(Application).where(Application.access_hash == access_hash))
     app = result.scalar_one_or_none()
-    
+
     if not app:
-        raise BusinessException(status_code=404, detail="无效的访问链接")
-    
+        raise BusinessException(code=404, message="无效的访问链接")
+
     if app.status != "active":
-        raise BusinessException(status_code=400, detail="应用未启用")
+        raise BusinessException(code=400, message="应用未启用")
     
     prompts_result = await db.execute(
         select(AppPrompt).where(AppPrompt.application_id == app.id).order_by(AppPrompt.sort_order)
@@ -443,10 +524,10 @@ async def regenerate_access_hash(
     """重新生成应用的公开访问hash（生成新的16位随机十六进制hash）"""
     result = await db.execute(select(Application).where(Application.id == app_id))
     app = result.scalar_one_or_none()
-    
+
     if not app:
-        raise BusinessException(status_code=404, detail="应用不存在")
-    
+        raise BusinessException(code=404, message="应用不存在")
+
     # 生成新的access_hash并更新数据库
     new_hash = generate_access_hash()
     app.access_hash = new_hash

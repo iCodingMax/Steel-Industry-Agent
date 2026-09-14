@@ -153,12 +153,13 @@ class ChatBIService:
         start_time = time.time()
         logger.info(f"开始ChatBI查询: 问题={question[:50]}...")
 
-        # 验证数据源可用性，不可用则自动fallback
+        # 验证数据源可用性：不可用时置 None，由后续 NL2SQL 兜底段的
+        # P3-7 引导话术统一处理（不再自动选源，避免跨应用查数）
         if datasource_id:
             ds_check = select(DataSource).where(DataSource.id == datasource_id, DataSource.status == "active")
             ds_result = await db.execute(ds_check)
             if not ds_result.scalar_one_or_none():
-                logger.warning(f"数据源ID={datasource_id}不存在或未激活，自动选择可用数据源")
+                logger.warning(f"数据源ID={datasource_id}不存在或未激活")
                 datasource_id = None
 
         sql_traces = []
@@ -209,23 +210,24 @@ class ChatBIService:
                     else:
                         logger.warning(f"NL2Metrics SQL执行失败: {error}")
                 else:
-                    logger.warning(f"NL2Metrics匹配的数据源ID={datasource_id}不存在，重置为自动选择")
+                    logger.warning(f"NL2Metrics匹配的数据源ID={datasource_id}不存在，置None走P3-7引导话术")
                     datasource_id = None
 
             # 步骤2：NL2Metrics失败，尝试NL2SQL兜底
             if results is None:
                 logger.info("NL2Metrics未匹配或执行失败，尝试NL2SQL兜底...")
-                # 如果没有指定数据源，选择第一个可用数据源
+                # P3-7 自动选源收紧（方案 2.8.6）：datasource_id 缺失时不再自动
+                # 选择全局第一个 active 数据源（避免跨应用查数），返回引导话术。
+                # 前置场景：入口验证失败置 None / NL2Metrics 数据源缺失置 None /
+                # 调用方未传（chatbi 类型未绑数据源时落入本引导）
                 if datasource_id is None:
-                    ds_stmt = select(DataSource).where(DataSource.status == "active").limit(1)
-                    ds_result = await db.execute(ds_stmt)
-                    datasource = ds_result.scalar_one_or_none()
-                    if datasource:
-                        datasource_id = datasource.id
-                        logger.info(f"自动选择数据源: {datasource.name}")
-                    else:
-                        logger.error("未找到可用的数据源")
-                        return "抱歉，未找到可用的数据源。", None, [], time.time() - start_time, None, None, chart_type
+                    logger.warning("未指定数据源（P3-7收紧：不再自动选源），返回引导话术")
+                    return (
+                        "请先指定数据源后再进行数据查询。"
+                        "您可以在应用设置中绑定数据源，或在对话面板的数据源选择器中手动选择。"
+                        "若需知识问答与闲聊，建议创建 ChatBot（对话助手）类型应用。",
+                        None, [], time.time() - start_time, None, None, chart_type,
+                    )
 
                 # nl2sql_engine.query 返回4元组 (sql, data, error, column_meta)
                 sql, data, error, meta = await nl2sql_engine.query(

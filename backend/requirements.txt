@@ -40,7 +40,9 @@ llama-index-embeddings-openai>=0.2.0         # OpenAI 兼容嵌入（Xinference�
 llama-index-llms-openai>=0.2.0               # OpenAI 兼容 LLM（Xinference）
 
 # ==================== LangGraph（Agent 编排） ====================
-langgraph>=0.2.0         # Agent 状态图编排
+# P0-1 依赖锁定：实测 1.2.11，满足 context_schema(≥0.6) 与节点级 timeout(≥1.2) 门槛；
+# 1.x 稳定承诺（无破坏性变更），上限锁 2.0
+langgraph>=1.2,<2.0  # Agent 状态图编排（MasterAgent 主循环 + 技能执行）
 langchain-core>=0.3.0    # LangChain 核心（LangGraph 依赖）
 
 # ==================== YAML 解析 ====================

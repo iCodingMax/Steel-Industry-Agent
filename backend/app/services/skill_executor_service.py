@@ -46,6 +46,12 @@ class SkillExecutorService:
     组合为 LLM prompt 执行 Skill 定义的任务。
     """
 
+    # ---------- Skill 包解析缓存 ----------
+    # key = (ZIP 绝对路径, 文件 mtime)，文件重新上传覆盖后 mtime 变化自动失效。
+    # 命中缓存时跳过 ZIP 解压 + frontmatter 解析，降低 Skill 重复执行的解析开销。
+    _parse_cache: Dict[tuple, Dict[str, Any]] = {}
+    _PARSE_CACHE_MAX = 64  # 缓存条目上限（超出时整体清空，防止内存无限增长）
+
     @staticmethod
     def extract_skill_zip(zip_path: str) -> Dict[str, str]:
         """
@@ -255,6 +261,53 @@ class SkillExecutorService:
         return result
 
     @staticmethod
+    def _parse_skill_zip_cached(abs_zip_path: str) -> Optional[Dict[str, Any]]:
+        """
+        带缓存的 Skill ZIP 解压 + 分类解析（mtime 失效策略）
+
+        以 (ZIP 绝对路径, mtime) 为 key 缓存整个解析流程的结果。
+        ZIP 文件未变化（mtime 一致）时直接返回缓存，跳过解压和
+        frontmatter/文件分类解析；文件被重新上传/覆盖后 mtime 变化自动失效。
+
+        :param abs_zip_path: ZIP 绝对路径
+        :return: {
+            "skill_files": List[str],   # ZIP 内文件路径列表
+            "parsed": Dict[str, Any],   # _parse_skill_files 的分类解析结果
+        }；解压失败或空包时返回 None
+        """
+        try:
+            mtime = os.path.getmtime(abs_zip_path)
+        except OSError:
+            # 无法获取 mtime（文件被并发删除等），直接走无缓存路径
+            mtime = None
+
+        cache_key = (abs_zip_path, mtime) if mtime is not None else None
+        if cache_key is not None:
+            cached = SkillExecutorService._parse_cache.get(cache_key)
+            if cached is not None:
+                logger.debug(f"Skill包解析缓存命中: {abs_zip_path} (mtime={mtime})")
+                return cached
+
+        # 缓存未命中 → 解压 + 解析
+        files_content = SkillExecutorService.extract_skill_zip(abs_zip_path)
+        if not files_content:
+            return None
+
+        parsed = SkillExecutorService._parse_skill_files(files_content)
+        cache_result = {
+            "skill_files": list(files_content.keys()),
+            "parsed": parsed,
+        }
+
+        if cache_key is not None:
+            # 缓存容量控制：超上限整体清空（简单策略，避免 LRU 复杂度）
+            if len(SkillExecutorService._parse_cache) >= SkillExecutorService._PARSE_CACHE_MAX:
+                SkillExecutorService._parse_cache.clear()
+                logger.debug("Skill包解析缓存已达上限，已清空")
+            SkillExecutorService._parse_cache[cache_key] = cache_result
+        return cache_result
+
+    @staticmethod
     def _build_skill_prompt(
         skill_md: str,
         references: List[Dict],
@@ -428,20 +481,18 @@ class SkillExecutorService:
             result["success"] = False
             return result
 
-        # 2. 解压 ZIP，提取文件内容
-        files_content = SkillExecutorService.extract_skill_zip(abs_zip_path)
-        if not files_content:
-            logger.error(f"Skill ZIP包为空或解压失败: {abs_zip_path}")
-            result["answer"] = "Skill文件包为空或格式错误，无法执行。"
-            result["success"] = False
-            return result
-
-        result["skill_files"] = list(files_content.keys())
-        logger.info(f"Skill包解析完成: {len(files_content)} 个文件")
-
-        # 3. 解析分类文件
+        # 2. 解压 ZIP + 分类解析（带 mtime 缓存：ZIP 未变化时跳过解压与解析）
         try:
-            parsed = SkillExecutorService._parse_skill_files(files_content)
+            cache_result = SkillExecutorService._parse_skill_zip_cached(abs_zip_path)
+            if cache_result is None:
+                logger.error(f"Skill ZIP包为空或解压失败: {abs_zip_path}")
+                result["answer"] = "Skill文件包为空或格式错误，无法执行。"
+                result["success"] = False
+                return result
+
+            result["skill_files"] = cache_result["skill_files"]
+            parsed = cache_result["parsed"]
+            logger.info(f"Skill包解析完成: {len(result['skill_files'])} 个文件")
 
             if not parsed["skill_md"]:
                 logger.warning(f"Skill包中未找到SKILL.md: {abs_zip_path}")

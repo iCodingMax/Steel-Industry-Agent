@@ -187,6 +187,13 @@ class ToolConfigService:
         user_id: int = None
     ) -> ToolConfig:
         """创建 Skill (带文件上传)"""
+        # description 必填校验（渐进披露 L1 元数据：主对话 LLM 依赖 description 触发 Skill，
+        # 为空会导致该 Skill 永远无法被路由命中）
+        if not (data.description or "").strip():
+            raise BusinessException(
+                message="Skill描述不能为空：描述是智能体判断何时使用该技能的关键依据，请填写具体的使用场景"
+            )
+
         # 验证文件
         if not file_name.endswith('.zip'):
             raise BusinessException(message="Skill文件必须是ZIP格式")
@@ -249,6 +256,13 @@ class ToolConfigService:
             raise BusinessException(message="工具不存在")
         if tool.tool_type != "skill":
             raise BusinessException(message="非Skill类型工具")
+
+        # description 校验（渐进披露 L1 元数据）：传入空字符串视为清空描述，禁止；
+        # 传入 None 表示不修改该字段（保持原值）
+        if data.description is not None and not data.description.strip():
+            raise BusinessException(
+                message="Skill描述不能为空：描述是智能体判断何时使用该技能的关键依据，请填写具体的使用场景"
+            )
 
         # 更新基础字段
         if data.name is not None:

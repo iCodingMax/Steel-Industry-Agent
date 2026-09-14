@@ -17,7 +17,8 @@
 主要功能：
   1. chat()           —— 同步对话：一次性获取完整回复（用于意图分类、SQL生成等非实时场景）
   2. chat_stream()    —— 流式对话：逐字返回回复（用于知识问答、数据解读等需要实时显示的场景）
-  3. classify_intent()—— 意图分类：将用户问题路由到 knowledge/data/mcp/skill/hybrid/chat 六大通道
+  3. classify_intent()—— 意图分类：将用户问题路由到 knowledge/data/mcp/skill/chat 五大通道
+                         （M4改造：hybrid混合通道已下线，复合问题统一归类knowledge）
 
 配置依赖（从 .env 环境变量加载）：
   - XINFERENCE_BASE_URL: Xinference推理服务地址（自托管，OpenAI兼容API）
@@ -176,6 +177,56 @@ class LLMService:
 
         return messages
 
+    def _apply_thinking_config(
+        self,
+        request_body: Dict,
+        model: Optional[str],
+        config: Optional[Dict] = None,
+    ) -> None:
+        """
+        思考模式三态配置（P0-5，公共方法收敛 4 处硬编码）
+
+        优先级链：应用级 config.enable_thinking → 系统级 settings.LLM_ENABLE_THINKING → 模型默认
+        三态语义：
+          True  → 强制开启：注入开启参数（GLM 系用 thinking.type=enabled，其余用 chat_template_kwargs）
+          False → 强制关闭：注入关闭参数
+          None  → 模型默认：qwen3 系自动关思考（防 reasoning_content 解析异常），其他模型不加参数
+
+        :param request_body: LLM 请求体（原地修改）
+        :param model: 模型名称
+        :param config: 应用级 LLM 配置（可携带 enable_thinking 三态值）
+        """
+        # 1. 解析三态取值：应用级 > 系统级 > None（模型默认）
+        _thinking = None
+        if config and config.get('enable_thinking') is not None:
+            _thinking = bool(config['enable_thinking'])
+        elif settings.LLM_ENABLE_THINKING is not None:
+            _thinking = settings.LLM_ENABLE_THINKING
+
+        _model_lower = (model or '').lower()
+
+        if _thinking is True:
+            # 强制开启
+            if 'glm' in _model_lower:
+                # GLM-4.5+/GLM-5 系 hybrid-thinking 官方参数
+                request_body["thinking"] = {"type": "enabled"}
+            else:
+                # vLLM Qwen3 系官方透传参数
+                request_body["chat_template_kwargs"] = {"enable_thinking": True}
+            logger.debug(f"思考模式强制开启: model={model}")
+        elif _thinking is False:
+            # 强制关闭
+            if 'glm' in _model_lower:
+                request_body["thinking"] = {"type": "disabled"}
+            else:
+                request_body["chat_template_kwargs"] = {"enable_thinking": False}
+            logger.debug(f"思考模式强制关闭: model={model}")
+        else:
+            # 模型默认：qwen3 系自动关思考（Xinference 旧版解析 reasoning_content 触发 KeyError 'text'，vLLM 保留此防御）
+            if 'qwen3' in _model_lower:
+                request_body["chat_template_kwargs"] = {"enable_thinking": False}
+                logger.debug(f"模型默认策略：qwen3 系自动关闭 thinking: model={model}")
+
     async def chat(
         self,
         prompt: str,
@@ -291,9 +342,8 @@ class LLMService:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
-            if "qwen3" in model.lower():
-                request_body["chat_template_kwargs"] = {"enable_thinking": False}
-                logger.debug(f"检测到qwen3模型，已禁用thinking模式: model={model}")
+            # P0-5：思考模式三态配置（应用级/系统级/模型默认）
+            self._apply_thinking_config(request_body, model, config)
 
             async with httpx.AsyncClient(timeout=300.0) as client:
                 # P2修复：提升日志级别到info并补全请求关键信息（调试模型是否正确使用gemma4:e4b）
@@ -551,11 +601,16 @@ class LLMService:
             }
 
         # 第0步：预判是否需要降级（已知不支持原生 function-calling 的模型）
+        # P0-2：名单环境变量化（LLM_FORCE_PROMPT_MODELS，默认空）——
+        #   vLLM 引擎已验证支持原生 tools（结构化 tool_calls + finish_reason 均正常），
+        #   旧的 qwen 系硬编码拦截已成拦截墙，放开后原生优先、prompt-based 降级保留为兜底
         model_name = (config or {}).get("model") or self.model
         _model_lower = (model_name or "").lower()
-        # Xinference 部署的 qwen3/qwen2 等目前已知不支持原生 tools 参数
-        # （vLLM 的 --enable-auto-tool-choice 未开启时会返回 500）
-        _force_prompt_models = ("qwen3", "qwen2", "qwen2.5")  # Xinference 部署
+        _force_prompt_models = tuple(
+            kw.strip().lower()
+            for kw in settings.LLM_FORCE_PROMPT_MODELS.split(",")
+            if kw.strip()
+        )
         _should_try_native = not any(k in _model_lower for k in _force_prompt_models)
 
         # ---- 第1层：原生 function-calling ----
@@ -602,8 +657,8 @@ class LLMService:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if "qwen3" in (model or "").lower():
-            body["chat_template_kwargs"] = {"enable_thinking": False}
+        # P0-5：思考模式三态配置（应用级/系统级/模型默认）
+        self._apply_thinking_config(body, model, config)
 
         # max_tokens 自动下调（复用 chat() 的逻辑）
         _model_lower = (model or '').lower()
@@ -717,8 +772,8 @@ class LLMService:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
-            if "qwen3" in (model or "").lower():
-                request_body["chat_template_kwargs"] = {"enable_thinking": False}
+            # P0-5：思考模式三态配置（应用级/系统级/模型默认）
+            self._apply_thinking_config(request_body, model, config)
 
             logger.info(
                 f"原生 chat_with_tools 调用: model={model!r}, "
@@ -1036,9 +1091,8 @@ class LLMService:
                 "temperature": temperature,
                 "stream": True,
             }
-            if "qwen3" in model.lower():
-                request_body["chat_template_kwargs"] = {"enable_thinking": False}
-                logger.debug(f"检测到qwen3模型，已禁用thinking模式: model={model}")
+            # P0-5：思考模式三态配置（应用级/系统级/模型默认）
+            self._apply_thinking_config(request_body, model, config)
 
             async with httpx.AsyncClient(timeout=300.0) as client:
                 # P2修复：提升日志级别到info并补全请求关键信息（调试模型是否正确使用gemma4:e4b）
@@ -1336,13 +1390,13 @@ class LLMService:
             - 上一轮"高炉炼铁的原理" + 当前"那它的应用呢" → knowledge
             - 上一轮"我叫小明" + 当前"我叫什么" → chat
 
-        六大意图通道：
+        五大意图通道（M4改造：hybrid混合意图已下线）：
           chat      → 闲聊对话（问候、自我介绍、感谢）→ 直接LLM回答
           knowledge → 知识问答（工艺原理、技术规范）→ RAG检索
           data      → 数据查询（产量、合格率、报表）→ NL2SQL
           mcp       → MCP工具调用（地图、天气等外部服务）→ MCP协议
           skill     → Skill工具调用（本地技能脚本）→ Skill执行引擎
-          hybrid    → 混合分析（知识问答+数据查询组合）→ 拆分后分别处理
+          知识+数据复合问题统一归类为knowledge（数据部分由用户追问补全）。
 
         :param question: 用户输入的问题
         :param system_prompt: 自定义分类提示词，为空时使用内置默认提示词
@@ -1351,7 +1405,7 @@ class LLMService:
         :param skill_tools: 可用Skill工具列表 [{"name": ..., "description": ..., "file_name": ...}]，
                             参考工具管理中已配置的Skills名称、描述与文件
         :param history: 对话历史（用于上下文感知，识别延续性意图）
-        :return: 分类结果（knowledge/data/mcp/skill/hybrid/chat），异常时默认返回 hybrid
+        :return: 分类结果（knowledge/data/mcp/skill/chat），异常时默认返回 knowledge
         """
         # 构建MCP工具描述信息（参考工具管理中已配置的MCP名称与描述）
         if mcp_tools:
@@ -1372,8 +1426,8 @@ class LLMService:
         else:
             skill_tools_desc = "(暂无配置Skill工具)"
 
-        # 默认意图分类提示词（六种意图类型）
-        default_prompt = f"""你是一个智能意图分类助手，负责将用户问题归类为以下六种类型之一。
+        # 默认意图分类提示词（五种意图类型，M4改造：hybrid已下线）
+        default_prompt = f"""你是一个智能意图分类助手，负责将用户问题归类为以下五种类型之一。
 
 ## 当前可用工具（参考工具管理中的配置）
 
@@ -1420,17 +1474,13 @@ class LLMService:
 - 统计分析：报表、趋势、对比、排名、汇总
 - 关键词特征：展示、查询、统计、多少、次数、数量、产量、合格率、能耗、报表、图表、趋势
 
-### 5. hybrid（混合意图）
-当用户问题同时包含知识问答和数据查询两种意图时，归类为hybrid：
-- 注意：混合意图仅包含知识问答+数据查询的组合
-- 不包含MCP/Skill与其他意图的组合（此类情况应优先判定为mcp或skill）
-- 用"并且"、"同时"、"另外"、"以及"等连接词连接不同类型的问题
-
-### 6. knowledge（知识问答）
+### 5. knowledge（知识问答）
 当用户问题涉及工艺知识、技术规范等，需要从知识库检索信息时，归类为knowledge：
 - 工艺知识：炼铁原理、炼钢工艺、轧钢流程
 - 技术规范：操作规程、安全规范、技术标准
 - 概念解释：什么是、如何理解、解释一下
+- **复合问题处理**：一个问题同时包含知识问答和数据查询时，归类为knowledge
+  （优先解答知识部分，数据部分由用户后续追问补全）
 - **注意**：简单问候语、自我介绍等不属于knowledge，应归类为chat
 
 ## 判断要点（重要）
@@ -1439,7 +1489,7 @@ class LLMService:
 3. **工具语义匹配**：仔细比对用户问题与可用工具列表中的名称和描述，
    如果问题语义与某个工具的描述场景匹配，应归类为对应的mcp或skill
 4. 数据查询中的"查询"指的是查询内部数据库数据，不是外部服务
-5. 混合意图仅限知识问答+数据查询的组合
+5. 知识+数据复合问题统一归类为knowledge，不再单独拆分处理
 
 ## 示例
 - "你好"、"hello"、"hi" → chat
@@ -1464,10 +1514,10 @@ class LLMService:
 - "当前压差不稳，炉料质量不好，应该如何调整以减少炉况波动？" → knowledge
 - "烧结矿粒度变小，如何调整布料矩阵和炉料结构？" → knowledge
 - "为了稳定炉温和炉况，应该如何调整？" → knowledge
-- "展示2023年8月的每日吹炼次数，并且解释什么是高炉炼铁" → hybrid
-- "当前压差不稳应该如何调整？同时展示近期产量数据" → hybrid
+- "展示2023年8月的每日吹炼次数，并且解释什么是高炉炼铁" → knowledge（复合问题统一归类）
+- "当前压差不稳应该如何调整？同时展示近期产量数据" → knowledge（复合问题统一归类）
 
-请直接返回分类结果（knowledge/data/mcp/skill/hybrid/chat），不要返回任何解释或额外内容。"""
+请直接返回分类结果（knowledge/data/mcp/skill/chat），不要返回任何解释或额外内容。"""
 
         # 调用 LLM 进行分类（使用同步 chat 方法，因为分类不需要流式输出）
         # P0改造：传入 history，让 LLM 分类时能看到对话历史，识别延续性意图
@@ -1481,7 +1531,7 @@ class LLMService:
         # 清理并验证分类结果（防御性编程）
         # LLM 可能返回带额外文字的结果（如 "我认为应该归类为 knowledge"），需提取关键词
         intent = result.strip().lower()
-        valid_intents = ["knowledge", "data", "mcp", "skill", "hybrid", "chat"]
+        valid_intents = ["knowledge", "data", "mcp", "skill", "chat"]
         if intent not in valid_intents:
             # 尝试从结果中提取有效意图词（LLM 可能输出解释性文字）
             for valid_intent in valid_intents:
@@ -1489,9 +1539,10 @@ class LLMService:
                     intent = valid_intent
                     break
             else:
-                # 兜底策略：无法识别时默认 hybrid（走混合通道，最安全）
-                logger.warning(f"意图分类结果异常: {result}，使用默认值 hybrid")
-                intent = "hybrid"
+                # 兜底策略（M4改造）：无法识别时默认 knowledge（走知识问答通道）
+                # 历史版本默认hybrid，该通道已下线
+                logger.warning(f"意图分类结果异常: {result}，使用默认值 knowledge")
+                intent = "knowledge"
 
         logger.info(f"意图分类完成: 问题={question[:50]}..., 结果={intent}")
         return intent

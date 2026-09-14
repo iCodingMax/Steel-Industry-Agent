@@ -33,7 +33,8 @@ State 结构（TypedDict）：
     done              bool         # 是否结束
 
 工具注册逻辑：
-    1. 从 tool_config_ids 加载应用配置的所有 MCP 工具
+    1. 通过 ToolRegistry.load_mcp_tools_cached 加载应用配置的 MCP 工具
+       （带 TTL 类级缓存，与主对话工具注册共享同一份缓存）
     2. 根据 SKILL.md frontmatter 声明的 mcp_tools 名称匹配筛选
     3. 匹配成功的工具 → 转成 OpenAI tools 格式
     4. 匹配失败但 frontmatter 有声明 → 记录警告（工具名可能不一致）
@@ -70,7 +71,8 @@ class AgentState(TypedDict, total=False):
     total=False 表示所有字段可选（LangGraph StateGraph 初始化时可以只传部分字段）
     """
     messages: List[Dict[str, Any]]              # OpenAI 标准消息列表
-    skill_context: str                          # SKILL.md + 参考文档 + 数据的上下文
+    skill_context: str                          # SKILL.md + 参考文档清单 + 数据的上下文
+    references_full: Dict[str, str]             # 参考文档全文（文件名 → 内容，read_reference 按需读取）
     iteration: int                              # 当前迭代次数
     max_iterations: int                        # 最大迭代次数
     tools: List[Dict[str, Any]]                 # OpenAI function-calling 工具定义
@@ -78,6 +80,32 @@ class AgentState(TypedDict, total=False):
     trace: List[Dict[str, Any]]                 # 执行轨迹
     final_answer: str                           # 最终答案
     done: bool                                  # 是否结束
+
+
+# 内置参考文档读取工具名（不走 MCP，从 state.references_full 读取）
+TOOL_READ_REFERENCE = "read_reference"
+
+# read_reference 工具的 OpenAI function-calling 定义（L3 渐进披露：按需读取参考文档全文）
+_READ_REFERENCE_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": TOOL_READ_REFERENCE,
+        "description": (
+            "读取本 Skill 参考文档的完整内容。当需要查阅参考文档中的规则、标准、"
+            "阈值等细节时调用本工具。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_name": {
+                    "type": "string",
+                    "description": "参考文档文件名（不含扩展名），从参考文档清单中选择",
+                },
+            },
+            "required": ["file_name"],
+        },
+    },
+}
 
 
 # ============================================================
@@ -95,6 +123,11 @@ class SkillAgentExecutor:
         executor = SkillAgentExecutor()
         result = await executor.execute(...)
     """
+
+    # ---------- 上下文预算类常量 ----------
+    HISTORY_MAX_MESSAGES = 4       # 透传主对话历史的最大条数
+    HISTORY_MAX_CHARS = 4000       # 透传历史的总字符上限（超过从最旧开始丢弃）
+    REFERENCE_MAX_CHARS = 8000     # read_reference 单篇文档最大返回字符数
 
     # Skill Agent 专用系统指令（注入到 system message）
     _AGENT_SYSTEM_PROMPT_TEMPLATE = """# Skill Agent 执行指令
@@ -190,6 +223,18 @@ class SkillAgentExecutor:
             declared_mcp_tools=declared_mcp_tools or [],
         )
 
+        # 1.2 注入内置 read_reference 工具（L3 渐进披露：有参考文档才注入）
+        #     该工具不走 MCP，由 _node_tool_exec 直接从 references_full 读取
+        references_full: Dict[str, str] = {
+            ref.get("name", ""): ref.get("content", "") for ref in (references or [])
+        }
+        references_full = {k: v for k, v in references_full.items() if k and v}
+        if references_full:
+            tools = tools + [_READ_REFERENCE_TOOL_SCHEMA]
+            logger.info(
+                f"[Skill Agent] 注入内置工具 read_reference: 参考文档={list(references_full.keys())}"
+            )
+
         # 1.5 安全检查：SKILL 声明了 mcp_tools 但实际匹配到 0 个 → 直接返回错误
         # 避免无工具时 LLM 编造数据生成虚假诊断报告
         if declared_mcp_tools and len(tools) == 0:
@@ -229,6 +274,7 @@ class SkillAgentExecutor:
         initial_state: AgentState = {
             "messages": [],
             "skill_context": skill_context,
+            "references_full": references_full,
             "iteration": 0,
             "max_iterations": max(3, min(max_iterations, 30)),
             "tools": tools,
@@ -239,7 +285,7 @@ class SkillAgentExecutor:
         }
 
         # 5. 添加 system prompt 和 user question 到 messages
-        # 注意：system prompt 动态注入当前时间、skill_context（SKILL.md 正文+参考文档）、可用工具描述
+        # 注意：system prompt 动态注入当前时间、skill_context（SKILL.md 正文+参考文档清单）、可用工具描述
         from datetime import datetime
         tools_desc = self._format_tools_desc(tools)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -254,10 +300,14 @@ class SkillAgentExecutor:
             f"[Agent prompt] system prompt 构建完成: 总长度={len(system_prompt)}, "
             f"skill_context长度={len(skill_context)}, 当前时间={current_time}"
         )
-        initial_state["messages"] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question},
-        ]
+        initial_state["messages"] = [{"role": "system", "content": system_prompt}]
+
+        # 5.2 主对话历史透传（修复子智能体上下文断裂）
+        #     注入最近 4 条历史（user/assistant），总量超限截断，让 Skill 感知用户此前
+        #     提过的约束条件（如"只看2号高炉"）
+        initial_state["messages"].extend(self._build_history_messages(history or []))
+
+        initial_state["messages"].append({"role": "user", "content": question})
 
         # 6. 运行 LangGraph
         try:
@@ -410,31 +460,35 @@ class SkillAgentExecutor:
                 logger.warning(f"[Agent tool_exec] arguments JSON 解析失败: {tc_args_str[:100]}")
                 arguments = {}
 
-            # 从 registry 查找 tool_info
-            tool_info = tool_registry.get(tc_name)
-            if not tool_info:
-                logger.warning(
-                    f"[Agent tool_exec] 工具 {tc_name} 不在 registry 中，"
-                    f"可用工具={list(tool_registry.keys())}"
-                )
-                tool_result_text = f"工具 '{tc_name}' 未注册，无法调用。"
-                success = False
+            # 内置工具 read_reference：不走 MCP，直接从 references_full 读取全文
+            if tc_name == TOOL_READ_REFERENCE:
+                tool_result_text, success = self._exec_read_reference(state, arguments)
             else:
-                # 实际调用 MCP 工具
-                try:
-                    tool_result = await MCPClientService.call_tool(
-                        tool_info=tool_info,
-                        arguments=arguments,
+                # 从 registry 查找 tool_info
+                tool_info = tool_registry.get(tc_name)
+                if not tool_info:
+                    logger.warning(
+                        f"[Agent tool_exec] 工具 {tc_name} 不在 registry 中，"
+                        f"可用工具={list(tool_registry.keys())}"
                     )
-                    success = tool_result.get("success", True)
-                    tool_result_text = tool_result.get("result", "")
-                    # 结果过长时截断（避免 prompt 爆炸）
-                    if len(str(tool_result_text)) > 5000:
-                        tool_result_text = str(tool_result_text)[:5000] + "\n...(结果已截断)"
-                except Exception as e:
-                    logger.error(f"[Agent tool_exec] 工具 {tc_name} 调用异常: {type(e).__name__}: {e}")
+                    tool_result_text = f"工具 '{tc_name}' 未注册，无法调用。"
                     success = False
-                    tool_result_text = f"工具调用异常: {type(e).__name__}: {str(e)}"
+                else:
+                    # 实际调用 MCP 工具
+                    try:
+                        tool_result = await MCPClientService.call_tool(
+                            tool_info=tool_info,
+                            arguments=arguments,
+                        )
+                        success = tool_result.get("success", True)
+                        tool_result_text = tool_result.get("result", "")
+                        # 结果过长时截断（避免 prompt 爆炸）
+                        if len(str(tool_result_text)) > 5000:
+                            tool_result_text = str(tool_result_text)[:5000] + "\n...(结果已截断)"
+                    except Exception as e:
+                        logger.error(f"[Agent tool_exec] 工具 {tc_name} 调用异常: {type(e).__name__}: {e}")
+                        success = False
+                        tool_result_text = f"工具调用异常: {type(e).__name__}: {str(e)}"
 
             # 追加 tool result 消息
             state["messages"].append({
@@ -578,48 +632,21 @@ class SkillAgentExecutor:
         """
         加载 MCP 工具并根据 frontmatter 声明筛选
 
+        通过 ToolRegistry.load_mcp_tools_cached 加载（带 TTL 类级缓存，
+        与主对话工具注册共享同一份缓存，避免重复握手）。
+
         :return: (tools_openai_format, tool_registry)
         """
-        # 1. 从 DB 加载所有已配置的 MCP 工具
-        from app.services.mcp_client_service import MCPClientService
+        # 1. 从 ToolRegistry 加载应用配置的 MCP 工具（走缓存）
+        from app.services.tool_registry import ToolRegistry
 
         logger.info(
             f"[MCP筛选] 开始加载: tool_config_ids={tool_config_ids}, "
             f"declared_mcp_tools={declared_mcp_tools}, db={'有' if db else '无'}"
         )
 
-        try:
-            all_mcp_tools = await MCPClientService.load_mcp_tools(db, tool_config_ids)
-            logger.info(f"[MCP筛选] load_mcp_tools(ids={tool_config_ids}) 返回 {len(all_mcp_tools)} 个工具")
-        except Exception as e:
-            logger.error(f"加载 MCP 工具列表失败: {type(e).__name__}: {e}")
-            all_mcp_tools = []
-
-        # === 双保险兜底：如果传入的 tool_config_ids 里没有 MCP 类型（全是 Skill），
-        # 导致 load_mcp_tools 返回 0 个，就自动从 DB 查所有 active 的 MCP 工具 ===
-        if len(all_mcp_tools) == 0 and db is not None:
-            logger.warning(
-                f"[MCP筛选] tool_config_ids={tool_config_ids} 中无 MCP 类型，"
-                f"尝试从 DB 自动加载所有 active 的 MCP 工具"
-            )
-            try:
-                from sqlalchemy import select
-                from app.models.tool_config import ToolConfig
-                result = await db.execute(
-                    select(ToolConfig.id).where(
-                        ToolConfig.tool_type == 'mcp',
-                        ToolConfig.status == 'active',
-                    )
-                )
-                all_mcp_ids = [row[0] for row in result.fetchall()]
-                if all_mcp_ids:
-                    all_mcp_tools = await MCPClientService.load_mcp_tools(db, all_mcp_ids)
-                    logger.info(
-                        f"[MCP筛选] 兜底加载: 找到 {len(all_mcp_ids)} 个 active MCP IDs, "
-                        f"返回 {len(all_mcp_tools)} 个工具"
-                    )
-            except Exception as e2:
-                logger.error(f"[MCP筛选] 兜底加载也失败: {type(e2).__name__}: {e2}")
+        all_mcp_tools = await ToolRegistry.load_mcp_tools_cached(db, tool_config_ids or [])
+        logger.info(f"[MCP筛选] load_mcp_tools_cached(ids={tool_config_ids}) 返回 {len(all_mcp_tools)} 个工具")
 
         # 2. 如果 frontmatter 没有声明任何 mcp_tools → 不暴露工具（安全默认）
         if not declared_mcp_tools:
@@ -743,13 +770,22 @@ class SkillAgentExecutor:
         ]
 
         if references:
+            # L3 渐进披露：只注入参考文档清单（文件名+摘要），
+            # 全文通过内置工具 read_reference 按需读取，降低每轮 prefill 成本
             parts.append("")
-            parts.append("## 参考文档")
+            parts.append("## 参考文档清单")
+            parts.append(
+                "以下是本 Skill 的专业知识参考文档。需要查阅其中规则、标准、阈值等细节时，"
+                "必须先调用 read_reference 工具读取全文，再基于内容执行分析："
+            )
             for ref in references:
+                name = ref.get("name", "未命名")
                 content = ref.get("content", "")
-                if len(content) > 2000:
-                    content = content[:2000] + "\n...(已截断)"
-                parts.append(f"### {ref.get('name', '未命名')}\n{content}")
+                # 摘要：前 200 字符 + 全文长度提示
+                summary = content[:200].replace("\n", " ").strip()
+                parts.append(
+                    f"- **{name}**（全文约{len(content)}字符）：{summary}..."
+                )
 
         if input_template:
             parts.append("")
@@ -762,6 +798,90 @@ class SkillAgentExecutor:
             parts.append(f"```json\n{latest_data}\n```")
 
         return "\n".join(parts)
+
+    def _build_history_messages(
+        self, history: List[Dict[str, str]]
+    ) -> List[Dict[str, str]]:
+        """
+        构建主对话历史消息（注入 Skill Agent 的 messages）
+
+        仅取最近 HISTORY_MAX_MESSAGES 条 user/assistant 消息，
+        超过 HISTORY_MAX_CHARS 时从最旧的开始截断，保证子智能体
+        能感知主对话上下文（用户此前提过的约束条件）。
+
+        :param history: 主对话历史列表 [{role, content}]
+        :return: 可注入的消息列表
+        """
+        # 只保留 user/assistant 角色且内容非空的消息
+        valid = [
+            {"role": m.get("role", ""), "content": (m.get("content") or "").strip()}
+            for m in (history or [])
+        ]
+        valid = [m for m in valid if m["role"] in ("user", "assistant") and m["content"]]
+
+        # 取最近 N 条
+        recent = valid[-self.HISTORY_MAX_MESSAGES:]
+        if not recent:
+            return []
+
+        # 总量超限时从最旧的开始丢弃整条消息（避免截断单条导致语义破碎）
+        while len(recent) > 1 and sum(len(m["content"]) for m in recent) > self.HISTORY_MAX_CHARS:
+            recent.pop(0)
+
+        # 兜底：仅剩一条仍超限 → 截断该条内容
+        if recent and len(recent[0]["content"]) > self.HISTORY_MAX_CHARS:
+            recent[0]["content"] = (
+                recent[0]["content"][: self.HISTORY_MAX_CHARS] + "\n...(历史消息过长已截断)"
+            )
+
+        return recent
+
+    def _exec_read_reference(
+        self, state: AgentState, arguments: Dict[str, Any]
+    ) -> tuple:
+        """
+        执行内置工具 read_reference（L3 渐进披露核心）
+
+        从 state.references_full 读取指定参考文档全文，
+        不经过 MCP，单篇超过上限时截断保护。
+
+        :param state: 当前执行状态
+        :param arguments: 工具参数 {file_name}
+        :return: (工具结果文本, 是否成功)
+        """
+        references_full = state.get("references_full", {}) or {}
+        file_name = str(arguments.get("file_name", "")).strip()
+
+        if not file_name:
+            available = ", ".join(references_full.keys())
+            return f"参数错误：file_name 不能为空。可用参考文档：{available}", False
+
+        # 精确匹配优先，其次包含匹配（容错 LLM 传入带扩展名/路径的形式）
+        content = references_full.get(file_name)
+        if content is None:
+            for name, text in references_full.items():
+                if file_name in name or name in file_name:
+                    content = text
+                    file_name = name
+                    break
+
+        if content is None:
+            available = ", ".join(references_full.keys())
+            return (
+                f"未找到参考文档 '{file_name}'。可用参考文档：{available}",
+                False,
+            )
+
+        # 单篇截断保护（避免超长文档撑爆上下文）
+        if len(content) > self.REFERENCE_MAX_CHARS:
+            content = content[: self.REFERENCE_MAX_CHARS] + "\n\n...(文档过长已截断，如需后半部分内容请说明)"
+            logger.info(
+                f"[Agent read_reference] 文档 {file_name} 超长截断: "
+                f"{len(references_full[file_name])} -> {self.REFERENCE_MAX_CHARS} 字符"
+            )
+
+        logger.info(f"[Agent read_reference] 读取参考文档: {file_name}，长度={len(content)}")
+        return content, True
 
     def _format_tools_desc(self, tools: List[Dict[str, Any]]) -> str:
         """

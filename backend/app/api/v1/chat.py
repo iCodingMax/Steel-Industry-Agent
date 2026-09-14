@@ -58,6 +58,7 @@ class ChatResponse(BaseModel):
     data: Optional[List[dict]] = None
     columnMeta: Optional[List[dict]] = None
     chartType: Optional[str] = None
+    needsClarification: bool = False  # S3：True=本条回复为澄清追问（会话已挂起awaiting_input）
 
 
 @router.get("", summary="获取会话列表")
@@ -160,9 +161,10 @@ async def send_message(
 
     # 获取工具配置ID列表
     tool_config_ids = data.toolConfigIds or []
-    
-    # 如果请求中没有toolConfigIds，尝试从应用配置获取
-    if not tool_config_ids and hasattr(session, 'application_id') and session.application_id:
+
+    # 加载应用配置（工具配置ID回退 + agent模式分流判断）
+    app_obj = None
+    if hasattr(session, 'application_id') and session.application_id:
         from app.models.application import Application
         app_result = await db.execute(
             select(Application).where(Application.id == session.application_id)
@@ -171,16 +173,54 @@ async def send_message(
         if app_obj and app_obj.tool_config_ids:
             tool_config_ids = app_obj.tool_config_ids
 
-    # 调用路由分发（传入多轮对话历史）
+    # P3-8：主通道绑定回退（与 embed_chat 同款语义）
+    # 请求参数为空时回退到应用绑定的第一个知识库/数据源；显式传参优先（保留会话级临时切换能力）
+    if not data.knowledgeBaseId and app_obj is not None and app_obj.knowledge_base_ids:
+        data.knowledgeBaseId = app_obj.knowledge_base_ids[0]
+    if not data.datasourceId and app_obj is not None and app_obj.datasource_ids:
+        data.datasourceId = app_obj.datasource_ids[0]
+
+    # 获取对话历史
     chat_history: List[Dict[str, str]] = await message_service.get_history(db, data.sessionId)
-    answer, references, sql_traces, query_time, data_result, column_meta, chart_type = await router_service.route(
-        db,
-        data.question,
-        data.knowledgeBaseId,
-        data.datasourceId,
-        tool_config_ids,
-        history=chat_history,
-    )
+
+    # agent模式分流：应用配置为agent模式时走MasterAgent ReAct循环
+    _agent_needs_clarification = False  # S3挂起标志（仅agent分支置True）
+    if app_obj is not None and getattr(app_obj, 'agent_mode', 'classic') == 'agent':
+        from app.services.master_agent_service import master_agent_service
+        # S3挂起恢复：会话处于awaiting_input时，将用户补充与原始问题合并后继续处理
+        # P2-10：try_resume 返回 (合并问题, 累计追问次数)，次数透传给 MasterAgent
+        effective_question = data.question
+        _clarify_count = 0
+        resumed = await session_service.try_resume_awaiting(db, session, data.question)
+        if resumed:
+            effective_question, _clarify_count = resumed
+            logger.info(
+                f"[send_message] 恢复挂起会话，已合并用户补充与原始问题，"
+                f"累计追问次数={_clarify_count}"
+            )
+        # M3：传入session_id/user_id激活三层记忆（中期摘要+长期记忆隔离）
+        agent_result = await master_agent_service.run(
+            db, app_obj, effective_question, history=chat_history,
+            session_id=data.sessionId, user_id=user.id,
+            clarify_count=_clarify_count,
+        )
+        answer, references, sql_traces, query_time, data_result, column_meta, chart_type = agent_result.to_route_tuple()
+        response_intent = "agent"
+        _agent_needs_clarification = agent_result.needs_clarification
+    else:
+        # 调用路由分发（传入多轮对话历史）
+        # P3-6：传入应用类型做意图白名单拦截（agent 分流已在上方处理，此处必为 classic/chatbi）
+        answer, references, sql_traces, query_time, data_result, column_meta, chart_type = await router_service.route(
+            db,
+            data.question,
+            data.knowledgeBaseId,
+            data.datasourceId,
+            tool_config_ids,
+            history=chat_history,
+            agent_mode=getattr(app_obj, 'agent_mode', None) if app_obj is not None else None,
+        )
+        # M4改造：hybrid通道已下线，存量会话intent兜底改为knowledge
+        response_intent = session.intent_type or "knowledge"
 
     # 保存AI回复
     ai_msg = await message_service.create(
@@ -188,7 +228,7 @@ async def send_message(
         session_id=data.sessionId,
         role="assistant",
         content=answer,
-        intent=session.intent_type,
+        intent=response_intent,
         references=references,
         sql_traces=sql_traces,
         data_result=data_result,
@@ -197,16 +237,33 @@ async def send_message(
         query_time=int(query_time * 1000),
     )
 
+    # S3挂起：agent模式触发clarify追问时，将会话置为awaiting_input
+    # （用户下次回复时由try_resume_awaiting合并原始问题恢复执行）
+    if _agent_needs_clarification:
+        # P2-10：透传恢复链路的累计追问基数；达到硬上限时拒绝挂起，
+        # 追问文本已作为最终回答返回，会话保持active（下次输入按新问题处理）
+        _suspended = await session_service.set_awaiting_input(
+            db, session,
+            question=agent_result.clarify_question,
+            original_question=effective_question,
+            message_id=ai_msg.id,
+            clarify_base=_clarify_count,
+        )
+        if not _suspended:
+            # 拒绝挂起：不再提示前端"继续追问"，按普通回答收尾
+            _agent_needs_clarification = False
+
     response = ChatResponse(
         messageId=ai_msg.id,
         content=answer,
-        intent=session.intent_type or "hybrid",
+        intent=response_intent,
         references=references,
         sqlTraces=sql_traces,
         queryTime=int(query_time * 1000),
         data=data_result,
         columnMeta=column_meta,
         chartType=chart_type,
+        needsClarification=_agent_needs_clarification,
     )
 
     return success_response(data=response)
@@ -251,6 +308,7 @@ async def stream_chat(
 
             # 加载应用配置（获取系统提示词和工具配置）
             app_system_prompt = None
+            app_obj = None
             tool_config_ids: List[int] = list(data.toolConfigIds) if data.toolConfigIds else []
             # 预解析应用级LLM配置（从应用配置的model_name查找），供各意图分支使用
             resolved_llm_config_params = None
@@ -313,6 +371,7 @@ async def stream_chat(
                             'model': _llm_cfg.model_name,
                             'max_tokens': _llm_cfg.max_tokens,
                             'temperature': _llm_cfg.temperature,
+                            'enable_thinking': _llm_cfg.enable_thinking,
                         }
                     # P2修复：应用级LLM配置解析日志（排查是否正确使用gemma4:e4b）
                     if resolved_llm_config_params:
@@ -325,11 +384,20 @@ async def stream_chat(
                             f"temperature={resolved_llm_config_params.get('temperature')}"
                         )
                     else:
+                        from app.core.config import settings as _settings
                         logger.error(
                             f"[应用配置解析] 应用ID={session.application_id}, 应用名={app_obj.name!r}, "
                             f"应用model_name={app_obj.model_name!r}, 请求llmConfigId={data.llmConfigId!r}, "
-                            f"**未解析到任何LLM配置，将使用系统默认模型 {settings.XINFERENCE_LLM_MODEL!r}**"
+                            f"**未解析到任何LLM配置，将使用系统默认模型 {_settings.XINFERENCE_LLM_MODEL!r}**"
                         )
+
+            # P3-8：主通道绑定回退（与 embed_chat 同款语义）
+            # 请求参数为空时回退到应用绑定的第一个知识库/数据源；显式传参优先（保留会话级临时切换能力）
+            # 注：agent 模式分支不受影响（MasterAgent 自行使用 app_obj 绑定的工具上下文）
+            if not data.knowledgeBaseId and app_obj is not None and app_obj.knowledge_base_ids:
+                data.knowledgeBaseId = app_obj.knowledge_base_ids[0]
+            if not data.datasourceId and app_obj is not None and app_obj.datasource_ids:
+                data.datasourceId = app_obj.datasource_ids[0]
 
             # 发送开始事件
             yield f"data: {json.dumps({'type': 'start', 'sessionId': data.sessionId})}\n\n"
@@ -352,6 +420,131 @@ async def stream_chat(
             if chat_history and chat_history[-1].get("content", "").strip() == _question_stripped:
                 chat_history = chat_history[:-1]
             logger.info(f"[stream_chat] 当前问题={_question_stripped[:50]}, 历史条数={len(chat_history)}")
+
+            # ==================== agent模式分流（MasterAgent ReAct循环） ====================
+            # 应用配置为agent模式时，跳过查询改写与意图分类，由MasterAgent
+            # 在工具观察结果驱动下多轮自主决策，SSE事件协议与classic模式保持兼容
+            if app_obj is not None and getattr(app_obj, 'agent_mode', 'classic') == 'agent':
+                from app.services.master_agent_service import master_agent_service, AgentRunResult
+
+                # S3挂起恢复：会话处于awaiting_input时，将用户补充与原始问题合并后继续处理
+                # P2-10：try_resume 返回 (合并问题, 累计追问次数)，次数透传给 run_stream
+                effective_question = data.question
+                _clarify_count = 0
+                resumed = await session_service.try_resume_awaiting(db, session, data.question)
+                if resumed:
+                    effective_question, _clarify_count = resumed
+                    yield emit_thinking(1, 3, '智能体分析', '检测到追问补充，结合原始问题继续处理...')
+                    logger.info(
+                        f"[stream_chat] 恢复挂起会话，已合并用户补充与原始问题，"
+                        f"累计追问次数={_clarify_count}"
+                    )
+
+                yield emit_thinking(1, 3, '智能体分析', 'Agent模式：正在分析问题并规划工具调用...')
+                yield f"data: {json.dumps({'type': 'intent', 'intent': 'agent'})}\n\n"
+
+                # P3-1：消费 MasterAgent run_stream 原生事件流（astream custom 流），
+                # plan/step/reflect/clarify 即时转发（前端步骤条实时推进），
+                # 终点 result 事件携带 AgentRunResult，替代 P0-4 哨兵队列模式
+                # M3：传入session_id/user_id激活三层记忆（中期摘要+长期记忆用户隔离）
+                event_stream = master_agent_service.run_stream(
+                    db, app_obj, effective_question,
+                    history=chat_history, llm_config=resolved_llm_config_params,
+                    session_id=data.sessionId, user_id=user.id,
+                    clarify_count=_clarify_count,
+                )
+                agent_result = None
+                try:
+                    async for evt in event_stream:
+                        evt_type = evt.get("type")
+                        if evt_type == "result":
+                            # 终点事件：取 AgentRunResult 走统一收尾
+                            # （前端协议无 result 事件，不转发）
+                            agent_result = evt.get("data")
+                            continue
+                        if evt_type == "step":
+                            # step 事件同步收集 thinking_steps（消息持久化用）
+                            _st = evt.get("status")
+                            _st_label = {"executing": "执行中", "success": "成功", "failed": "失败"}.get(_st, _st)
+                            collected_thinking_steps.append({
+                                "step": evt.get("iteration", 1),
+                                "total_steps": 3,
+                                "title": "工具调用",
+                                "description": f"第{evt.get('iteration')}轮调用 {evt.get('tool')}（{_st_label}）",
+                            })
+                        # 转发事件（plan/step/reflect/clarify，SSE 协议兼容）
+                        yield f"data: {json.dumps(evt)}\n\n"
+                except GeneratorExit:
+                    # 客户端断开SSE：aclose() 关闭内部流（astream 迭代器随上下文
+                    # 清理自然取消，无哨兵、无显式 cancel 协议）
+                    await event_stream.aclose()
+                    raise
+
+                # 异常兜底：result 事件缺失（理论不可达，防御式收尾）
+                if agent_result is None:
+                    agent_result = AgentRunResult(
+                        answer="抱歉，智能体执行过程中发生异常，请稍后重试。",
+                        query_time=time.time() - stream_start_time,
+                        success=False,
+                    )
+
+                # 推送结构化结果（与classic模式事件序列一致）
+                if agent_result.references:
+                    yield f"data: {json.dumps({'type': 'references', 'data': agent_result.references})}\n\n"
+                if agent_result.sql_traces:
+                    yield f"data: {json.dumps({'type': 'sql_traces', 'data': agent_result.sql_traces})}\n\n"
+                if agent_result.data_result:
+                    yield f"data: {json.dumps({'type': 'data_result', 'data': agent_result.data_result, 'columnMeta': agent_result.column_meta, 'chartType': agent_result.chart_type})}\n\n"
+
+                # S3 clarify追问：推送clarify事件（前端渲染追问卡片）+ 挂起会话
+                # content事件仍发送追问文本，保证旧前端兼容显示
+                if agent_result.needs_clarification:
+                    yield f"data: {json.dumps({'type': 'clarify', 'question': agent_result.clarify_question})}\n\n"
+
+                # 推送最终回答（整段输出，agent循环为非流式生成）
+                yield emit_thinking(3, 3, '生成回答', '智能体已完成分析，输出最终回答...')
+                if agent_result.answer:
+                    yield f"data: {json.dumps({'type': 'content', 'content': agent_result.answer})}\n\n"
+
+                # 保存AI回复
+                ai_msg = await message_service.create(
+                    db,
+                    session_id=data.sessionId,
+                    role="assistant",
+                    content=agent_result.answer,
+                    intent="agent",
+                    references=agent_result.references,
+                    sql_traces=agent_result.sql_traces,
+                    data_result=agent_result.data_result,
+                    column_meta=agent_result.column_meta,
+                    chart_type=agent_result.chart_type,
+                    thinking_steps=collected_thinking_steps,
+                    query_time=int((time.time() - stream_start_time) * 1000),
+                )
+
+                # S3挂起：clarify追问将会话置为awaiting_input
+                # （用户下次回复时由try_resume_awaiting合并原始问题恢复执行）
+                if agent_result.needs_clarification:
+                    # P2-10：透传恢复链路的累计追问基数；达到硬上限时拒绝挂起，
+                    # 追问文本已作为最终回答返回，会话保持active
+                    _suspended = await session_service.set_awaiting_input(
+                        db, session,
+                        question=agent_result.clarify_question,
+                        original_question=effective_question,
+                        message_id=ai_msg.id,
+                        clarify_base=_clarify_count,
+                    )
+                    if not _suspended:
+                        # 拒绝挂起：clarify 事件已推送，不再重复提示（下次输入按新问题处理）
+                        logger.info(
+                            f"[stream_chat] 追问次数达硬上限拒绝挂起: session_id={data.sessionId}"
+                        )
+
+                # 提交事务 + 结束事件（与classic路径共用收尾协议）
+                await db.commit()
+                elapsed_time = time.time() - stream_start_time
+                yield f"data: {json.dumps({'type': 'done', 'elapsed_time': elapsed_time})}\n\n"
+                return
 
             # P0改造：查询改写（基于历史做指代消解和省略补全）
             # 原始问题已保存到数据库（用户看到的仍是原始输入）
@@ -405,7 +598,10 @@ async def stream_chat(
             if chat_history:
                 for idx, m in enumerate(chat_history):
                     logger.info(f"[stream_chat][Skill排查] history[{idx}] role={m.get('role')}, content前50字符={m.get('content','')[:50]!r}")
-            intent = await intent_classifier.classify(data.question, db, tool_config_ids, history=chat_history)
+            intent = await intent_classifier.classify(
+                data.question, db, tool_config_ids, history=chat_history,
+                agent_mode=getattr(app_obj, 'agent_mode', None) if app_obj is not None else None,
+            )
             logger.info(f"[stream_chat][Skill排查] classify返回 intent={intent}")
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
@@ -460,8 +656,8 @@ async def stream_chat(
                                 'model': llm_config.model_name,
                                 'max_tokens': llm_config.max_tokens,
                                 'temperature': llm_config.temperature,
+                                'enable_thinking': llm_config.enable_thinking,
                             }
-                        
                         context_text = "\n\n".join([f"【文档{i+1}】{ref.content}" for i, ref in enumerate(refs)])
                         prompt = f"""基于以下知识内容回答用户问题，如果知识内容中没有相关信息，请明确说明。
 
@@ -491,7 +687,14 @@ async def stream_chat(
 
                 else:
                     # 没有指定知识库，直接调用LLM回答
-                    yield emit_thinking(2, 3, '直接回答', '未选择知识库，直接回答用户问题...')
+                    # P3-5 调试通道建议类型（方案 2.8.4）：stream_chat 为应用调试
+                    # 通道（创建者可见），按问题特征给出建议应用类型
+                    from app.services.router_service import build_suggested_app_type_hint
+                    _kb_hint = build_suggested_app_type_hint(data.question)
+                    yield emit_thinking(
+                        2, 3, '直接回答',
+                        f'未选择知识库，直接回答用户问题...{_kb_hint}' if _kb_hint else '未选择知识库，直接回答用户问题...'
+                    )
                     
                     from app.services.llm_service import llm_service
                     from app.services.llm_config_service import llm_config_service
@@ -512,8 +715,9 @@ async def stream_chat(
                             'model': llm_config.model_name,
                             'max_tokens': llm_config.max_tokens,
                             'temperature': llm_config.temperature,
+                            'enable_thinking': llm_config.enable_thinking,
                         }
-                    
+
                     full_answer = ""
                     async for chunk in llm_service.chat_stream(data.question, app_system_prompt, chat_history, llm_config_params):
                         full_answer += chunk
@@ -612,8 +816,9 @@ async def stream_chat(
                         'model': llm_config.model_name,
                         'max_tokens': llm_config.max_tokens,
                         'temperature': llm_config.temperature,
+                        'enable_thinking': llm_config.enable_thinking,
                     }
-                
+
                 full_explanation = ""
                 if explanation_prompt:
                     async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, chat_history, llm_config_params):
@@ -814,6 +1019,7 @@ async def stream_chat(
                         'model': llm_config.model_name,
                         'max_tokens': llm_config.max_tokens,
                         'temperature': llm_config.temperature,
+                        'enable_thinking': llm_config.enable_thinking,
                     }
 
                 # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
@@ -838,212 +1044,133 @@ async def stream_chat(
                 )
 
             else:
-                # 混合模式：分步骤展示融合推理过程
-                from app.services.chatbi_service import chatbi_service
+                # M4改造：hybrid混合通道已下线，未知/存量hybrid意图统一降级走知识问答通道
                 from app.services.vector_service import VectorIndexService
-                from app.services.router_service import IntentClassifier
                 from app.models.knowledge import KnowledgeBase
                 from app.schemas.knowledge import KnowledgeQuery
 
-                total_steps = 5
+                yield emit_thinking(1, 3, '查询知识库', '正在检索相关文档知识...')
 
-                # 步骤1：意图分析
-                yield emit_thinking(1, total_steps, '意图分析', '识别混合问题，拆分数据查询与知识问答子问题...')
-
-                data_question, knowledge_question = await IntentClassifier.split_hybrid_question(data.question)
-
-                knowledge_answer = ""
-                explanation = ""
-                explanation_prompt = None
-                knowledge_prompt = None
-                references = []
-                sql_traces = []
-                data_result = None
-                column_meta = None
-                chart_type = None
-
-                # 步骤2+3：并行执行知识检索与数据查询
-                async def _do_knowledge_search():
-                    """执行知识检索子任务（仅向量搜索，不生成回答）"""
-                    nonlocal references, knowledge_prompt
-                    if not knowledge_question or not data.knowledgeBaseId:
-                        return
+                if data.knowledgeBaseId:
                     kb_stmt = select(KnowledgeBase).where(KnowledgeBase.id == data.knowledgeBaseId)
                     kb_result = await db.execute(kb_stmt)
                     kb = kb_result.scalar_one_or_none()
-                    if not kb:
-                        return
-                    query = KnowledgeQuery(
-                        knowledgeBaseId=data.knowledgeBaseId,
-                        question=knowledge_question,
-                        topK=3,
-                        scoreThreshold=0.0,
-                    )
-                    refs = await VectorIndexService.search(db, query, kb)
-                    references = [r.model_dump() for r in refs]
-                    # 构建知识回答prompt，但不执行（留到步骤5流式生成）
-                    if refs:
-                        context_text = (chr(10) * 2).join([f"【文档{i+1}】{ref.content}" for i, ref in enumerate(refs)])
-                        knowledge_prompt = f"""基于以下知识内容回答用户问题，如果知识内容中没有相关信息，请明确说明。
+
+                    if kb:
+                        query = KnowledgeQuery(
+                            knowledgeBaseId=data.knowledgeBaseId,
+                            question=data.question,
+                            topK=5,
+                            scoreThreshold=0.0,
+                        )
+                        refs = await VectorIndexService.search(db, query, kb)
+
+                        yield emit_thinking(2, 3, '知识匹配完成', f'找到 {len(refs)} 条相关文档，相似度最高 {max([r.score for r in refs]):.2f}' if refs else f'找到 0 条相关文档')
+
+                        # 发送引用信息
+                        yield f"data: {json.dumps({'type': 'references', 'data': [r.model_dump() for r in refs]})}\n\n"
+
+                        # 流式生成回答
+                        yield emit_thinking(3, 3, '生成回答', '基于知识库内容生成自然语言回答...')
+
+                        from app.services.llm_service import llm_service
+                        from app.services.llm_config_service import llm_config_service
+
+                        # 获取LLM配置
+                        llm_config = None
+                        if data.llmConfigId:
+                            llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
+                        elif session.llm_config_id:
+                            llm_config = await llm_config_service.get_by_id(db, session.llm_config_id)
+
+                        # 构建配置参数
+                        llm_config_params = None
+                        if llm_config:
+                            llm_config_params = {
+                                'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
+                                'api_key': llm_config.api_key or 'not-needed',
+                                'model': llm_config.model_name,
+                                'max_tokens': llm_config.max_tokens,
+                                'temperature': llm_config.temperature,
+                                'enable_thinking': llm_config.enable_thinking,
+                            }
+
+                        context_text = "\n\n".join([f"【文档{i+1}】{ref.content}" for i, ref in enumerate(refs)])
+                        prompt = f"""基于以下知识内容回答用户问题，如果知识内容中没有相关信息，请明确说明。
 
 知识内容：
 {context_text}
 
-用户问题：{knowledge_question}
+用户问题：{data.question}
 
 请提供准确、简洁的回答。"""
 
-                async def _do_data_query():
-                    """执行数据查询子任务"""
-                    nonlocal explanation, data_result, sql_traces, column_meta, chart_type, explanation_prompt
-                    if not data_question or not data.datasourceId:
-                        return
-                    # P2修复：补传 history，让多轮对话上下文传递到 NL2SQL
-                    exp, results, traces, _, exp_prompt, col_meta, c_type = await chatbi_service.query(
-                        db, data_question, data.datasourceId, history=chat_history
+                        full_answer = ""
+                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, chat_history, llm_config_params):
+                            full_answer += chunk
+                            yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                        # 保存AI回复（意图兜底记录为knowledge，便于前端类型解析）
+                        await message_service.create(
+                            db,
+                            session_id=data.sessionId,
+                            role="assistant",
+                            content=full_answer,
+                            intent="knowledge",
+                            references=[r.model_dump() for r in refs],
+                            thinking_steps=collected_thinking_steps,
+                            query_time=int((time.time() - stream_start_time) * 1000),
+                        )
+
+                else:
+                    # 未指定知识库，直接调用LLM回答
+                    # P3-5 调试通道建议类型（方案 2.8.4）：stream_chat 为应用调试
+                    # 通道（创建者可见），按问题特征给出建议应用类型
+                    from app.services.router_service import build_suggested_app_type_hint
+                    _kb_hint = build_suggested_app_type_hint(data.question)
+                    yield emit_thinking(
+                        2, 3, '直接回答',
+                        f'未选择知识库，直接回答用户问题...{_kb_hint}' if _kb_hint else '未选择知识库，直接回答用户问题...'
                     )
-                    explanation = exp
-                    data_result = results
-                    sql_traces = traces
-                    column_meta = col_meta
-                    chart_type = c_type
-                    explanation_prompt = exp_prompt
 
-                # 并行启动知识检索和数据查询
-                yield emit_thinking(2, total_steps, '知识检索', f'并行执行知识检索与数据查询...')
-                await asyncio.gather(_do_knowledge_search(), _do_data_query())
+                    from app.services.llm_service import llm_service
+                    from app.services.llm_config_service import llm_config_service
 
-                # 按顺序展示步骤结果
-                if references:
-                    yield f"data: {json.dumps({'type': 'references', 'data': references})}\n\n"
+                    # 获取LLM配置
+                    llm_config = None
+                    if data.llmConfigId:
+                        llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
+                    elif session.llm_config_id:
+                        llm_config = await llm_config_service.get_by_id(db, session.llm_config_id)
 
-                yield emit_thinking(3, total_steps, 'SQL生成', f'知识检索与SQL查询已并行完成')
+                    # 构建配置参数
+                    llm_config_params = None
+                    if llm_config:
+                        llm_config_params = {
+                            'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
+                            'api_key': llm_config.api_key or 'not-needed',
+                            'model': llm_config.model_name,
+                            'max_tokens': llm_config.max_tokens,
+                            'temperature': llm_config.temperature,
+                            'enable_thinking': llm_config.enable_thinking,
+                        }
 
-                if sql_traces:
-                    yield f"data: {json.dumps({'type': 'sql_traces', 'data': sql_traces})}\n\n"
-
-                # 步骤4：数据分析
-                if data_result:
-                    yield emit_thinking(4, total_steps, '数据分析', f'查询返回 {len(data_result)} 条数据结果')
-                    yield f"data: {json.dumps({'type': 'data_result', 'data': data_result, 'columnMeta': column_meta, 'chartType': chart_type})}\n\n"
-                else:
-                    yield emit_thinking(4, total_steps, '数据分析', '未获取到数据结果')
-
-                # 步骤5：融合分析
-                yield emit_thinking(5, total_steps, '融合分析', '融合知识解答与数据分析结果，生成综合回答...')
-
-                # 提交事务释放数据库连接，再调用LLM生成解释
-                await db.commit()
-
-                from app.services.llm_service import llm_service
-                from app.services.llm_config_service import llm_config_service
-                
-                # 获取LLM配置
-                llm_config = None
-                if data.llmConfigId:
-                    llm_config = await llm_config_service.get_by_id(db, data.llmConfigId)
-                elif session.llm_config_id:
-                    llm_config = await llm_config_service.get_by_id(db, session.llm_config_id)
-                
-                # 构建配置参数
-                llm_config_params = None
-                if llm_config:
-                    llm_config_params = {
-                        'base_url': llm_config.base_url.rstrip('/') + ('' if llm_config.base_url.rstrip('/').endswith('/v1') else '/v1'),
-                        'api_key': llm_config.api_key or 'not-needed',
-                        'model': llm_config.model_name,
-                        'max_tokens': llm_config.max_tokens,
-                        'temperature': llm_config.temperature,
-                    }
-                
-                full_answer = ""
-
-                # 使用队列实现并行流式输出
-                data_chunks_queue = asyncio.Queue()
-                data_stream_done = asyncio.Event()
-
-                async def _produce_data_explanation():
-                    """后台生成数据分析解释，放入队列"""
-                    try:
-                        if not data_result or len(data_result) == 0:
-                            if explanation:
-                                await data_chunks_queue.put(explanation)
-                            data_stream_done.set()
-                            return
-                        if explanation_prompt:
-                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, chat_history, llm_config_params):
-                                await data_chunks_queue.put(chunk)
-                        elif explanation:
-                            await data_chunks_queue.put(explanation)
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        pass
-                    finally:
-                        data_stream_done.set()
-
-                # 并行：知识回答流式输出 + 数据分析解释后台生成
-                if knowledge_prompt:
-                    full_answer += "【知识解答】" + chr(10)
-                    label = "【知识解答】" + chr(10)
-                    yield f"data: {json.dumps({'type': 'content', 'content': label})}\n\n"
-
-                    knowledge_answer = ""
-                    data_producer = asyncio.create_task(_produce_data_explanation())
-
-                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, chat_history, llm_config_params):
-                        chunk = chunk.replace(chr(10) * 2, chr(10))
-                        knowledge_answer += chunk
+                    full_answer = ""
+                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt, chat_history, llm_config_params):
                         full_answer += chunk
                         yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
 
-                    full_answer += chr(10)
-                    separator = chr(10)
-                    yield f"data: {json.dumps({'type': 'content', 'content': separator})}\n\n"
-                else:
-                    data_producer = asyncio.create_task(_produce_data_explanation())
-
-                # 流式输出数据分析解释（从队列中取出已生成的chunk）
-                has_data_output = False
-                while not data_stream_done.is_set() or not data_chunks_queue.empty():
-                    try:
-                        chunk = await asyncio.wait_for(data_chunks_queue.get(), timeout=0.1)
-                        if not has_data_output:
-                            has_data_output = True
-                            full_answer += "【数据分析】" + chr(10)
-                            label = "【数据分析】" + chr(10)
-                            yield f"data: {json.dumps({'type': 'content', 'content': label})}\n\n"
-                        full_answer += chunk
-                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
-                    except asyncio.TimeoutError:
-                        continue
-
-                if not has_data_output and explanation:
-                    full_answer += "【数据分析】" + chr(10) + explanation
-                    label = "【数据分析】" + chr(10) + explanation
-                    yield f"data: {json.dumps({'type': 'content', 'content': label})}\n\n"
-
-                # commit后查询会自动开启新事务，无需显式begin
-
-                if not full_answer.strip():
-                    full_answer = "抱歉，无法找到相关信息或数据。"
-                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
-
-                # 保存AI回复
-                await message_service.create(
-                    db,
-                    session_id=data.sessionId,
-                    role="assistant",
-                    content=full_answer,
-                    intent="hybrid",
-                    references=references,
-                    sql_traces=sql_traces,
-                    data_result=data_result,
-                    column_meta=column_meta,
-                    chart_type=chart_type,
-                    thinking_steps=collected_thinking_steps,
-                    query_time=int((time.time() - stream_start_time) * 1000),
-                )
+                    # 保存AI回复
+                    await message_service.create(
+                        db,
+                        session_id=data.sessionId,
+                        role="assistant",
+                        content=full_answer,
+                        intent="knowledge",
+                        references=[],
+                        thinking_steps=collected_thinking_steps,
+                        query_time=int((time.time() - stream_start_time) * 1000),
+                    )
 
             # 提交事务
             await db.commit()
@@ -1222,44 +1349,7 @@ async def embed_chat(
                 chat_history = chat_history[:-1]
             logger.info(f"[embed_chat] 当前问题={_question_stripped[:50]}, 历史条数={len(chat_history)}")
 
-            # P0改造：查询改写（基于历史做指代消解和省略补全）
-            # 原始问题已保存到数据库（用户看到的仍是原始输入）
-            # 改写后的问题用于意图分类、RAG检索、NL2SQL等后续处理
-            # JSON数据保护：如果用户输入是JSON格式（如Skill数据输入），跳过改写避免破坏格式
-            # 图表切换保护：如果用户只是切换图表类型，跳过改写（同 stream_chat 分支逻辑）
-            _is_chart_switch = False
-            _chart_switch_pattern = re.compile(
-                r'^(?:改为|换成|用|使用|改成|切换为|变更为?)\s*'
-                r'(?:表格|柱状图?|条形图?|折线图?|曲线图?|饼图?|'
-                r'环形图?|雷达图?|散点图?)\s*(?:展示|显示|呈现|查看)?$'
-            )
-            if chat_history and _chart_switch_pattern.match((data.question or "").strip()):
-                _is_chart_switch = True
-                logger.info(f"[embed_chat] 检测到纯图表切换指令，跳过查询改写: {data.question[:50]}")
-
-            if chat_history and not _is_chart_switch:
-                from app.services.llm_service import llm_service
-                # 检测是否为JSON数据（Skill多轮交互场景，如高炉炉况诊断数据输入）
-                _is_json_data = False
-                _stripped_q = (data.question or "").strip()
-                if _stripped_q.startswith("{") and _stripped_q.endswith("}"):
-                    try:
-                        import json as _json
-                        _json.loads(_stripped_q)
-                        _is_json_data = True
-                        logger.info("[embed_chat] 检测到JSON数据输入，跳过查询改写避免破坏格式")
-                    except Exception:
-                        # 不是合法JSON，可能是包含花括号的自然语言，正常改写
-                        pass
-
-                if not _is_json_data:
-                    effective_question = await llm_service.rewrite_query(data.question, chat_history)
-                    if effective_question != data.question:
-                        logger.info(
-                            f"[embed_chat] 查询改写: 原问题={data.question[:50]}, 改写={effective_question[:50]}"
-                        )
-                        data.question = effective_question
-
+            # ==================== 应用配置加载（P2-8：上移至改写之前，供 agent 分流判断） ====================
             knowledge_base_id = data.knowledgeBaseId
             datasource_id = data.datasourceId
             greeting_message = ""
@@ -1275,6 +1365,8 @@ async def embed_chat(
             # 预解析LLM配置，供各意图分支使用
             resolved_llm_config_params = None
 
+            # 应用配置对象（agent 分流与意图白名单判断依据）
+            app = None
             if data.applicationId:
                 from app.models.application import Application
                 app_result = await db.execute(
@@ -1346,6 +1438,7 @@ async def embed_chat(
                             'model': llm_config.model_name,
                             'max_tokens': llm_config.max_tokens,
                             'temperature': llm_config.temperature,
+                            'enable_thinking': llm_config.enable_thinking,
                         }
                     # P2修复：嵌入入口应用级LLM配置解析日志（排查是否正确使用gemma4:e4b）
                     if resolved_llm_config_params:
@@ -1365,6 +1458,165 @@ async def embed_chat(
                             f"**未解析到任何LLM配置，将使用系统默认模型 {_settings.XINFERENCE_LLM_MODEL!r}**"
                         )
 
+            # ==================== agent模式分流（P2-8：与主通道 stream_chat 同款语义） ====================
+            # 应用配置为 agent 模式时，跳过查询改写与意图分类，由 MasterAgent
+            # 在工具观察结果驱动下多轮自主决策；SSE 事件协议与主通道保持一致。
+            # 影响场景：应用调试、第三方网页嵌入、浮窗助手（三者均走 embed_chat）
+            if app is not None and getattr(app, 'agent_mode', 'classic') == 'agent':
+                from app.services.master_agent_service import master_agent_service, AgentRunResult
+
+                # S3挂起恢复：会话处于awaiting_input时，将用户补充与原始问题合并后继续处理
+                # P2-10：恢复结果携带累计追问次数，透传给 MasterAgent（≥1 注入禁再追问提示词）
+                effective_question = data.question
+                _clarify_count = 0
+                resumed = await session_service.try_resume_awaiting(db, session, data.question)
+                if resumed:
+                    effective_question, _clarify_count = resumed
+                    yield emit_thinking(1, 3, '智能体分析', '检测到追问补充，结合原始问题继续处理...')
+                    logger.info(
+                        f"[embed_chat] 恢复挂起会话，已合并用户补充与原始问题，累计追问次数={_clarify_count}"
+                    )
+
+                yield emit_thinking(1, 3, '智能体分析', 'Agent模式：正在分析问题并规划工具调用...')
+                yield f"data: {json.dumps({'type': 'intent', 'intent': 'agent'})}\n\n"
+
+                # 消费 MasterAgent run_stream 事件流（plan/step/reflect/clarify 即时转发，
+                # 终点 result 事件携带 AgentRunResult；GeneratorExit 时 aclose 取消内部流）
+                event_stream = master_agent_service.run_stream(
+                    db, app, effective_question,
+                    history=chat_history, llm_config=resolved_llm_config_params,
+                    session_id=real_session_id, user_id=session.user_id,
+                    clarify_count=_clarify_count,
+                )
+                agent_result = None
+                try:
+                    async for evt in event_stream:
+                        evt_type = evt.get("type")
+                        if evt_type == "result":
+                            # 终点事件：取 AgentRunResult 走统一收尾（前端协议无 result 事件）
+                            agent_result = evt.get("data")
+                            continue
+                        if evt_type == "step":
+                            # step 事件同步收集 thinking_steps（消息持久化用）
+                            _st = evt.get("status")
+                            _st_label = {"executing": "执行中", "success": "成功", "failed": "失败"}.get(_st, _st)
+                            collected_thinking_steps.append({
+                                "step": evt.get("iteration", 1),
+                                "total_steps": 3,
+                                "title": "工具调用",
+                                "description": f"第{evt.get('iteration')}轮调用 {evt.get('tool')}（{_st_label}）",
+                            })
+                        # 转发事件（plan/step/reflect/clarify，SSE 协议兼容）
+                        yield f"data: {json.dumps(evt)}\n\n"
+                except GeneratorExit:
+                    # 客户端断开SSE：aclose() 关闭内部流（astream 迭代器随上下文清理自然取消）
+                    await event_stream.aclose()
+                    raise
+
+                # 异常兜底：result 事件缺失（理论不可达，防御式收尾）
+                if agent_result is None:
+                    agent_result = AgentRunResult(
+                        answer="抱歉，智能体执行过程中发生异常，请稍后重试。",
+                        query_time=time.time() - stream_start_time,
+                        success=False,
+                    )
+
+                # 推送结构化结果（与主通道事件序列一致）
+                if agent_result.references:
+                    yield f"data: {json.dumps({'type': 'references', 'data': agent_result.references})}\n\n"
+                if agent_result.sql_traces:
+                    yield f"data: {json.dumps({'type': 'sql_traces', 'data': agent_result.sql_traces})}\n\n"
+                if agent_result.data_result:
+                    yield f"data: {json.dumps({'type': 'data_result', 'data': agent_result.data_result, 'columnMeta': agent_result.column_meta, 'chartType': agent_result.chart_type})}\n\n"
+
+                # S3 clarify追问：推送clarify事件（前端渲染追问卡片）+ 挂起会话
+                if agent_result.needs_clarification:
+                    yield f"data: {json.dumps({'type': 'clarify', 'question': agent_result.clarify_question})}\n\n"
+
+                # 推送最终回答（整段输出，agent循环为非流式生成）
+                yield emit_thinking(3, 3, '生成回答', '智能体已完成分析，输出最终回答...')
+                if agent_result.answer:
+                    yield f"data: {json.dumps({'type': 'content', 'content': agent_result.answer})}\n\n"
+
+                # 保存AI回复
+                ai_msg = await message_service.create(
+                    db,
+                    session_id=real_session_id,
+                    role="assistant",
+                    content=agent_result.answer,
+                    intent="agent",
+                    references=agent_result.references,
+                    sql_traces=agent_result.sql_traces,
+                    data_result=agent_result.data_result,
+                    column_meta=agent_result.column_meta,
+                    chart_type=agent_result.chart_type,
+                    thinking_steps=collected_thinking_steps,
+                    query_time=int((time.time() - stream_start_time) * 1000),
+                )
+
+                # S3挂起：clarify追问将会话置为awaiting_input
+                if agent_result.needs_clarification:
+                    # P2-10：透传恢复链路的累计追问基数；达到硬上限时拒绝挂起，
+                    # 追问文本已作为最终回答返回，会话保持active
+                    _suspended = await session_service.set_awaiting_input(
+                        db, session,
+                        question=agent_result.clarify_question,
+                        original_question=effective_question,
+                        message_id=ai_msg.id,
+                        clarify_base=_clarify_count,
+                    )
+                    if not _suspended:
+                        logger.info(
+                            f"[embed_chat] 追问次数达硬上限拒绝挂起: session_id={real_session_id}"
+                        )
+
+                # 提交事务 + 结束事件（与classic路径共用收尾协议）
+                await db.commit()
+                elapsed_time = time.time() - stream_start_time
+                yield f"data: {json.dumps({'type': 'done', 'elapsed_time': elapsed_time})}\n\n"
+                return
+
+            # P0改造：查询改写（基于历史做指代消解和省略补全）
+            # 原始问题已保存到数据库（用户看到的仍是原始输入）
+            # 改写后的问题用于意图分类、RAG检索、NL2SQL等后续处理
+            # JSON数据保护：如果用户输入是JSON格式（如Skill数据输入），跳过改写避免破坏格式
+            # 图表切换保护：如果用户只是切换图表类型，跳过改写（同 stream_chat 分支逻辑）
+            _is_chart_switch = False
+            _chart_switch_pattern = re.compile(
+                r'^(?:改为|换成|用|使用|改成|切换为|变更为?)\s*'
+                r'(?:表格|柱状图?|条形图?|折线图?|曲线图?|饼图?|'
+                r'环形图?|雷达图?|散点图?)\s*(?:展示|显示|呈现|查看)?$'
+            )
+            if chat_history and _chart_switch_pattern.match((data.question or "").strip()):
+                _is_chart_switch = True
+                logger.info(f"[embed_chat] 检测到纯图表切换指令，跳过查询改写: {data.question[:50]}")
+
+            if chat_history and not _is_chart_switch:
+                from app.services.llm_service import llm_service
+                # 检测是否为JSON数据（Skill多轮交互场景，如高炉炉况诊断数据输入）
+                _is_json_data = False
+                _stripped_q = (data.question or "").strip()
+                if _stripped_q.startswith("{") and _stripped_q.endswith("}"):
+                    try:
+                        import json as _json
+                        _json.loads(_stripped_q)
+                        _is_json_data = True
+                        logger.info("[embed_chat] 检测到JSON数据输入，跳过查询改写避免破坏格式")
+                    except Exception:
+                        # 不是合法JSON，可能是包含花括号的自然语言，正常改写
+                        pass
+
+                if not _is_json_data:
+                    effective_question = await llm_service.rewrite_query(data.question, chat_history)
+                    if effective_question != data.question:
+                        logger.info(
+                            f"[embed_chat] 查询改写: 原问题={data.question[:50]}, 改写={effective_question[:50]}"
+                        )
+                        data.question = effective_question
+
+            # P2-8：应用配置（知识库/数据源回退、检索参数、LLM解析、app对象）
+            # 已上移至查询改写之前加载，此处不再重复加载
+
             from app.services.router_service import intent_classifier
             # P1改造修复：详细排查日志（定位Skill多轮交互识别失败问题）
             logger.info(
@@ -1375,7 +1627,14 @@ async def embed_chat(
             if chat_history:
                 for idx, m in enumerate(chat_history):
                     logger.info(f"[embed_chat][Skill排查] history[{idx}] role={m.get('role')}, content前50字符={m.get('content','')[:50]!r}")
-            intent = await intent_classifier.classify(data.question, db, tool_config_ids, history=chat_history)
+            # P3-6：embed_chat 传入应用类型做意图白名单拦截（app 未加载或非 agent 类型时正常透传）
+            _embed_agent_mode = None
+            if data.applicationId and app is not None:
+                _embed_agent_mode = getattr(app, 'agent_mode', None)
+            intent = await intent_classifier.classify(
+                data.question, db, tool_config_ids, history=chat_history,
+                agent_mode=_embed_agent_mode,
+            )
             logger.info(f"[embed_chat][Skill排查] classify返回 intent={intent}")
 
             yield f"data: {json.dumps({'type': 'intent', 'intent': intent})}\n\n"
@@ -1719,6 +1978,7 @@ async def embed_chat(
                         'model': llm_config.model_name,
                         'max_tokens': llm_config.max_tokens,
                         'temperature': llm_config.temperature,
+                        'enable_thinking': llm_config.enable_thinking,
                     }
 
                 # 闲聊回答受应用系统提示词约束，未配置时使用默认提示词
@@ -1743,194 +2003,85 @@ async def embed_chat(
                 )
 
             else:
-                # 混合模式：分步骤展示融合推理过程
-                from app.services.chatbi_service import chatbi_service
+                # M4改造：hybrid混合通道已下线，未知/存量hybrid意图统一降级走知识问答通道
                 from app.services.vector_service import VectorIndexService
-                from app.services.router_service import IntentClassifier
                 from app.models.knowledge import KnowledgeBase
                 from app.schemas.knowledge import KnowledgeQuery
 
-                total_steps = 5
+                yield emit_thinking(1, 3, '查询知识库', '正在检索相关文档知识...')
 
-                # 步骤1：意图分析
-                yield emit_thinking(1, total_steps, '意图分析', '识别混合问题，拆分数据查询与知识问答子问题...')
-
-                data_question, knowledge_question = await IntentClassifier.split_hybrid_question(data.question)
-
-                knowledge_answer = ""
-                explanation = ""
-                explanation_prompt = None
-                knowledge_prompt = None
-                references = []
-                sql_traces = []
-                data_result = None
-                column_meta = None
-                chart_type = None
-
-                # 步骤2+3：并行执行知识检索与数据查询
-                async def _do_knowledge_search():
-                    """执行知识检索子任务（仅向量搜索，不生成回答）"""
-                    nonlocal references, knowledge_prompt
-                    if not knowledge_question or not knowledge_base_id:
-                        return
+                if knowledge_base_id:
                     kb_stmt = select(KnowledgeBase).where(KnowledgeBase.id == knowledge_base_id)
                     kb_result = await db.execute(kb_stmt)
                     kb = kb_result.scalar_one_or_none()
-                    if not kb:
-                        return
-                    query = KnowledgeQuery(
-                        knowledgeBaseId=knowledge_base_id,
-                        question=knowledge_question,
-                        topK=app_top_k,
-                        scoreThreshold=app_score_threshold,
-                    )
-                    refs = await VectorIndexService.search(db, query, kb)
-                    references = [r.model_dump() for r in refs]
-                    # 构建知识回答prompt，但不执行（留到步骤5流式生成）
-                    if refs:
-                        context_text = (chr(10) * 2).join([f"【文档{i+1}】{ref.content}" for i, ref in enumerate(refs)])
-                        knowledge_prompt = f"""基于以下知识内容回答用户问题，如果知识内容中没有相关信息，请明确说明。
+
+                    if kb:
+                        query = KnowledgeQuery(
+                            knowledgeBaseId=knowledge_base_id,
+                            question=data.question,
+                            topK=app_top_k,
+                            scoreThreshold=app_score_threshold,
+                        )
+                        refs = await VectorIndexService.search(db, query, kb)
+
+                        yield emit_thinking(2, 3, '知识匹配完成', f'找到 {len(refs)} 条相关文档，相似度最高 {max([r.score for r in refs]):.2f}' if refs else f'找到 0 条相关文档')
+
+                        # 发送引用信息
+                        yield f"data: {json.dumps({'type': 'references', 'data': [r.model_dump() for r in refs]})}\n\n"
+
+                        # 流式生成回答
+                        yield emit_thinking(3, 3, '生成回答', '基于知识库内容生成自然语言回答...')
+
+                        from app.services.llm_service import llm_service
+
+                        context_text = "\n\n".join([f"【文档{i+1}】{ref.content}" for i, ref in enumerate(refs)])
+                        prompt = f"""基于以下知识内容回答用户问题，如果知识内容中没有相关信息，请明确说明。
 
 知识内容：
 {context_text}
 
-用户问题：{knowledge_question}
+用户问题：{data.question}
 
 请提供准确、简洁的回答。"""
 
-                async def _do_data_query():
-                    """执行数据查询子任务"""
-                    nonlocal explanation, data_result, sql_traces, column_meta, chart_type, explanation_prompt
-                    if not data_question or not datasource_id:
-                        return
-                    # P2修复：补传 history，让多轮对话上下文传递到 NL2SQL
-                    exp, results, traces, _, exp_prompt, col_meta, c_type = await chatbi_service.query(
-                        db, data_question, datasource_id, history=chat_history
+                        full_answer = ""
+                        async for chunk in llm_service.chat_stream(prompt, app_system_prompt, chat_history, resolved_llm_config_params):
+                            full_answer += chunk
+                            yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                        # 保存AI回复（意图兜底记录为knowledge，便于前端类型解析）
+                        await message_service.create(
+                            db,
+                            session_id=real_session_id,
+                            role="assistant",
+                            content=full_answer,
+                            intent="knowledge",
+                            references=[r.model_dump() for r in refs],
+                            thinking_steps=collected_thinking_steps,
+                            query_time=int((time.time() - stream_start_time) * 1000),
+                        )
+
+                else:
+                    # 未指定知识库，直接调用LLM回答
+                    yield emit_thinking(2, 3, '直接回答', '未选择知识库，直接回答用户问题...')
+
+                    from app.services.llm_service import llm_service
+                    full_answer = ""
+                    async for chunk in llm_service.chat_stream(data.question, app_system_prompt, chat_history):
+                        full_answer += chunk
+                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+                    # 保存AI回复
+                    await message_service.create(
+                        db,
+                        session_id=real_session_id,
+                        role="assistant",
+                        content=full_answer,
+                        intent="knowledge",
+                        references=[],
+                        thinking_steps=collected_thinking_steps,
+                        query_time=int((time.time() - stream_start_time) * 1000),
                     )
-                    explanation = exp
-                    data_result = results
-                    sql_traces = traces
-                    column_meta = col_meta
-                    chart_type = c_type
-                    explanation_prompt = exp_prompt
-
-                # 并行启动知识检索和数据查询
-                yield emit_thinking(2, total_steps, '知识检索', f'并行执行知识检索与数据查询...')
-                await asyncio.gather(_do_knowledge_search(), _do_data_query())
-
-                # 按顺序展示步骤结果
-                if references:
-                    yield f"data: {json.dumps({'type': 'references', 'data': references})}\n\n"
-
-                yield emit_thinking(3, total_steps, 'SQL生成', f'知识检索与SQL查询已并行完成')
-
-                if sql_traces:
-                    yield f"data: {json.dumps({'type': 'sql_traces', 'data': sql_traces})}\n\n"
-
-                # 步骤4：数据分析
-                if data_result:
-                    yield emit_thinking(4, total_steps, '数据分析', f'查询返回 {len(data_result)} 条数据结果')
-                    yield f"data: {json.dumps({'type': 'data_result', 'data': data_result, 'columnMeta': column_meta, 'chartType': chart_type})}\n\n"
-                else:
-                    yield emit_thinking(4, total_steps, '数据分析', '未获取到数据结果')
-
-                # 步骤5：融合分析
-                yield emit_thinking(5, total_steps, '融合分析', '融合知识解答与数据分析结果，生成综合回答...')
-
-                # 提交事务释放数据库连接，再调用LLM生成解释
-                await db.commit()
-
-                from app.services.llm_service import llm_service
-
-                # 使用预解析的LLM配置参数
-                llm_config_params = resolved_llm_config_params
-
-                full_answer = ""
-
-                # 使用队列实现并行流式输出
-                data_chunks_queue = asyncio.Queue()
-                data_stream_done = asyncio.Event()
-
-                async def _produce_data_explanation():
-                    """后台生成数据分析解释，放入队列"""
-                    try:
-                        if not data_result or len(data_result) == 0:
-                            if explanation:
-                                await data_chunks_queue.put(explanation)
-                            data_stream_done.set()
-                            return
-                        if explanation_prompt:
-                            async for chunk in llm_service.chat_stream(explanation_prompt, app_system_prompt, chat_history, llm_config_params):
-                                await data_chunks_queue.put(chunk)
-                        elif explanation:
-                            await data_chunks_queue.put(explanation)
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        pass
-                    finally:
-                        data_stream_done.set()
-
-                # 并行：知识回答流式输出 + 数据分析解释后台生成
-                if knowledge_prompt:
-                    full_answer += "【知识解答】" + chr(10)
-                    label = "【知识解答】" + chr(10)
-                    yield f"data: {json.dumps({'type': 'content', 'content': label})}\n\n"
-
-                    knowledge_answer = ""
-                    data_producer = asyncio.create_task(_produce_data_explanation())
-
-                    async for chunk in llm_service.chat_stream(knowledge_prompt, app_system_prompt, chat_history, llm_config_params):
-                        chunk = chunk.replace(chr(10) * 2, chr(10))
-                        knowledge_answer += chunk
-                        full_answer += chunk
-                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
-
-                    full_answer += chr(10)
-                    separator = chr(10)
-                    yield f"data: {json.dumps({'type': 'content', 'content': separator})}\n\n"
-                else:
-                    data_producer = asyncio.create_task(_produce_data_explanation())
-
-                # 流式输出数据分析解释（从队列中取出已生成的chunk）
-                has_data_output = False
-                while not data_stream_done.is_set() or not data_chunks_queue.empty():
-                    try:
-                        chunk = await asyncio.wait_for(data_chunks_queue.get(), timeout=0.1)
-                        if not has_data_output:
-                            has_data_output = True
-                            full_answer += "【数据分析】" + chr(10)
-                            label = "【数据分析】" + chr(10)
-                            yield f"data: {json.dumps({'type': 'content', 'content': label})}\n\n"
-                        full_answer += chunk
-                        yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
-                    except asyncio.TimeoutError:
-                        continue
-
-                if not has_data_output and explanation:
-                    full_answer += "【数据分析】" + chr(10) + explanation
-                    label = "【数据分析】" + chr(10) + explanation
-                    yield f"data: {json.dumps({'type': 'content', 'content': label})}\n\n"
-
-                if not full_answer.strip():
-                    full_answer = "抱歉，无法找到相关信息或数据。"
-                    yield f"data: {json.dumps({'type': 'content', 'content': full_answer})}\n\n"
-
-                # 保存AI回复（混合模式）
-                await message_service.create(
-                    db,
-                    session_id=real_session_id,
-                    role="assistant",
-                    content=full_answer,
-                    intent="hybrid",
-                    references=references,
-                    sql_traces=sql_traces,
-                    data_result=data_result,
-                    column_meta=column_meta,
-                    chart_type=chart_type,
-                    thinking_steps=collected_thinking_steps,
-                    query_time=int((time.time() - stream_start_time) * 1000),
-                )
 
             await db.commit()
 

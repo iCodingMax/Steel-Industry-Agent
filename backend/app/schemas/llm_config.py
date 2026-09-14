@@ -16,6 +16,9 @@ class LLMConfigCreate(BaseModel):
     maxTokens: int = Field(default=2048, description="最大输出token")
     temperature: float = Field(default=0.7, description="温度参数")
     topP: Optional[float] = Field(None, description="Top-p采样")
+    enableThinking: Optional[bool] = Field(
+        None, description="思考模式三态: true开启/false关闭/null按模型默认(qwen3系自动关思考)"
+    )
     extraParams: Optional[Dict] = Field(default_factory=dict, description="额外参数")
     isDefault: bool = Field(default=False, description="是否默认配置")
     description: Optional[str] = Field(None, description="描述")
@@ -32,6 +35,9 @@ class LLMConfigUpdate(BaseModel):
     maxTokens: Optional[int] = Field(None, description="最大输出token")
     temperature: Optional[float] = Field(None, description="温度参数")
     topP: Optional[float] = Field(None, description="Top-p采样")
+    enableThinking: Optional[bool] = Field(
+        None, description="思考模式三态: true开启/false关闭/null按模型默认(qwen3系自动关思考)"
+    )
     extraParams: Optional[Dict] = Field(None, description="额外参数")
     isDefault: Optional[bool] = Field(None, description="是否默认配置")
     status: Optional[str] = Field(None, description="状态")
@@ -50,6 +56,9 @@ class LLMConfigResponse(BaseModel):
     maxTokens: int
     temperature: float
     topP: Optional[float]
+    enableThinking: Optional[bool] = Field(
+        None, description="思考模式三态: true开启/false关闭/null按模型默认"
+    )
     extraParams: Dict
     isDefault: bool
     status: str

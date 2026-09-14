@@ -23,7 +23,7 @@
   docker-compose up -e ENV=production
 """
 import os
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -108,6 +108,15 @@ class Settings(BaseSettings):
 
     # 多轮对话：加载到LLM上下文的历史消息条数（10条=5轮对话）
     CHAT_HISTORY_LIMIT: int = 10
+
+    # P0-2 预判降级名单（环境变量化）：强制走 prompt-based 工具调用协议的模型关键词
+    # 现状 vLLM 引擎已支持原生 function-calling，默认空名单（原生优先）；
+    # 仅当某模型确认不支持原生 tools 时才加入，逗号分隔，如 "legacy-model-a,legacy-model-b"
+    LLM_FORCE_PROMPT_MODELS: str = ""
+
+    # P0-5 思考模式默认策略：None=按模型默认（qwen3 系自动关思考），true=强制开启，false=强制关闭
+    # 应用级配置（llm_configs.enable_thinking）优先于此系统级默认
+    LLM_ENABLE_THINKING: Optional[bool] = None
 
     def model_post_init(self, __context) -> None:
         """初始化后处理：PGVECTOR配置默认跟随PG配置 + 环境日志"""

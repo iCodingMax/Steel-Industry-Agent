@@ -51,6 +51,7 @@ class LLMConfigService:
             max_tokens=data.maxTokens,
             temperature=data.temperature,
             top_p=data.topP,
+            enable_thinking=data.enableThinking,
             extra_params=json.dumps(data.extraParams, ensure_ascii=False) if data.extraParams else None,
             is_default=data.isDefault,
             status="active",
@@ -160,6 +161,7 @@ class LLMConfigService:
             'maxTokens': 'max_tokens',
             'temperature': 'temperature',
             'topP': 'top_p',
+            'enableThinking': 'enable_thinking',
             'extraParams': 'extra_params',
             'isDefault': 'is_default',
         }
