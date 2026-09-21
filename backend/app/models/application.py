@@ -71,6 +71,8 @@ class Application(Base):
     # 智能体模式配置（LangGraph MasterAgent 升级）
     agent_mode = Column(String(10), default="classic", server_default="classic", comment="执行模式: classic(意图分类路由分发)/agent(智能体ReAct循环)")
     agent_max_iterations = Column(Integer, default=8, server_default="8", comment="Agent模式最大推理迭代次数(防死循环,默认8)")
+    # P1-1 planner 规划开关（应用级，配合启发式复杂度判定条件启用 plan 节点）
+    agent_plan_enabled = Column(Boolean, default=False, server_default="false", comment="Agent模式规划开关(True=复杂问题先经planner产出步骤清单再执行)")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -114,6 +116,7 @@ class Application(Base):
             "topP": self.top_p / 10.0,
             "agentMode": self.agent_mode if self.agent_mode else "classic",
             "agentMaxIterations": self.agent_max_iterations if self.agent_max_iterations is not None else 8,
+            "agentPlanEnabled": bool(self.agent_plan_enabled) if self.agent_plan_enabled is not None else False,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "createdBy": self.created_by,

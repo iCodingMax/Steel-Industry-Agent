@@ -80,10 +80,22 @@ class AgentState(TypedDict, total=False):
     trace: List[Dict[str, Any]]                 # 执行轨迹
     final_answer: str                           # 最终答案
     done: bool                                  # 是否结束
+    mcp_connection_failure: bool                # MCP 连接失败硬停止标志（execute 据此返回 success=False）
 
 
 # 内置参考文档读取工具名（不走 MCP，从 state.references_full 读取）
 TOOL_READ_REFERENCE = "read_reference"
+
+# MCP 连接类失败的特征文本（出现即判定 MCP Server 不可达，
+# Agent 硬停止并直接返回失败说明，避免 LLM 在无数据时编造报告）
+_MCP_CONNECTION_FAILURE_PATTERNS = (
+    "无法连接到MCP Server",
+    "MCP会话初始化失败",
+    "ConnectError",
+    "Connection refused",
+    "connect timeout",
+    "请求超时",
+)
 
 # read_reference 工具的 OpenAI function-calling 定义（L3 渐进披露：按需读取参考文档全文）
 _READ_REFERENCE_TOOL_SCHEMA = {
@@ -127,7 +139,7 @@ class SkillAgentExecutor:
     # ---------- 上下文预算类常量 ----------
     HISTORY_MAX_MESSAGES = 4       # 透传主对话历史的最大条数
     HISTORY_MAX_CHARS = 4000       # 透传历史的总字符上限（超过从最旧开始丢弃）
-    REFERENCE_MAX_CHARS = 8000     # read_reference 单篇文档最大返回字符数
+    REFERENCE_MAX_CHARS = 16000     # read_reference 单篇文档最大返回字符数
 
     # Skill Agent 专用系统指令（注入到 system message）
     _AGENT_SYSTEM_PROMPT_TEMPLATE = """# Skill Agent 执行指令
@@ -147,7 +159,9 @@ class SkillAgentExecutor:
 ## 重要规则（必须遵守）
 1. 如果需要外部数据（如实时传感器数据、天气数据等），必须先调用工具获取，再进行分析
 2. 工具调用后，请整合工具返回的数据，按照 SKILL.md 定义的格式输出最终结果
-3. 如果工具调用失败，请在回答中说明失败原因，并基于现有信息给出尽可能完整的分析
+3. **数据完整性强制要求**：诊断/分析结论必须完全基于工具返回的真实数据。若数据获取失败
+   或未获取到有效数据，必须明确告知用户"数据不可用，无法完成诊断"，说明失败原因，
+   绝对禁止基于想象、猜测或"典型值"编造数据、指标数值或诊断结论
 4. 直接输出最终结果，不要输出无关的思考过程
 5. 如果 SKILL.md 中定义了输出格式（章节结构），必须完整遵守
 6. 不要在回答中输出 JSON 格式的工具调用参数，那是内部实现细节
@@ -168,8 +182,6 @@ class SkillAgentExecutor:
         skill_description: str,
         skill_md_body: str,
         references: List[Dict[str, str]],
-        input_template: str,
-        latest_data: str,
         question: str,
         history: Optional[List[Dict[str, str]]] = None,
         llm_config: Optional[Dict[str, Any]] = None,
@@ -184,9 +196,7 @@ class SkillAgentExecutor:
         :param skill_name: Skill 名称
         :param skill_description: Skill 描述
         :param skill_md_body: SKILL.md 正文（已去除 frontmatter）
-        :param references: 参考文档列表 [{name, content}]
-        :param input_template: 输入模板 JSON
-        :param latest_data: 最新数据 JSON
+        :param references: 参考文档列表 [{name, content}]（references/ 与 assets/ 下的 .md）
         :param question: 用户问题
         :param history: 对话历史
         :param llm_config: LLM 配置
@@ -257,14 +267,12 @@ class SkillAgentExecutor:
                 "trace": [],
             }
 
-        # 2. 组装 skill_context（SKILL.md 正文 + 参考文档 + 数据）
+        # 2. 组装 skill_context（SKILL.md 正文 + 参考文档清单）
         skill_context = self._build_skill_context(
             skill_name=skill_name,
             skill_description=skill_description,
             skill_md_body=skill_md_body,
             references=references,
-            input_template=input_template,
-            latest_data=latest_data,
         )
 
         # 3. 构建 Agent 图
@@ -312,14 +320,18 @@ class SkillAgentExecutor:
         # 6. 运行 LangGraph
         try:
             final_state = await graph.ainvoke(initial_state)
+            mcp_failure = bool(final_state.get("mcp_connection_failure", False))
             logger.info(
                 f"SkillAgentExecutor 执行完成: skill={skill_name}, "
                 f"final_answer长度={len(final_state.get('final_answer', ''))}, "
-                f"实际迭代次数={len(final_state.get('trace', []))}"
+                f"实际迭代次数={len(final_state.get('trace', []))}, "
+                f"mcp连接失败={mcp_failure}"
             )
             return {
                 "answer": final_state.get("final_answer", ""),
-                "success": True,
+                # MCP 连接失败硬停止时返回失败，上层 ToolRegistry/MasterAgent
+                # 据此走失败分支，不再把失败说明当作 Skill 成功输出转述
+                "success": not mcp_failure,
                 "trace": final_state.get("trace", []),
             }
         except Exception as e:
@@ -490,6 +502,44 @@ class SkillAgentExecutor:
                         success = False
                         tool_result_text = f"工具调用异常: {type(e).__name__}: {str(e)}"
 
+                    # MCP 连接类失败检测：MCP Server 未启动/不可达时硬停止，
+                    # 防止 LLM 拿不到数据却继续编造诊断报告
+                    if not success and self._is_mcp_connection_failure(str(tool_result_text)):
+                        logger.error(
+                            f"[Agent tool_exec] 检测到 MCP Server 连接失败，Agent 硬停止: "
+                            f"tool={tc_name}, 失败信息={str(tool_result_text)[:200]}"
+                        )
+                        state["final_answer"] = (
+                            f"⚠️ 无法完成 Skill 执行：调用 MCP 工具「{tc_name}」失败"
+                            f"（MCP Server 未启动或网络不可达）。\n\n"
+                            f"失败详情：{str(tool_result_text)[:300]}\n\n"
+                            f"请检查：\n"
+                            f"1. MCP Server 是否已启动（对应数据服务是否在运行）\n"
+                            f"2. MCP Server URL 配置是否正确、网络是否可达\n"
+                            f"3. 服务恢复后重新发起请求"
+                        )
+                        state["done"] = True
+                        # MCP 连接失败硬停止标志：execute 收尾时据此返回
+                        # success=False，让上层 MasterAgent 命中硬停止条件，
+                        # 避免失败说明被包装为"执行成功+报告转述"误导 LLM
+                        state["mcp_connection_failure"] = True
+                        # 追加 tool result 消息（保持消息序列完整，便于 trace 审计）
+                        state["messages"].append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": str(tool_result_text),
+                        })
+                        state["trace"].append({
+                            "step": "tool_exec",
+                            "tool_name": tc_name,
+                            "tool_call_id": tc_id,
+                            "arguments": arguments,
+                            "success": False,
+                            "result_preview": str(tool_result_text)[:300] if tool_result_text else "(空)",
+                            "hard_stop": "mcp_connection_failure",
+                        })
+                        return state
+
             # 追加 tool result 消息
             state["messages"].append({
                 "role": "tool",
@@ -578,8 +628,15 @@ class SkillAgentExecutor:
             },
         )
 
-        # tool_exec → agent_think（执行完工具后继续思考）
-        graph.add_edge("tool_exec", "agent_think")
+        # tool_exec → 条件路由（硬停止时直接 finalize，避免再调 LLM 编造内容）
+        graph.add_conditional_edges(
+            "tool_exec",
+            self._route_after_tool_exec,
+            {
+                "agent_think": "agent_think",
+                "finalize": "agent_finalize",
+            },
+        )
 
         # agent_finalize → END
         graph.add_edge("agent_finalize", END)
@@ -618,6 +675,35 @@ class SkillAgentExecutor:
         if state.get("done", False):
             return "finalize"
         return "tool_exec"
+
+    def _route_after_tool_exec(self, state: AgentState) -> str:
+        """
+        tool_exec 后的条件路由函数
+
+        - tool_exec 内硬停止（如 MCP 连接失败）时 done=True → finalize
+        - 否则 → agent_think 继续思考
+
+        :param state: 当前状态
+        :return: "agent_think" | "finalize"
+        """
+        if state.get("done", False):
+            return "finalize"
+        return "agent_think"
+
+    @staticmethod
+    def _is_mcp_connection_failure(result_text: str) -> bool:
+        """
+        判断工具失败结果是否为 MCP 连接类失败
+
+        仅匹配"连不上/超时/会话初始化失败"等基础设施故障特征，
+        不匹配业务性失败（如参数错误、查询无数据），后者仍由 LLM 兜底处理。
+
+        :param result_text: 工具失败返回的文本
+        :return: 是否连接类失败
+        """
+        if not result_text:
+            return False
+        return any(p in result_text for p in _MCP_CONNECTION_FAILURE_PATTERNS)
 
     # ========================================================
     # 工具加载与筛选
@@ -755,8 +841,6 @@ class SkillAgentExecutor:
         skill_description: str,
         skill_md_body: str,
         references: List[Dict[str, str]],
-        input_template: str,
-        latest_data: str,
     ) -> str:
         """
         组装 Skill 上下文（用于注入到 system prompt 或 skill_context 字段）
@@ -786,16 +870,6 @@ class SkillAgentExecutor:
                 parts.append(
                     f"- **{name}**（全文约{len(content)}字符）：{summary}..."
                 )
-
-        if input_template:
-            parts.append("")
-            parts.append("## 数据输入模板")
-            parts.append(f"```json\n{input_template}\n```")
-
-        if latest_data:
-            parts.append("")
-            parts.append("## 最新数据")
-            parts.append(f"```json\n{latest_data}\n```")
 
         return "\n".join(parts)
 

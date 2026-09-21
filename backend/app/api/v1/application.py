@@ -64,6 +64,7 @@ class ApplicationCreate(BaseModel):
     temperature: float = Field(0.7, description="温度参数(0.0-2.0)")
     topP: float = Field(0.9, description="top_p参数(0.0-1.0)")
     agentMode: str = Field("classic", pattern="^(classic|chatbi|agent)$", description="应用类型: classic(对话助手)/chatbi(数据助手)/agent(智能体)，创建时定型")
+    agentPlanEnabled: bool = Field(False, description="Agent模式规划开关(P1-1:复杂问题先经planner产出步骤清单)")
 
 
 class ApplicationUpdate(BaseModel):
@@ -91,6 +92,7 @@ class ApplicationUpdate(BaseModel):
     topP: float = Field(None, description="top_p参数(0.0-1.0)")
     agentMode: str = Field(None, pattern="^(classic|chatbi|agent)$", description="应用类型（P3-4 不可变：仅放行 classic→chatbi 定向升级，其余变更抛400）")
     agentMaxIterations: int = Field(None, ge=3, le=30, description="Agent模式最大推理迭代次数(3-30,默认8)")
+    agentPlanEnabled: bool = Field(None, description="Agent模式规划开关(P1-1:复杂问题先经planner产出步骤清单)")
 
 
 class AppPromptCreate(BaseModel):
@@ -206,6 +208,7 @@ async def create_application(
             top_p=int(data.topP * 10),
             api_key=str(uuid.uuid4()).replace("-", ""),
             agent_mode=agent_mode,
+            agent_plan_enabled=data.agentPlanEnabled,
             created_by=user.id,
         )
         
@@ -304,6 +307,7 @@ async def update_application(
         'top_p': int(data.topP * 10) if data.topP is not None else None,
         'agent_mode': data.agentMode,
         'agent_max_iterations': data.agentMaxIterations,
+        'agent_plan_enabled': data.agentPlanEnabled,
     }
     
     for field, value in field_mapping.items():

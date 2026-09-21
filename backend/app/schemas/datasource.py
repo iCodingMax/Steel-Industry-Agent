@@ -83,3 +83,15 @@ class ColumnInfo(BaseModel):
     nullable: bool
     primaryKey: bool
     default: Optional[str]
+
+
+class ColumnRemarkItem(BaseModel):
+    """单字段备注项"""
+    name: str = Field(..., description="字段名")
+    remark: str = Field(default="", description="字段备注（可编辑，传空串清空）")
+    reset: bool = Field(default=False, description="重置为原字段备注（remark=comment 且 remark_edited=False）")
+
+
+class ColumnRemarkUpdate(BaseModel):
+    """字段备注批量保存请求"""
+    remarks: List[ColumnRemarkItem] = Field(..., description="字段备注列表")

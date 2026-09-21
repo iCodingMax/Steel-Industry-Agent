@@ -17,11 +17,17 @@
 """
 import json
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.core.base_model import Base
+
+# pgvector 向量类型（驱动缺失时降级为占位列，参照 agent_memory 模式）
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:  # pragma: no cover
+    Vector = None
 
 
 class DataSource(Base):
@@ -108,4 +114,51 @@ class TableSchema(Base):
             "tableComment": self.table_comment,
             "columns": columns_data,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class SchemaEmbedding(Base):
+    """
+    表结构向量化索引表
+    每张表一条向量记录，用于 NL2SQL Schema Linking 的向量召回：
+    - rebuild：数据源"同步表结构"时按 table_name 全量重建（先删后插）
+    - recall：用户问题向量化后按余弦相似度召回 Top-K 候选表
+
+    注意：
+    - 以 table_name 字符串关联（sync_schema 先删后插导致 TableSchema.id 不稳定，
+      禁止使用 table_schema_id 外键）
+    - embedding 使用 pgvector VECTOR(1024)（bge-m3 维度）；
+      驱动未安装时降级为占位列，召回侧直接回退原有关键词逻辑
+    """
+
+    __tablename__ = "schema_embeddings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    datasource_id = Column(Integer, nullable=False, index=True, comment="数据源ID")
+    table_name = Column(String(100), nullable=False, comment="表名")
+    embed_text = Column(Text, nullable=False, comment="向量化原文（表名+表注释+列名+字段备注+术语别名）")
+    # pgvector 向量列；驱动未安装时降级为占位列
+    embedding = (
+        Column(Vector(1024), nullable=True, comment="表描述向量(bge-m3,1024维)")
+        if Vector
+        else Column(Text, nullable=True, comment="表描述向量(降级占位列)")
+    )
+    schema_version = Column(Integer, default=1, comment="Schema版本号（结构同步时递增，用于失效判断）")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    __table_args__ = (
+        # 一数据源一表一条向量，rebuild 幂等
+        Index("uq_schema_embeddings_ds_table", "datasource_id", "table_name", unique=True),
+        {"comment": "表结构向量化索引表(Schema Linking向量召回)"},
+    )
+
+    def to_dict(self) -> dict:
+        """转换为字典（向量字段不返回）"""
+        return {
+            "id": self.id,
+            "datasourceId": self.datasource_id,
+            "tableName": self.table_name,
+            "embedText": self.embed_text,
+            "schemaVersion": self.schema_version,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
         }

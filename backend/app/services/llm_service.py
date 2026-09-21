@@ -37,7 +37,7 @@
 import httpx
 import json
 import re
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any, AsyncIterator
 from loguru import logger
 
 from app.core.config import settings
@@ -1001,6 +1001,226 @@ class LLMService:
             "finish_reason": finish_reason,
             "model": model_name,
         }
+
+    async def chat_with_tools_stream(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        config: Optional[Dict] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        带函数调用的流式对话（P0-1 token 流式回答，仅原生 function-calling 路径）
+
+        与 chat_with_tools 的区别：
+            - 请求体加 stream=true，逐 SSE chunk 解析
+            - 首 chunk 路由：出现 tool_calls 增量即停止推送 content 增量
+              （工具调用决策需要完整 JSON，改由调用方缓冲收集）
+            - yield 事件格式：
+                {"type": "delta", "content": "增量文本"}     最终回答的 token 增量
+                {"type": "done", "result": {...}}            流结束，result 与
+                                                               chat_with_tools 返回同构
+                {"type": "fallback"}                          降级信号（调用方改走非流式）
+        降级约定：
+            - 降级名单模型（LLM_FORCE_PROMPT_MODELS）/ HTTP 层错误 → yield fallback 事件，
+              由调用方回退 chat_with_tools（prompt-based 模式不支持流式）
+            - thinking 模型的 reasoning_content 增量不推送（思考过程不入回答流）
+
+        :param messages: 完整的 OpenAI 消息列表
+        :param tools: OpenAI 格式的工具定义列表
+        :param config: 应用级 LLM 配置
+        :yield: 上述三种事件
+        """
+        # 第0步：降级名单预判（与 chat_with_tools 一致，名单模型不支持原生 tools）
+        model_name = (config or {}).get("model") or self.model
+        _model_lower = (model_name or "").lower()
+        _force_prompt_models = tuple(
+            kw.strip().lower()
+            for kw in settings.LLM_FORCE_PROMPT_MODELS.split(",")
+            if kw.strip()
+        )
+        if any(k in _model_lower for k in _force_prompt_models) or not tools:
+            yield {"type": "fallback"}
+            return
+
+        # 配置解析（与 _chat_with_tools_native 一致）
+        if config:
+            base_url = config.get('base_url') or self.base_url
+            api_key = config.get('api_key') or self.api_key
+            model = config.get('model') or self.model
+            max_tokens = config.get('max_tokens') or self.max_tokens
+            temperature = config.get('temperature')
+            if temperature is None:
+                temperature = self.temperature
+        else:
+            base_url, api_key, model = self.base_url, self.api_key, self.model
+            max_tokens = self.max_tokens
+            temperature = self.temperature
+
+        # max_tokens 自动下调（与 _chat_with_tools_native 一致）
+        _model_context_length = 65536
+        if any(k in _model_lower for k in ['qwen3', 'qwen2.5', 'qwen2']):
+            _model_context_length = 40960
+        elif any(k in _model_lower for k in ['glm4', 'glm-4', 'glm5', 'glm-5']):
+            _model_context_length = 131072
+        elif 'glm' in _model_lower:
+            _model_context_length = 65536
+        elif 'deepseek' in _model_lower or 'gpt' in _model_lower:
+            _model_context_length = 131072
+        _messages_total_chars = sum(len(m.get('content') or '') + 50 for m in messages)
+        _estimated_prompt_tokens = int(_messages_total_chars * 1.5) + len(tools) * 500
+        _available_max_tokens = _model_context_length - _estimated_prompt_tokens - 1000
+        if _available_max_tokens < 1024:
+            _available_max_tokens = 1024
+        if max_tokens > _available_max_tokens:
+            logger.info(
+                f"chat_with_tools_stream max_tokens 自动下调: {max_tokens} → {_available_max_tokens}"
+            )
+            max_tokens = _available_max_tokens
+
+        request_body = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        # 思考模式三态配置（与 _chat_with_tools_native 一致）
+        self._apply_thinking_config(request_body, model, config)
+
+        logger.info(
+            f"chat_with_tools_stream 调用: model={model!r}, "
+            f"messages={len(messages)}条, tools={len(tools)}个"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request_body,
+                ) as response:
+                    # HTTP 层错误 → 降级信号（调用方回退非流式 chat_with_tools）
+                    if response.status_code >= 400:
+                        error_body = (await response.aread())[:500].decode(
+                            'utf-8', errors='replace'
+                        )
+                        logger.warning(
+                            f"chat_with_tools_stream HTTP {response.status_code}，"
+                            f"触发降级: body={error_body[:200]}"
+                        )
+                        yield {"type": "fallback"}
+                        return
+
+                    # ---- SSE 逐 chunk 解析（首 chunk 路由）----
+                    # 状态收集：content 增量即时推送，tool_calls 增量缓冲拼接
+                    content_parts: List[str] = []
+                    tool_call_fragments: Dict[int, Dict[str, str]] = {}
+                    finish_reason = ""
+                    has_tool_calls = False
+
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue  # 心跳/注释行跳过
+                        choices = data.get("choices") or []
+                        if not choices or not isinstance(choices[0], dict):
+                            continue
+                        choice = choices[0]
+                        delta = choice.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            continue
+
+                        # 工具调用增量：按 index 缓冲拼接（id/name/arguments 分片到达）
+                        # 注意：部分引擎（Xinference qwen3）每个 chunk 都携带空
+                        # tool_calls 数组占位，仅非空列表才视为真实工具调用，
+                        # 否则 content 增量会被 has_tool_calls 门控误吞（流式空回答）
+                        tc_deltas = delta.get("tool_calls")
+                        if (isinstance(tc_deltas, list)
+                                and len(tc_deltas) > 0):
+                            has_tool_calls = True
+                            for frag in tc_deltas:
+                                if not isinstance(frag, dict):
+                                    continue
+                                idx = frag.get("index", 0)
+                                slot = tool_call_fragments.setdefault(
+                                    idx, {"id": "", "name": "", "arguments": ""}
+                                )
+                                if frag.get("id"):
+                                    slot["id"] = frag["id"]
+                                func = frag.get("function") or {}
+                                if isinstance(func, dict):
+                                    if func.get("name"):
+                                        slot["name"] += func["name"]
+                                    if func.get("arguments"):
+                                        slot["arguments"] += func["arguments"]
+
+                        # 文本增量：仅在未出现 tool_calls 时推送（防混杂输出）
+                        chunk_content = delta.get("content")
+                        if (chunk_content
+                                and not has_tool_calls
+                                and isinstance(chunk_content, str)):
+                            content_parts.append(chunk_content)
+                            yield {"type": "delta", "content": chunk_content}
+
+                        # reasoning_content 增量：不推送（思考过程不入回答流）
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
+
+                    # 流结束：聚合完整结果（与 chat_with_tools 返回同构）
+                    tool_calls: List[Dict] = []
+                    for idx in sorted(tool_call_fragments.keys()):
+                        slot = tool_call_fragments[idx]
+                        if not slot.get("name"):
+                            continue  # 空片段丢弃
+                        tool_calls.append({
+                            "id": slot["id"] or f"call_{idx}",
+                            "type": "function",
+                            "function": {
+                                "name": slot["name"],
+                                "arguments": slot["arguments"] or "{}",
+                            },
+                        })
+
+                    full_content = "".join(content_parts)
+                    logger.info(
+                        f"chat_with_tools_stream 成功: content长度={len(full_content)}, "
+                        f"tool_calls={len(tool_calls)}, finish_reason={finish_reason}"
+                    )
+                    yield {
+                        "type": "done",
+                        "result": {
+                            "content": full_content,
+                            "tool_calls": tool_calls,
+                            "finish_reason": finish_reason,
+                            "model": model_name,
+                        },
+                    }
+
+        except httpx.HTTPStatusError as e:
+            error_body = e.response.text[:500] if e.response.text else ""
+            logger.warning(
+                f"chat_with_tools_stream HTTP错误，触发降级: "
+                f"status={e.response.status_code}, body={error_body}"
+            )
+            yield {"type": "fallback"}
+        except Exception as e:  # noqa: BLE001 - 流式异常统一转降级信号
+            logger.warning(
+                f"chat_with_tools_stream 异常，触发降级: "
+                f"{type(e).__name__}: {str(e)[:200]}"
+            )
+            yield {"type": "fallback"}
 
     async def chat_stream(
         self,

@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.datasource import DataSource, TableSchema
 from app.models.term import Term
 from app.services.llm_service import llm_service
+from app.services.schema_embedding_service import SchemaEmbeddingService
 from app.middlewares.exception_handler import BusinessException
 
 
@@ -453,10 +454,99 @@ class NL2SQLEngine:
         return None
 
     @staticmethod
+    async def _build_relation_text(
+        db: AsyncSession,
+        datasource_id: int,
+        table_names: List[str],
+    ) -> str:
+        """
+        构建表关联关系段（V2.1 二期 改动1+2：关系注入 + 连通性检查）
+
+        仅注入两端都在所选表集合内的 active 关系；复合关联键（relation_group）
+        聚合为一行展示；对所选表集合做 BFS 连通性检查，不连通时追加降级提示。
+
+        :param db: 数据库会话
+        :param datasource_id: 数据源ID
+        :param table_names: 筛选后的表名列表
+        :return: 关系段文本（无可用关系时返回空字符串）
+        """
+        from app.models.table_relation import TableRelation
+
+        stmt = select(TableRelation).where(
+            TableRelation.datasource_id == datasource_id,
+            TableRelation.status == "active",
+        )
+        rows = list((await db.execute(stmt)).scalars().all())
+        table_set = set(table_names)
+
+        # 仅保留两端都在所选表集合内的关系
+        relevant = [
+            r for r in rows
+            if r.left_table in table_set and r.right_table in table_set
+        ]
+        if not relevant:
+            return ""
+
+        # 复合关联键按 relation_group 聚合为一行
+        grouped: Dict[str, List] = {}
+        singles: List = []
+        for r in relevant:
+            if r.relation_group:
+                grouped.setdefault(r.relation_group, []).append(r)
+            else:
+                singles.append(r)
+
+        lines = ["表关联关系（JOIN 条件必须严格使用以下关联键，禁止编造）："]
+        for r in singles:
+            desc = f"，{r.relation_desc}" if r.relation_desc else ""
+            lines.append(
+                f"- {r.left_table}.{r.left_column} = {r.right_table}.{r.right_column}"
+                f"（{r.cardinality}{desc}）"
+            )
+        for _group_id, group_rows in grouped.items():
+            pair_strs = " 且 ".join(
+                f"{r.left_table}.{r.left_column} = {r.right_table}.{r.right_column}"
+                for r in group_rows
+            )
+            r0 = group_rows[0]
+            desc = f"，{r0.relation_desc}" if r0.relation_desc else ""
+            lines.append(f"- {pair_strs}（{r0.cardinality}，复合关联键{desc}）")
+
+        # 连通性检查（BFS）：所选表集合在关系图上不连通时提示降级为单表查询
+        adjacency: Dict[str, set] = {t: set() for t in table_set}
+        for r in relevant:
+            adjacency[r.left_table].add(r.right_table)
+            adjacency[r.right_table].add(r.left_table)
+        visited: set = set()
+        stack = [next(iter(table_set))]
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            for nxt in adjacency[node]:
+                if nxt not in visited:
+                    stack.append(nxt)
+        if len(visited) < len(table_set):
+            lines.append(
+                "⚠️ 所选表间存在未连通部分（无已确认关联关系），"
+                "如确需联合查询请改为单表分别查询。"
+            )
+
+        lines.append("JOIN 规则：")
+        lines.append("1. 多表查询必须使用 JOIN，且 ON 条件只能使用上述关联关系中的字段")
+        lines.append("2. JOIN 表数量最多 3 张")
+        lines.append("3. 根据基数选择 JOIN 类型：查主表全量时用 LEFT JOIN，严格交集用 INNER JOIN")
+        return "\n".join(lines)
+
+    @staticmethod
     def _build_sql_prompt(
         schema_text: str,
         term_text: str,
         question: str,
+        relation_text: str = "",
+        feedback: Optional[str] = None,
+        few_shot_text: str = "",
     ) -> str:
         """
         构建SQL生成的Prompt（不调用LLM）
@@ -466,6 +556,9 @@ class NL2SQLEngine:
         :param schema_text: 数据库Schema描述（DDL格式）
         :param term_text: 业务术语映射（可选）
         :param question: 用户问题
+        :param relation_text: 表关联关系段（V2.1 二期：≥2张表时注入，含JOIN规则）
+        :param feedback: 上次失败原因反馈（V2.1 二期：定向重试修正）
+        :param few_shot_text: Few-shot 参考示例段（V2.1 二期：手工示例SQL库注入，术语段之后）
         :return: SQL生成Prompt
 
         Prompt结构：
@@ -502,15 +595,25 @@ class NL2SQLEngine:
             time_instruction = """4. 时间范围处理：
    - 用户问题中没有明确的时间范围，不要在WHERE子句中添加任何时间过滤条件
 """
+
+        # 错误反馈定向重试（V2.1 二期）：上次失败原因注入Prompt，定向修正而非重新掷骰子
+        feedback_section = ""
+        if feedback:
+            feedback_section = (
+                f"⚠️ 上一次生成的 SQL 执行失败，原因：{feedback}\n"
+                f"请修正上述问题后重新生成 SQL，不要重复同样的错误。\n"
+            )
         
         return f"""你是一个钢铁行业数据分析SQL专家。请根据用户问题和数据库Schema，生成一个MySQL SELECT查询语句。
 
 数据库Schema（DDL格式，字段注释即中文名称）：
 {schema_text}
+{relation_text}
 {term_text}
+{few_shot_text}
 
 用户问题：{question}
-
+{feedback_section}
 要求：
 1. 只生成SELECT查询语句，禁止使用INSERT/UPDATE/DELETE/DROP等操作
 2. 严格使用Schema中存在的表名和字段名，不要编造
@@ -799,6 +902,7 @@ class NL2SQLEngine:
         datasource_id: int,
         terms: Optional[List[Term]] = None,
         history: Optional[List[Dict]] = None,
+        feedback: Optional[str] = None,
     ) -> str:
         """
         生成SQL语句
@@ -810,6 +914,7 @@ class NL2SQLEngine:
         :param datasource_id: 数据源ID
         :param terms: 业务术语列表（可选）
         :param history: 对话历史（P0改造：用于多轮对话上下文，识别"上个月呢"等延续性提问）
+        :param feedback: 上次失败的错误反馈（V2.1 二期：错误反馈定向重试，非空时注入Prompt修正）
         :return: SQL语句
 
         流程步骤：
@@ -817,10 +922,11 @@ class NL2SQLEngine:
             2. 获取Schema（过滤系统内部表）
             3. 智能表筛选（基于关键词匹配）
             4. 如果表数量>3，使用Schema Linking进一步筛选
-            5. 构建Schema描述（包含字段注释）
-            6. 构建术语提示
-            7. 构建Prompt并调用LLM生成SQL
-            8. 返回生成的SQL
+            5. 构建表关系段（≥2张表时注入active关系+连通性检查）
+            6. 构建Schema描述（包含字段注释）
+            7. 构建术语提示
+            8. 构建Prompt并调用LLM生成SQL
+            9. 返回生成的SQL
         """
         # 获取数据源信息
         ds_stmt = select(DataSource).where(DataSource.id == datasource_id)
@@ -838,9 +944,45 @@ class NL2SQLEngine:
             if s.table_name not in NL2SQLEngine.SYSTEM_TABLES
         ]
         
-        # 智能表筛选（基于关键词匹配）
+        # 智能表筛选（基于关键词匹配，快速通道）
         schemas = NL2SQLEngine._smart_table_filter(question, all_schemas)
-        
+
+        # 向量召回补全（一期升级：关键词未命中或过召回时，用 SchemaEmbedding 向量召回）
+        # 旁路原则：召回失败/无索引返回空，保持原筛选结果，零回归风险
+        if len(schemas) > 3:
+            try:
+                recalled = await SchemaEmbeddingService.recall(
+                    db, question, datasource_id, top_k=8
+                )
+                if recalled:
+                    recalled_names = {name for name, _sim in recalled}
+                    recalled_schemas = [
+                        s for s in all_schemas if s.table_name in recalled_names
+                    ]
+                    keyword_matched = len(schemas) < len(all_schemas)
+                    if keyword_matched:
+                        # 关键词命中但过召回：向量召回补全候选
+                        known = {s.table_name for s in schemas}
+                        extra = [
+                            s for s in recalled_schemas
+                            if s.table_name not in known
+                        ]
+                        if extra:
+                            logger.info(
+                                f"向量召回补全: 新增{len(extra)}表 "
+                                f"{[s.table_name for s in extra]}"
+                            )
+                            schemas = list(schemas) + extra
+                    elif recalled_schemas:
+                        # 关键词未命中（原为全表灌入）：向量召回收窄至 Top-K
+                        logger.info(
+                            f"向量召回收窄: {len(all_schemas)}表 → {len(recalled_schemas)}表 "
+                            f"{[s.table_name for s in recalled_schemas]}"
+                        )
+                        schemas = recalled_schemas
+            except Exception as e:
+                logger.warning(f"向量召回失败，使用关键词筛选结果: {type(e).__name__}: {e}")
+
         # 如果筛选后表数量仍然>3，使用Schema Linking进一步筛选
         if len(schemas) > 3:
             try:
@@ -852,6 +994,17 @@ class NL2SQLEngine:
                     logger.info(f"Schema Linking筛选后: 表数量={len(schemas)}")
             except Exception as e:
                 logger.warning(f"Schema Linking失败，使用智能筛选结果: {e}")
+
+        # 构建表关系段（V2.1 二期：所选表 ≥2 张时注入 active 关系 + 连通性检查）
+        # 旁路原则：关系查询失败仅告警，不影响 SQL 生成主流程
+        relation_text = ""
+        if len(schemas) >= 2:
+            try:
+                relation_text = await NL2SQLEngine._build_relation_text(
+                    db, datasource_id, [s.table_name for s in schemas]
+                )
+            except Exception as e:
+                logger.warning(f"表关系段构建失败(旁路忽略): {type(e).__name__}: {e}")
 
         # 构建Schema描述（包含字段注释，便于LLM生成中文别名）
         schema_desc = []
@@ -867,7 +1020,8 @@ class NL2SQLEngine:
             col_info = []
             for col in columns:
                 col_type = col['type']
-                col_comment = col.get('comment', '') or col.get('remarks', '') or ''
+                # 字段备注取值优先级：remark（可编辑字段备注）> comment（原字段备注镜像）
+                col_comment = col.get('remark') or col.get('comment', '') or col.get('remarks', '') or ''
                 if col_comment:
                     col_info.append(f"{col['name']}({col_type}) COMMENT '{col_comment}'")
                 else:
@@ -887,8 +1041,30 @@ class NL2SQLEngine:
                 term_lines.append(f"- {t.term}（同义词: {synonyms_str}）：{t.definition or ''}")
             term_text = "\n业务术语映射（用户可能用同义词指代以下术语）：\n" + "\n".join(term_lines)
 
+        # 构建 Few-shot 参考示例段（V2.1 二期：手工示例SQL库注入，旁路不阻断）
+        # 旁路原则：召回失败/无命中返回空，Prompt 不含示例段（零回归）
+        few_shot_text = ""
+        try:
+            from app.services.sql_example_service import sql_example_service
+            examples = await sql_example_service.recall_examples(
+                db, datasource_id, question,
+                table_names=[s.table_name for s in schemas],
+            )
+            if examples:
+                shot_lines = ["参考示例（相似问题的标准SQL，仅供参考模式，字段以本次Schema为准）："]
+                for ex_question, ex_sql, _sim in examples:
+                    shot_lines.append(f"问题：{ex_question}")
+                    shot_lines.append(f"SQL：{ex_sql}")
+                few_shot_text = "\n".join(shot_lines)
+        except Exception as e:
+            logger.warning(f"Few-shot示例召回失败(旁路忽略): {type(e).__name__}: {e}")
+
         # 构建Prompt（不调用LLM）
-        prompt = NL2SQLEngine._build_sql_prompt(schema_text, term_text, question)
+        prompt = NL2SQLEngine._build_sql_prompt(
+            schema_text, term_text, question,
+            relation_text=relation_text, feedback=feedback,
+            few_shot_text=few_shot_text,
+        )
 
         # 调用LLM生成SQL（传入question用于时间冲突检测，传入history用于多轮对话上下文）
         sql = await NL2SQLEngine._generate_sql_from_prompt(prompt, question, history=history)
@@ -939,22 +1115,31 @@ class NL2SQLEngine:
         return new_sql
 
     @staticmethod
-    async def _fetch_column_meta(sql: str, datasource: DataSource) -> List[dict]:
+    async def _fetch_column_meta(
+        sql: str,
+        datasource: DataSource,
+        db: Optional[AsyncSession] = None,
+    ) -> List[dict]:
         """
         从INFORMATION_SCHEMA获取SQL涉及的字段注释信息
 
         获取查询结果中各字段的元信息（表名、字段名、类型、注释），
         用于前端展示字段的中文名称。
 
+        V2.1 双列备注：当传入系统库会话 db 时，按表名+字段名合并
+        table_schemas 中可编辑的字段备注（remark），优先级 remark > 业务库COLUMN_COMMENT。
+
         :param sql: SQL语句
         :param datasource: 数据源配置
+        :param db: 系统库异步会话（可选，用于合并可编辑字段备注）
         :return: 字段元信息列表 [{table, name, type, comment}]
 
         实现逻辑：
             1. 从SQL中提取表名（FROM和JOIN子句）
             2. 过滤系统表
             3. 查询INFORMATION_SCHEMA.COLUMNS获取字段信息
-            4. 返回字段元信息列表
+            4. 合并table_schemas字段备注（remark优先）
+            5. 返回字段元信息列表
         """
         try:
             # 从SQL中提取表名
@@ -997,16 +1182,175 @@ class NL2SQLEngine:
                         })
                 conn.close()
                 logger.debug(f"获取字段元信息完成: {len(column_meta)}个字段")
+
+                # 5. 合并系统库 table_schemas 的可编辑字段备注（remark > 业务库COLUMN_COMMENT）
+                if db is not None and column_meta:
+                    try:
+                        ts_stmt = select(TableSchema).where(
+                            TableSchema.datasource_id == datasource.id,
+                            TableSchema.table_name.in_(table_names),
+                        )
+                        remark_map = {}
+                        for s in (await db.execute(ts_stmt)).scalars().all():
+                            cols_data = s.columns
+                            if isinstance(cols_data, str):
+                                try:
+                                    cols_data = json.loads(cols_data)
+                                except (json.JSONDecodeError, TypeError):
+                                    cols_data = []
+                            if not isinstance(cols_data, list):
+                                continue
+                            for c in cols_data:
+                                if isinstance(c, dict) and c.get("name"):
+                                    remark = str(c.get("remark") or "").strip()
+                                    if remark:
+                                        remark_map[(s.table_name, c["name"])] = remark
+                        merged = 0
+                        for meta in column_meta:
+                            r = remark_map.get((meta["table"], meta["name"]))
+                            if r:
+                                meta["comment"] = r
+                                merged += 1
+                        if merged:
+                            logger.debug(f"字段备注合并完成: {merged}个字段使用可编辑remark")
+                    except Exception as merge_err:
+                        logger.warning(f"字段备注合并失败(不影响查询): {merge_err}")
+
                 return column_meta
         except Exception as e:
             logger.warning(f"获取字段注释失败(不影响查询): {e}")
             return []
 
     @staticmethod
+    def _extract_eq_pairs(
+        on_expr: Any, alias_map: Dict[str, str]
+    ) -> List[Tuple[str, str, str, str]]:
+        """
+        从 JOIN ON 条件表达式提取等值关联对（规范化四元组）
+
+        :param on_expr: sqlglot ON 条件表达式
+        :param alias_map: 表别名 → 真实表名映射
+        :return: [(lt, lc, rt, rc)] 端点按字典序规范化；含无法解析的列时抛 ValueError
+        """
+        pairs: List[Tuple[str, str, str, str]] = []
+        if on_expr is None:
+            return pairs
+        for eq in on_expr.find_all(sqlglot.exp.EQ):
+            left, right = eq.left, eq.right
+            if not (isinstance(left, sqlglot.exp.Column) and isinstance(right, sqlglot.exp.Column)):
+                continue
+            lt = alias_map.get(left.table or "", left.table or "")
+            rt = alias_map.get(right.table or "", right.table or "")
+            if not lt or not rt:
+                # 列未带表限定名，无法校验归属（多表场景必须限定）
+                raise ValueError(f"JOIN 条件存在未限定表名的列: {left.name}/{right.name}")
+            a, b = (lt, left.name), (rt, right.name)
+            if a > b:
+                a, b = b, a
+            pairs.append((a[0], a[1], b[0], b[1]))
+        if not pairs:
+            raise ValueError("JOIN 条件中未找到列等值关联（如 t1.a = t2.b）")
+        return pairs
+
+    @staticmethod
+    async def _validate_joins(
+        db: AsyncSession,
+        sql: str,
+        datasource: DataSource,
+    ) -> Tuple[bool, str]:
+        """
+        JOIN 白名单校验（V2.1 二期 改动3）
+
+        校验规则：
+            1. 表数量校验：FROM 主表 + JOIN 数 ≤ 3
+            2. 关联键白名单校验：提取 ON 条件等值对（规范化后无序比对），
+               必须命中已确认（active）的表关系；复合关联键（relation_group）
+               按 group 整体命中，禁止只用部分字段关联（避免数据放大）
+
+        :param db: 数据库会话
+        :param sql: SQL语句
+        :param datasource: 数据源配置
+        :return: (是否通过, 失败原因)
+        """
+        from app.models.table_relation import TableRelation
+
+        parsed = sqlglot.parse_one(sql, dialect="mysql")
+        joins = list(parsed.find_all(sqlglot.exp.Join))
+
+        # 表别名 → 真实表名映射
+        alias_map: Dict[str, str] = {}
+        all_tables = list(parsed.find_all(sqlglot.exp.Table))
+        for t in all_tables:
+            if t.alias:
+                alias_map[t.alias] = t.name
+
+        # 1. 表数量校验（单表 SQL 无 JOIN 时零开销直接放行）
+        if len(all_tables) > 3:
+            return False, f"联表查询最多支持3张表，当前 {len(all_tables)} 张"
+        if not joins:
+            return True, ""
+
+        # 2. 白名单装载（active 关系 + 复合关联键分组）
+        rel_stmt = select(TableRelation).where(
+            TableRelation.datasource_id == datasource.id,
+            TableRelation.status == "active",
+        )
+        rel_rows = list((await db.execute(rel_stmt)).scalars().all())
+        whitelist: set = set()
+        quad_group: Dict[Tuple[str, str, str, str], str] = {}
+        group_members: Dict[str, set] = {}
+        for r in rel_rows:
+            lt, lc, rt, rc = r.left_table, r.left_column, r.right_table, r.right_column
+            a, b = (lt, lc), (rt, rc)
+            if a > b:
+                a, b = b, a
+            quad = (a[0], a[1], b[0], b[1])
+            whitelist.add(quad)
+            if r.relation_group:
+                quad_group[quad] = r.relation_group
+                group_members.setdefault(r.relation_group, set()).add(quad)
+
+        # 3. 逐 JOIN 校验 ON 等值对
+        for j in joins:
+            try:
+                pairs = NL2SQLEngine._extract_eq_pairs(j.args.get("on"), alias_map)
+            except ValueError as ve:
+                return False, f"JOIN 条件校验失败: {ve}，禁止编造关联"
+
+            # 按表对聚合本次 ON 条件的等值对
+            by_table_pair: Dict[Tuple[str, str], set] = {}
+            for quad in pairs:
+                by_table_pair.setdefault((quad[0], quad[2]), set()).add(quad)
+
+            for (t_a, t_b), on_quads in by_table_pair.items():
+                # 3.1 复合关联键整体命中：某分组的全部字段对都被 ON 覆盖
+                group_hit = any(
+                    g_quads <= on_quads
+                    for g_quads in group_members.values()
+                    if any((q[0], q[2]) == (t_a, t_b) for q in g_quads)
+                )
+                if group_hit:
+                    continue
+                # 3.2 单字段命中：每个等值对必须在白名单，且不得是复合键的部分字段
+                for q in on_quads:
+                    if q not in whitelist:
+                        return False, (
+                            f"JOIN 条件 {t_a}.{q[1]} = {t_b}.{q[3]} "
+                            f"不在已确认的表关系中，禁止编造关联"
+                        )
+                    if q in quad_group:
+                        return False, (
+                            f"JOIN 条件仅使用复合关联键的部分字段（{t_a}.{q[1]}），"
+                            f"必须同时使用完整关联键组合"
+                        )
+        return True, ""
+
+    @staticmethod
     async def validate_and_execute(
         db: AsyncSession,
         sql: str,
         datasource: DataSource,
+        check_joins: bool = False,
     ) -> Tuple[bool, str, Optional[List[dict]], Optional[List[dict]], str]:
         """
         校验并执行SQL
@@ -1016,6 +1360,8 @@ class NL2SQLEngine:
         :param db: 数据库会话
         :param sql: LLM生成的原始SQL语句
         :param datasource: 数据源配置
+        :param check_joins: 是否执行 JOIN 白名单校验（V2.1 二期：NL2SQL 链路启用，
+                            NL2Metrics 预定义指标 SQL 不校验，保持向后兼容）
         :return: (是否成功, 错误信息, 结果数据, 字段元信息, 实际执行的SQL)
                  actual_sql_used：始终等于原始SQL（不再做任何兜底放宽），
                  用于前端溯源和LLM分析上下文一致性。
@@ -1023,6 +1369,7 @@ class NL2SQLEngine:
         流程步骤：
             1. 安全检查（拦截危险操作）
             2. 语法校验（使用sqlglot）
+            2.5 JOIN 白名单校验（check_joins=True 时，校验失败走错误反馈重试）
             3. 修正中文日期格式（如"2023年8月" → "2023-08-01"）
             4. 获取字段注释（从INFORMATION_SCHEMA）
             5. 执行SQL（根据数据源类型选择不同的驱动）
@@ -1048,6 +1395,15 @@ class NL2SQLEngine:
         if not is_valid:
             return False, error, None, None, original_sql
 
+        # 2.5 JOIN 白名单校验（V2.1 二期 改动3；异常旁路放行，不阻断主链路）
+        if check_joins:
+            try:
+                join_ok, join_error = await NL2SQLEngine._validate_joins(db, sql, datasource)
+                if not join_ok:
+                    return False, join_error, None, None, original_sql
+            except Exception as join_err:
+                logger.warning(f"JOIN白名单校验异常(旁路放行): {type(join_err).__name__}: {join_err}")
+
         # 2.5 修正中文日期格式（如"2023年8月" → "2023-08-01"）
         import re as _re
         def fix_chinese_date(s: str) -> str:
@@ -1058,8 +1414,8 @@ class NL2SQLEngine:
             return s
         sql = fix_chinese_date(sql)
 
-        # 3. 获取字段注释（从INFORMATION_SCHEMA）
-        column_meta = await NL2SQLEngine._fetch_column_meta(sql, datasource)
+        # 3. 获取字段注释（从INFORMATION_SCHEMA，并合并系统库可编辑字段备注）
+        column_meta = await NL2SQLEngine._fetch_column_meta(sql, datasource, db=db)
 
         # 4. 执行SQL（内部函数，根据数据源类型选择驱动）
         async def execute_sql(conn_sql: str) -> Optional[List[dict]]:
@@ -1182,8 +1538,13 @@ class NL2SQLEngine:
                 terms = list(term_result.scalars().all())
                 logger.debug(f"获取到术语数量: {len(terms)}")
 
-                # 2. 生成SQL（传入history用于多轮对话上下文）
-                sql = await NL2SQLEngine.generate_sql(db, question, datasource_id, terms, history=history)
+                # 2. 生成SQL（传入history用于多轮对话上下文；
+                #    V2.1 二期改动4：非首次尝试时注入上次失败原因，定向修正而非盲重跑）
+                sql = await NL2SQLEngine.generate_sql(
+                    db, question, datasource_id, terms,
+                    history=history,
+                    feedback=last_error if attempt > 1 else None,
+                )
 
                 # 3. 获取数据源
                 ds_stmt = select(DataSource).where(DataSource.id == datasource_id)
@@ -1193,11 +1554,14 @@ class NL2SQLEngine:
                 if not datasource:
                     return sql, None, "数据源不存在", None
 
-                # 4. 校验并执行
+                # 4. 校验并执行（check_joins=True 启用 JOIN 白名单校验，
+                #    校验失败原因经 last_error 回注 Prompt 走 LLM 定向重生）
                 # validate_and_execute 返回5元组 (success, error, results, column_meta, actual_sql_used)
                 # 不再做任何兜底放宽，无数据直接返回空结果
                 success, error, results, column_meta, actual_sql_used = \
-                    await NL2SQLEngine.validate_and_execute(db, sql, datasource)
+                    await NL2SQLEngine.validate_and_execute(
+                        db, sql, datasource, check_joins=True
+                    )
 
                 if success:
                     final_sql = actual_sql_used or sql

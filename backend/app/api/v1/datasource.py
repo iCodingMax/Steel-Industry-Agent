@@ -13,6 +13,7 @@ from app.schemas.datasource import (
     DataSourceResponse,
     TestConnectionRequest,
     TableSchemaResponse,
+    ColumnRemarkUpdate,
 )
 from app.services.datasource_service import datasource_service
 from app.middlewares.exception_handler import success_response, error_response
@@ -137,3 +138,22 @@ async def get_schema(
     """获取数据源表结构"""
     tables = await datasource_service.get_schema(db, ds_id)
     return success_response(data=[t.to_dict() for t in tables])
+
+
+@router.put("/{ds_id}/tables/{table_name}/columns/remark", summary="批量保存字段备注")
+async def update_column_remarks(
+    ds_id: int,
+    table_name: str,
+    data: ColumnRemarkUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+):
+    """
+    批量保存表字段备注（V2.1 双列：remark 可编辑，comment 只读镜像业务库）
+
+    保存成功后自动重建该表 Schema 向量索引，保证 LLM 消费最新字段备注。
+    """
+    result = await datasource_service.update_column_remarks(
+        db, ds_id, table_name, [item.model_dump() for item in data.remarks]
+    )
+    return success_response(data=result, message="字段备注保存成功")

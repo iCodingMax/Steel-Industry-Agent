@@ -7,15 +7,14 @@ Skill 包结构（Claude Skills 格式）：
         SKILL.md              ← Skill 定义（执行流程、参数体系、输出格式）
         scripts/              ← 可执行脚本（数据解析、报告生成）
         references/           ← 参考文档（诊断规则、故障模式等）
-        assets/               ← 数据文件（输入模板、历史输出）
+        assets/               ← 资产文档（报告模板等，与 references/ 同等参与渐进加载）
         reports/              ← 历史报告
 
 执行策略：
 1. 解压 ZIP 到临时目录
 2. 读取 SKILL.md 获取 Skill 定义和执行流程
-3. 读取 references/ 目录下的参考文档
-4. 读取 assets/ 中的数据文件（输入模板、最新诊断数据）
-5. 将 Skill 定义 + 参考文档 + 数据 组合为 prompt，调用 LLM 执行诊断分析
+3. 读取 references/ 与 assets/ 目录下的 .md 参考文档
+4. 将 Skill 定义 + 参考文档组合为 prompt，调用 LLM 执行诊断分析
 """
 import os
 import re
@@ -198,17 +197,13 @@ class SkillExecutorService:
         :param files_content: 文件内容字典
         :return: 解析结果 {
             "skill_md": str,           # SKILL.md 内容
-            "references": List[Dict],   # 参考文档列表
-            "input_template": str,      # 输入模板
-            "latest_data": str,         # 最新诊断数据
+            "references": List[Dict],   # 参考文档列表（references/ 与 assets/ 下的 .md）
             "scripts": List[str],       # 脚本内容列表
         }
         """
         result: Dict[str, Any] = {
             "skill_md": "",
             "references": [],
-            "input_template": "",
-            "latest_data": "",
             "scripts": [],
             "frontmatter": {
                 "execution_mode": "single",
@@ -234,7 +229,12 @@ class SkillExecutorService:
                 continue
 
             # 2. references/ 目录下的 .md 文件
-            if '/references/' in norm_path and norm_path.endswith('.md'):
+            #    注：SKILL.md 中引用的资产文档可能分布在 references/ 或 assets/ 目录，
+            #    统一并入参考文档列表，由 Agent 模式经 read_reference 渐进加载，
+            #    由单轮模式全文注入 prompt
+            if norm_path.endswith('.md') and (
+                '/references/' in norm_path or '/assets/' in norm_path
+            ):
                 doc_name = os.path.basename(norm_path).replace('.md', '')
                 result["references"].append({
                     "name": doc_name,
@@ -242,17 +242,7 @@ class SkillExecutorService:
                 })
                 continue
 
-            # 3. assets/input-template.json — 输入模板
-            if 'input-template.json' in norm_path:
-                result["input_template"] = content
-                continue
-
-            # 4. assets/diagnosis_output_latest.json — 最新诊断数据
-            if 'diagnosis_output_latest.json' in norm_path:
-                result["latest_data"] = content
-                continue
-
-            # 5. scripts/ 目录下的 .py 文件
+            # 3. scripts/ 目录下的 .py 文件
             if '/scripts/' in norm_path and norm_path.endswith('.py'):
                 script_name = os.path.basename(norm_path)
                 result["scripts"].append(f"# 脚本: {script_name}\n{content}")
@@ -311,8 +301,6 @@ class SkillExecutorService:
     def _build_skill_prompt(
         skill_md: str,
         references: List[Dict],
-        input_template: str,
-        latest_data: str,
         question: str,
         skill_name: str,
         skill_description: str,
@@ -321,14 +309,12 @@ class SkillExecutorService:
         """
         构建 Skill 执行 prompt
 
-        将 Skill 定义、参考文档、数据组合为完整的 LLM prompt。
+        将 Skill 定义、参考文档组合为完整的 LLM prompt。
         为避免超出模型上下文长度限制（qwen3 context_length=40960 token），
         对参考文档进行智能截断，确保总 prompt 在安全范围内。
 
         :param skill_md: SKILL.md 内容
         :param references: 参考文档列表
-        :param input_template: 输入模板JSON
-        :param latest_data: 最新数据JSON
         :param question: 用户问题
         :param skill_name: Skill名称
         :param skill_description: Skill描述
@@ -364,7 +350,7 @@ class SkillExecutorService:
                     content = content[:per_ref_limit] + "\n\n... (文档已截断，仅展示前部分内容)"
                     logger.debug(f"参考文档[{ref['name']}]已截断: {len(ref['content'])} -> {per_ref_limit} 字符")
                 refs_text.append(f"### {ref['name']}\n{content}")
-            parts.append(f"""## 参考文档 (references/)
+            parts.append(f"""## 参考文档 (references/ 与 assets/)
 以下是该 Skill 的专业知识参考文档，请参考其中的规则和标准：
 
 {chr(10).join(refs_text)}
@@ -372,27 +358,7 @@ class SkillExecutorService:
         else:
             parts.append("## 参考文档\n（Skill包中未包含参考文档）\n")
 
-        # 3. 数据输入模板
-        if input_template:
-            parts.append(f"""## 数据输入模板 (input-template.json)
-以下是该 Skill 的标准数据输入格式：
-
-```json
-{input_template}
-```
-""")
-
-        # 4. 最新数据（如果存在）
-        if latest_data:
-            parts.append(f"""## 最新数据 (diagnosis_output_latest.json)
-以下是从数据库获取的最新数据，请基于此数据进行分析：
-
-```json
-{latest_data}
-```
-""")
-
-        # 5. 用户问题和执行指令（通用指令，适用于所有 Skill 类型）
+        # 3. 用户问题和执行指令（通用指令，适用于所有 Skill 类型）
         parts.append(f"""## 用户问题
 {question}
 
@@ -502,8 +468,6 @@ class SkillExecutorService:
             logger.info(
                 f"Skill解析: SKILL.md={'有' if parsed['skill_md'] else '无'}, "
                 f"参考文档={len(parsed['references'])}个, "
-                f"输入模板={'有' if parsed['input_template'] else '无'}, "
-                f"最新数据={'有' if parsed['latest_data'] else '无'}, "
                 f"脚本={len(parsed['scripts'])}个, "
                 f"execution_mode={parsed['frontmatter']['execution_mode']}"
             )
@@ -545,8 +509,6 @@ class SkillExecutorService:
                         skill_description=skill_description,
                         skill_md_body=parsed["skill_md"],
                         references=parsed["references"],
-                        input_template=parsed["input_template"],
-                        latest_data=parsed["latest_data"],
                         question=question,
                         history=history,
                         llm_config=llm_config,
@@ -586,8 +548,6 @@ class SkillExecutorService:
             prompt = SkillExecutorService._build_skill_prompt(
                 skill_md=parsed["skill_md"],
                 references=parsed["references"],
-                input_template=parsed["input_template"],
-                latest_data=parsed["latest_data"],
                 question=question,
                 skill_name=skill_name,
                 skill_description=skill_description,

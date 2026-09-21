@@ -5,9 +5,9 @@ MasterAgent 智能体主服务（M2 阶段核心 → LangGraph 图化版）
 "意图分类 → 单通道分发" 固定路由，由 LLM 在工具观察结果的驱动下
 多轮自主决策（选工具 → 观察结果 → 再决策 → 生成最终回答）。
 
-图拓扑（方案 3.1）：
+图拓扑（方案 3.1 + P1-1 planner）：
 
-    START → think(LLM决策) ──tool_calls──→ tool_exec(含R1/R2/R3) ──→ think
+    START → plan(P1-1条件启用) → think(LLM决策) ──tool_calls──→ tool_exec(含R1/R2/R3) ──→ think
                 │       │
                 │       ├── CLARIFY: 前缀 → 置 needs_clarification=True → END
                 │       └── 无tool_calls（最终回答）→ finalize → END
@@ -29,7 +29,8 @@ MasterAgent 智能体主服务（M2 阶段核心 → LangGraph 图化版）
     5. 四类终止条件映射（方案 3.2）：
        - 无 tool_calls → 条件边路由 END（最终回答 / clarify）
        - R3 熔断 → tool_exec 置 circuit_broken，条件边转 finalize
-       - 迭代上限 → think 业务计数 + recursion_limit = max_iterations*2+2 双保险
+       - 迭代上限 → think 业务计数 + recursion_limit = max_iterations*2+3 双保险
+         （每轮 think+tool_exec 两超步 + plan 一超步，P1-1）
        - LLM 连续失败≥2 → think 节点自研计数（框架无此语义）
     6. Reflector 规则版反思（agent_reflector，零改动平移）：
        - R1 失败重试：瞬时失败同参数自动重试1次（确定性失败跳过）
@@ -40,7 +41,9 @@ MasterAgent 智能体主服务（M2 阶段核心 → LangGraph 图化版）
        run() 入口召回长期记忆并读取会话摘要注入系统提示词，
        run() 收尾旁路执行记忆沉淀抽取（不阻塞回答返回）
     8. SSE实时事件双通道（四期体验，协议冻结）：
-       - plan   循环开始：推送可用工具清单与迭代上限（执行计划）
+       - plan   循环开始：推送可用工具清单、迭代上限与规划步骤清单
+         （P1-1 升级：规划启用时含 steps 步骤清单 + currentStep 当前步索引，
+          供前端展示执行进度；未启用规划时载荷保持旧契约仅 tools/max_iterations）
        - step   工具执行前后：推送 executing/success/failed 状态
        - reflect Reflector触发时：推送 R1重试/R2降级/R3熔断决策
        - clarify 追问检测：推送追问内容（chat层转发SSE并挂起会话）
@@ -54,6 +57,16 @@ MasterAgent 智能体主服务（M2 阶段核心 → LangGraph 图化版）
        ≥1 时注入提示词禁再追问；硬上限≥2 由 session_service 拒绝挂起
    11. P2-11 兜底文案渠道无关化：不再引导"切换经典模式"，
        classic 引导仅保留在应用调试通道（chat 层文案）
+   12. P1-1 planner 前置规划（方案 10.3，条件启用不改变 think⇄tool_exec 主拓扑）：
+       - 图新增 plan 节点：llm_service.chat（无工具单轮）产出结构化步骤清单
+         → AgentState.plan_steps（reducer 累积，预留 replan 覆盖语义）
+       - 条件启用双因素：应用规划开关（application.agent_plan_enabled）
+         × 问题预估复杂（启发式：多任务关键词命中 or 字数阈值）
+       - 计划注入：plan_steps 序列化为"任务计划"块注入后续每轮 think 的
+         system 消息，LLM 按步骤推进（工具观察后可自行修正顺序）
+       - planner 容错：LLM 调用失败/超时（15s）/解析失败 → 跳过规划
+         直接 think，不阻塞主流程（简单查询零额外延迟）
+       - v1 边界：replan 不做（仅预留字段语义）、不做 subgraph/独立 planner agent
 
 主流程：
     run() → build_tool_registry → 无工具退化纯对话
@@ -65,6 +78,7 @@ MasterAgent 智能体主服务（M2 阶段核心 → LangGraph 图化版）
 import asyncio
 import json
 import operator
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, TypedDict
@@ -105,6 +119,35 @@ except ImportError:
     )
 
 # ===================== 自定义业务异常 =====================
+
+
+# MCP 连接类失败的特征文本（与 skill_agent_executor 保持一致语义：
+# 出现即判定 MCP Server 不可达，MasterAgent 硬停止并直接返回失败说明，
+# 避免 LLM 在无数据时编造诊断/分析结果）
+_MCP_CONNECTION_FAILURE_PATTERNS = (
+    "无法连接到MCP Server",
+    "MCP会话初始化失败",
+    "MCP Server 均不可用",
+    "ConnectError",
+    "Connection refused",
+    "connect timeout",
+    "请求超时",
+)
+
+
+def _is_mcp_connection_failure(observation: str) -> bool:
+    """
+    判断工具观察文本是否为 MCP 连接类失败
+
+    仅匹配"连不上/超时/会话初始化失败"等基础设施故障特征，
+    不匹配业务性失败（如参数错误、查询无数据），后者仍由 LLM 兜底处理。
+
+    :param observation: 工具执行的 observation 文本
+    :return: 是否连接类失败
+    """
+    if not observation:
+        return False
+    return any(p in observation for p in _MCP_CONNECTION_FAILURE_PATTERNS)
 
 
 class MasterAgentError(Exception):
@@ -157,6 +200,8 @@ class AgentRunResult:
     :param needs_clarification: 是否为澄清追问（True=智能体向用户追问而非最终回答，
                                  由chat通道写会话挂起态awaiting_input）
     :param clarify_question: 追问内容（needs_clarification=True时有效）
+    :param answer_streamed: 回答是否已通过 answer_delta 流式下发（True=前端
+                            已打字机渲染，result 事件中 answer 仅作兜底/存档）
     """
     answer: str = ""
     references: List[dict] = field(default_factory=list)
@@ -170,6 +215,7 @@ class AgentRunResult:
     success: bool = True
     needs_clarification: bool = False
     clarify_question: str = ""
+    answer_streamed: bool = False
 
     def to_route_tuple(self) -> Tuple[str, List[dict], List[dict], float,
                                     Optional[List[dict]], Optional[List[dict]], Optional[str]]:
@@ -207,15 +253,20 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[List[Dict[str, Any]], operator.add]     # OpenAI 消息列表（累积）
     tool_results: Annotated[List[ToolExecutionResult], operator.add]  # 工具结果（聚合payload用）
     trace: Annotated[List[AgentTurnTrace], operator.add]        # 各轮决策轨迹（累积）
+    # P1-1 planner 规划步骤清单（reducer 累积，预留 replan 可覆盖语义：
+    # plan 节点返回增量列表，框架自动 concat 到既有计划之后）
+    plan_steps: Annotated[List[str], operator.add]
     # 控制标志（标量覆盖）
     iteration: int                                              # 当前迭代轮次
     max_iterations: int                                         # 迭代上限（业务判定）
+    plan_enabled: bool                                          # P1-1 规划开关（应用配置解析注入，路由判定用）
     llm_failures: int                                           # LLM连续失败计数
     circuit_broken: bool                                        # R3熔断标志
     last_content: str                                           # 最近一次非空LLM文本
     needs_clarification: bool                                   # clarify追问标志
     clarify_question: str                                       # 追问内容
     final_answer: str                                           # 最终回答（finalize产出）
+    answer_streamed: bool                                       # P0-1：回答是否已流式下发（前端据此跳过answer重复渲染）
 
 
 @dataclass
@@ -328,6 +379,32 @@ class MasterAgentService:
     SKILL_EXECUTE_TIMEOUT: float = 600.0
     # clarify 追问前缀约定（LLM 输出以该前缀开头表示需要向用户追问）
     CLARIFY_PREFIX: str = "CLARIFY:"
+    # P1-1 规划启用的复杂度启发式参数：
+    # - 多任务关键词命中即视为复杂（"并且/同时/对比/分别"等复合问题信号）
+    # - 字数阈值：问题长度 ≥ 该值也视为复杂（长问题通常含多个查询意图）
+    PLAN_COMPLEX_KEYWORDS: tuple = (
+        "并且", "同时", "然后", "对比", "分别", "以及", "再", "接着",
+        "对比一下", "分析一下", "综合", "汇总", "多个", "各产线", "各机组",
+    )
+    PLAN_COMPLEX_MIN_CHARS: int = 30
+    # P1-1 规划步骤数上限（planner 输出截断，防超长计划膨胀 think 上下文）
+    PLAN_MAX_STEPS: int = 8
+    # P1-1 planner 单次 LLM 调用超时（秒）：规划是低成本前置调用，超时直接跳过
+    PLAN_LLM_TIMEOUT: float = 15.0
+
+    # P1-1 planner 系统提示词（无工具单轮调用，产出结构化步骤清单）
+    _PLANNER_PROMPT_TEMPLATE: str = (
+        "你是钢铁行业智能体的任务规划器。请将用户问题拆解为按依赖顺序执行"
+        "的步骤清单，供 ReAct 执行器逐步推进。\n\n"
+        "可用工具：\n{tools_desc}\n\n"
+        "规划规则：\n"
+        "1. 每步一个动作，优先对应一次工具调用（写明意图与查询要点，"
+        "不写具体参数格式）\n"
+        "2. 后续步骤依赖前置步骤结果时，注明\"用前步结果\"\n"
+        "3. 最多 {max_steps} 步，简单问题 2-3 步即可，最后一步为整合作答\n"
+        "4. 输出仅为编号步骤清单（每行一条，格式\"1. xxx\"），"
+        "禁止输出任何解释、前言或 Markdown 代码块"
+    )
 
     # 系统提示词模板（P2-10：clarify_limit 段按需拼接，禁再追问约束）
     _SYSTEM_PROMPT_TEMPLATE: str = (
@@ -336,13 +413,21 @@ class MasterAgentService:
         "可用工具：\n{tools_desc}\n\n"
         "工作规则：\n"
         "1. 优先调用工具获取真实数据，禁止编造数据；工具结果为空或失败时如实说明\n"
+        "1.1 应用提示词中的打招呼/自我介绍规则仅在用户发送纯问候语（如'你好'）"
+        "且不含具体问题时适用；用户提出的消息（包括会话中的第一条）若包含具体问题，"
+        "必须优先按上述规则调用工具回答，禁止以打招呼或自我介绍代替对问题的回答\n"
         "2. 同一问题最多调用 {max_iterations} 轮工具；信息足够后直接给出最终回答"
         "（不再携带工具调用）\n"
         "3. 需要多步查询时按依赖顺序拆解：先查前置信息，再用结果构造后续查询\n"
         "4. 最终回答使用中文，条理清晰，涉及数据时给出具体数值与单位\n"
-        "4.1 数据查询结果会以独立的数据可视化区域（表格/图表）展示给用户，"
-        "最终回答中禁止用Markdown表格/列表复述查询结果数据，"
-        "只输出结论性分析（数据概况、关键数值解读、趋势洞察）\n"
+        "4.1 仅当工具为数据库/指标数据查询（查询结果由独立的数据可视化区域"
+        "以表格/图表展示）时，最终回答中才禁止用Markdown表格/列表复述查询"
+        "结果数据，只输出结论性分析（数据概况、关键数值解读、趋势洞察）；"
+        "该规则不适用于知识检索与 Skill 技能的执行结果\n"
+        "4.2 Skill 技能返回的报告类内容（如诊断报告、分析报告）已按该技能"
+        "定义的结构化模板生成，最终回答必须完整保留其结构（章节标题、"
+        "表格、头部字段等），仅可就近原样转述，禁止删减章节、拆并表格或"
+        "概括压缩\n"
         "5. 若用户问题信息不足无法查询（如缺少时间范围/产线/班组），"
         "你的回复必须且只能以 {clarify_prefix} 开头，紧跟一句简短的追问\n"
         "6. 除第5条追问场景外，禁止在回答中输出 {clarify_prefix} 前缀\n"
@@ -383,7 +468,10 @@ class MasterAgentService:
         if _LANGGRAPH_AVAILABLE:
             try:
                 self._graph = self._build_graph()
-                logger.info("[MasterAgent] LangGraph 图构建成功（think ⇄ tool_exec → finalize）")
+                logger.info(
+                    "[MasterAgent] LangGraph 图构建成功"
+                    "（START →(P1-1条件)plan → think ⇄ tool_exec → finalize）"
+                )
             except Exception as e:  # noqa: BLE001 - 初始化降级保护
                 self._graph = None
                 logger.warning(f"[MasterAgent] LangGraph 图构建失败，回退自研循环: {e}")
@@ -392,12 +480,17 @@ class MasterAgentService:
 
     def _build_graph(self):
         """
-        构建 ReAct 三节点 StateGraph（服务级单例，编译一次多次 ainvoke）
+        构建 ReAct 四节点 StateGraph（服务级单例，编译一次多次 ainvoke）
 
-        拓扑：
-            START → think →(有tool_calls)→ tool_exec → think（循环）
+        拓扑（P1-1 后）：
+            START →(规划启用)→ plan → think →(有tool_calls)→ tool_exec → think（循环）
+            START →(规划未启用)→ think（P1-1：简单查询零规划成本直进决策）
             think →(最终回答/clarify/熔断/上限/失败)→ finalize → END
             tool_exec →(R3熔断)→ finalize → END
+
+        plan 节点条件启用判定在 _route_after_start（START 条件边）：
+        「应用规划开关 × 问题启发式复杂」双因素同时满足才进入 plan，
+        否则直接 think（方案 10.3 要点2：简单查询不付规划成本）。
 
         节点超时（P2-9 第二层防护）：tool_exec 节点级 timeout 取
         SKILL_EXECUTE_TIMEOUT + TOOL_EXECUTE_TIMEOUT*2（skill 嵌套子智能体
@@ -410,6 +503,7 @@ class MasterAgentService:
         graph = StateGraph(AgentState, context_schema=AgentContext)
 
         # 节点注册（defer=False 默认顺序执行；timeout 仅 async 节点可用）
+        graph.add_node("plan", self._node_plan, timeout=self.PLAN_LLM_TIMEOUT + 5.0)
         graph.add_node("think", self._node_think)
         graph.add_node(
             "tool_exec",
@@ -418,8 +512,17 @@ class MasterAgentService:
         )
         graph.add_node("finalize", self._node_finalize)
 
-        # 边：START → think（入口）
-        graph.add_edge(START, "think")
+        # 边：START 后按规划启用条件路由（P1-1：plan / think 二选一）
+        graph.add_conditional_edges(
+            START,
+            self._route_after_start,
+            {
+                "plan": "plan",
+                "think": "think",
+            },
+        )
+        # 边：plan 后固定进 think（规划完成/跳过均进入决策循环）
+        graph.add_edge("plan", "think")
 
         # 边：think 后按决策路由（工具循环/单次失败重试/最终回答/clarify/异常兜底）
         graph.add_conditional_edges(
@@ -446,6 +549,121 @@ class MasterAgentService:
         return graph.compile()
 
     # -------------------- 图节点实现（方案 2.6.4：返回局部增量） --------------------
+
+    async def _node_plan(self, state: AgentState, runtime: "Runtime[AgentContext]") -> Dict[str, Any]:
+        """
+        plan 节点（P1-1）：调 LLM 无工具单轮产出结构化任务步骤清单
+
+        职责：
+            1. 用 _PLANNER_PROMPT_TEMPLATE（含工具清单+步数上限）调
+               llm_service.chat（无工具、不携带对话历史——规划只看当前问题）
+            2. 解析编号步骤清单（"1. xxx" 逐行提取），PLAN_MAX_STEPS 截断
+            3. SSE plan 事件升级推送：steps 步骤清单 + currentStep=0
+               （前端进度条依据；工具调用轨迹与步骤的对应由 think 按计划推进保证）
+            4. 容错降级：LLM 失败/超时/解析零步骤 → 返回空增量直接 think，
+               不阻塞主流程（规划是增强项，不是关键路径）
+
+        :param state: 当前图状态（读取 messages 末条 user 问题）
+        :param runtime: LangGraph 运行时（context 注入 registry/llm_config/on_event）
+        :return: 局部增量 {plan_steps: [...]}（空清单表示规划跳过）
+        """
+        ctx = runtime.context
+
+        # 提取当前用户问题（messages 末条 user；规划只针对本轮问题）
+        question = ""
+        for msg in reversed(state.get("messages") or []):
+            if msg.get("role") == "user":
+                question = msg.get("content") or ""
+                break
+        if not question:
+            return {"plan_steps": []}
+
+        system_prompt = self._PLANNER_PROMPT_TEMPLATE.format(
+            tools_desc=self._format_tools_desc(ctx.registry),
+            max_steps=self.PLAN_MAX_STEPS,
+        )
+
+        # planner LLM 调用（wait_for 超时直接跳过：规划是低成本前置调用）
+        try:
+            plan_text = await asyncio.wait_for(
+                llm_service.chat(
+                    prompt=question,
+                    system_prompt=system_prompt,
+                    history=None,
+                    config=ctx.llm_config,
+                ),
+                timeout=self.PLAN_LLM_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[MasterAgent] planner 规划超时({int(self.PLAN_LLM_TIMEOUT)}s)，跳过规划"
+            )
+            return {"plan_steps": []}
+        except Exception as e:  # noqa: BLE001 - 规划失败不阻塞主流程
+            logger.warning(f"[MasterAgent] planner 规划调用失败，跳过规划: {e}")
+            return {"plan_steps": []}
+
+        steps = self._parse_plan_steps(plan_text)
+        if not steps:
+            logger.warning("[MasterAgent] planner 输出解析零步骤，跳过规划")
+            return {"plan_steps": []}
+
+        logger.info(f"[MasterAgent] planner 产出 {len(steps)} 步计划")
+
+        # SSE plan 事件升级（P1-1 要点4）：步骤清单 + 当前步索引（0 = 规划完成待执行）
+        await _emit_event(ctx.on_event, {
+            "type": "plan",
+            "steps": steps,
+            "currentStep": 0,
+            "iteration": 0,
+        })
+        return {"plan_steps": steps}
+
+    @staticmethod
+    def _parse_plan_steps(plan_text: str) -> List[str]:
+        """
+        解析 planner 输出的编号步骤清单（P1-1）
+
+        容错策略（planner 输出非完全受控）：
+            1. 逐行匹配 "1. xxx" / "1、xxx" / "1) xxx" 编号前缀，剥离编号取步骤文本
+            2. 无编号行仅在编号清单已开始后视为续接步骤（部分模型偶发漏编号）；
+               清单未开始的纯文本行（前言/解释，如"这个问题无法拆解"）跳过，
+               促使调用方按零步骤降级——规划提示词已强制编号清单输出
+            3. 过滤空行/围栏标记/首尾空白，文本超长截断（防单步膨胀上下文）
+
+        :param plan_text: planner 原始输出文本
+        :return: 步骤文本列表（空列表表示解析失败，调用方跳过规划）
+        """
+        if not plan_text or not plan_text.strip():
+            return []
+        steps: List[str] = []
+        for raw_line in plan_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            # 剥离 Markdown 围栏与解释性噪点行
+            if line.startswith("```") or line.startswith("步骤清单") or line.startswith("任务计划"):
+                continue
+            # 编号前缀剥离："1. " / "1、" / "1) " / "步骤1：" 等
+            matched = re.match(r"^(?:步骤\s*)?\d+\s*[.、)）:：]?\s*(.+)$", line)
+            if matched:
+                text = matched.group(1).strip()
+            elif steps:
+                # 清单已开始：无编号行视为续接步骤
+                text = line
+            else:
+                # 清单未开始：纯文本前言/解释行，跳过（防误判为单步计划）
+                continue
+            if not text:
+                continue
+            # 单步超长截断（planner 偶发长解释，防计划块挤占工具观察上下文）
+            if len(text) > 200:
+                text = text[:200] + "…"
+            steps.append(text)
+            # 达上限即停（PLAN_MAX_STEPS 在调用方常量，此处双保险按类常量截断）
+            if len(steps) >= MasterAgentService.PLAN_MAX_STEPS:
+                break
+        return steps
 
     async def _node_think(self, state: AgentState, runtime: "Runtime[AgentContext]") -> Dict[str, Any]:
         """
@@ -479,35 +697,121 @@ class MasterAgentService:
                 "needs_clarification": False,
             }
 
+        # P1-1 计划注入（方案 10.3 要点3）：plan_steps 非空时序列化
+        # "任务计划"块追加到首条 system 消息。读取视角构造（浅拷贝替换
+        # 首条消息），不回写 state 增量——每轮 think 重建注入，避免计划块
+        # 在 messages reducer 中逐轮重复累积；LLM 按步骤推进，工具观察后
+        # 可自行修正执行顺序（提示词中显式授权）
+        messages = state.get("messages") or []
+        plan_steps = state.get("plan_steps") or []
+        if plan_steps and messages and messages[0].get("role") == "system":
+            plan_block = (
+                "\n\n【任务计划】（规划器产出的执行步骤，请按序推进；"
+                "若工具观察显示某步骤无法执行或顺序不当，可自行调整）\n"
+                + "\n".join(
+                    f"{idx}. {step}" for idx, step in enumerate(plan_steps, 1)
+                )
+            )
+            injected_system = dict(messages[0])
+            injected_system["content"] = (injected_system.get("content") or "") + plan_block
+            messages = [injected_system, *messages[1:]]
+
         # LLM 决策调用（失败计数 + 熔断判定）
+        # P0-1 token 流式回答：优先走流式路径（delta 边到边推 answer_delta 事件），
+        # 降级/异常时回退非流式 chat_with_tools（prompt-based 模式不支持流式）
+        response: Optional[Dict[str, Any]] = None
+        streamed_answer = False
+        # clarify 前缀门控：流式增量先缓冲，凑够前缀长度后再判定是否放行
+        # （CLARIFY: 开头的追问文本不推增量，由 clarify 事件单独下发，
+        #   避免用户看到前缀原文；前缀不匹配则一次性放行缓冲并继续直推）
+        _prefix_len = len(self.CLARIFY_PREFIX)
+        _pending = ""
+        _stream_open = False
+        _suppress = False
+        _delta_pushed = False  # 是否真实推送过 answer_delta（误标防御）
         try:
-            response = await llm_service.chat_with_tools(
-                messages=state.get("messages") or [],
+            async for evt in llm_service.chat_with_tools_stream(
+                messages=messages,
                 tools=ctx.registry.get_openai_tools(),
                 config=ctx.llm_config,
-            )
-            llm_failures = 0
-        except Exception as e:  # noqa: BLE001 - LLM调用失败转计数
-            llm_failures = (state.get("llm_failures") or 0) + 1
+            ):
+                if evt.get("type") == "delta":
+                    chunk = evt.get("content", "")
+                    if not chunk:
+                        continue
+                    if _suppress:
+                        continue
+                    if _stream_open:
+                        await _emit_event(ctx.on_event, {
+                            "type": "answer_delta",
+                            "delta": chunk,
+                            "iteration": iteration,
+                        })
+                        _delta_pushed = True
+                    else:
+                        _pending += chunk
+                        if len(_pending) >= _prefix_len:
+                            if _pending.startswith(self.CLARIFY_PREFIX):
+                                _suppress = True
+                            else:
+                                _stream_open = True
+                                await _emit_event(ctx.on_event, {
+                                    "type": "answer_delta",
+                                    "delta": _pending,
+                                    "iteration": iteration,
+                                })
+                                _delta_pushed = True
+                elif evt.get("type") == "done":
+                    response = evt.get("result") or {}
+                    streamed_answer = True
+                # fallback 事件：跳出流式，走非流式重试（response 保持 None）
+                elif evt.get("type") == "fallback":
+                    break
+            # 流结束仍未达前缀长度（超短回答）：放行残余缓冲
+            if _stream_open is False and _suppress is False and _pending and response is not None:
+                await _emit_event(ctx.on_event, {
+                    "type": "answer_delta",
+                    "delta": _pending,
+                    "iteration": iteration,
+                })
+                _delta_pushed = True
+            if response is not None:
+                llm_failures = 0
+        except Exception as e:  # noqa: BLE001 - 流式路径异常回退非流式
             logger.warning(
-                f"[MasterAgent] LLM 调用失败({llm_failures}/{self.MAX_LLM_FAILURES}) "
-                f"iter={iteration}: {e}"
+                f"[MasterAgent] 流式决策调用异常，回退非流式: {type(e).__name__}: {e}"
             )
-            if llm_failures >= self.MAX_LLM_FAILURES:
-                # 连续失败熔断：记轮次轨迹后转 finalize 兜底
-                trace.finish_reason = "llm_failures"
+            response = None
+
+        if response is None:
+            try:
+                response = await llm_service.chat_with_tools(
+                    messages=messages,
+                    tools=ctx.registry.get_openai_tools(),
+                    config=ctx.llm_config,
+                )
+                llm_failures = 0
+            except Exception as e:  # noqa: BLE001 - LLM调用失败转计数
+                llm_failures = (state.get("llm_failures") or 0) + 1
+                logger.warning(
+                    f"[MasterAgent] LLM 调用失败({llm_failures}/{self.MAX_LLM_FAILURES}) "
+                    f"iter={iteration}: {e}"
+                )
+                if llm_failures >= self.MAX_LLM_FAILURES:
+                    # 连续失败熔断：记轮次轨迹后转 finalize 兜底
+                    trace.finish_reason = "llm_failures"
+                    return {
+                        "iteration": iteration,
+                        "llm_failures": llm_failures,
+                        "trace": [trace],
+                        "final_answer": state.get("last_content") or "",
+                    }
+                # 单次失败：回 thinking 重试（messages 不变，仅计数）
                 return {
                     "iteration": iteration,
                     "llm_failures": llm_failures,
                     "trace": [trace],
-                    "final_answer": state.get("last_content") or "",
                 }
-            # 单次失败：回 thinking 重试（messages 不变，仅计数）
-            return {
-                "iteration": iteration,
-                "llm_failures": llm_failures,
-                "trace": [trace],
-            }
 
         content = (response.get("content") or "").strip()
         tool_calls = response.get("tool_calls") or []
@@ -554,6 +858,16 @@ class MasterAgentService:
         # 分支3：最终回答 → finalize 收尾
         trace.finish_reason = "final_answer"
         increment["final_answer"] = content
+        # P0-1：流式路径已真实推送 answer_delta 增量时才标记，避免
+        # 空 content 流（done 事件但零增量）误标导致前端两头收不到
+        if streamed_answer and _delta_pushed:
+            increment["answer_streamed"] = True
+        elif streamed_answer and not _delta_pushed:
+            # 空 delta 流（引擎异常/防御路径）：回退整段下发确保可见
+            logger.warning(
+                f"[MasterAgent] 流式 done 但零增量推送 iter={iteration}，"
+                f"content长度={len(content)}，answer_streamed 不置位"
+            )
         return increment
 
     async def _node_tool_exec(self, state: AgentState, runtime: "Runtime[AgentContext]") -> Dict[str, Any]:
@@ -620,6 +934,47 @@ class MasterAgentService:
                     observation=f"工具执行异常: {e}",
                     success=False, tool_type="unknown",
                 )
+
+            # MCP 连接类失败硬停止：MCP Server 未启动/不可达时不再重试、
+            # 不再回 think 让 LLM 基于失败观察编造诊断结果，
+            # 直接以失败说明收尾（数据不可用时必须如实告知用户）
+            if (not result.success) and _is_mcp_connection_failure(result.observation):
+                logger.error(
+                    f"[MasterAgent] MCP Server 连接失败，Agent 硬停止: "
+                    f"tool={tool_name}, iter={iteration}, "
+                    f"observation={result.observation[:200]}"
+                )
+                # Skill 层已格式化的失败说明（自带排查指引）直接透传，
+                # 避免统一模板二次包裹丢失细节；其余用统一失败模板
+                if "请检查" in result.observation:
+                    failure_answer = result.observation
+                else:
+                    failure_answer = (
+                        f"⚠️ 无法完成本次查询：工具 {tool_name} 依赖的数据服务"
+                        f"（MCP Server）未启动或网络不可达。\n\n"
+                        f"失败详情：{result.observation[:300]}\n\n"
+                        f"请检查：\n"
+                        f"1. MCP Server 是否已启动（对应数据服务是否在运行）\n"
+                        f"2. MCP Server URL 配置是否正确、网络是否可达\n"
+                        f"3. 服务恢复后重新发起请求"
+                    )
+                new_messages.append({
+                    "role": "tool", "tool_call_id": tool_call_id,
+                    "name": tool_name, "content": result.observation,
+                })
+                trace.finish_reason = "mcp_connection_failure"
+                trace.tool_calls.append({
+                    "name": tool_name,
+                    "arguments": raw_args if isinstance(raw_args, str) else str(raw_args),
+                    "success": False,
+                })
+                return {
+                    "messages": new_messages,
+                    "tool_results": new_results,
+                    "trace": [],
+                    "circuit_broken": False,
+                    "final_answer": failure_answer,
+                }
 
             # R1 失败重试：瞬时失败同参数自动重试1次（确定性失败跳过）
             if (not result.success) and ctx.reflector.should_retry(result, signature):
@@ -855,6 +1210,51 @@ class MasterAgentService:
     # -------------------- 条件路由函数 --------------------
 
     @staticmethod
+    def _route_after_start(state: AgentState) -> str:
+        """
+        START 节点后路由（P1-1：规划启用判定）
+
+        双因素判定（方案 10.3 要点2）：
+            1. 应用规划开关：state.plan_enabled（编排层从
+               application.agent_plan_enabled 解析注入，默认 False）
+            2. 问题预估复杂：启发式——多任务关键词命中 or 字数 ≥ 阈值
+        两因素同时满足才进 plan 节点，否则直接 think
+        （简单查询零规划成本，无额外 LLM 往返延迟）。
+
+        :param state: 初始图状态（读取 plan_enabled/messages）
+        :return: "plan"（进入规划） | "think"（直接决策）
+        """
+        if not state.get("plan_enabled"):
+            return "think"
+        if not MasterAgentService._is_question_complex(state):
+            return "think"
+        return "plan"
+
+    @staticmethod
+    def _is_question_complex(state: AgentState) -> bool:
+        """
+        问题复杂度启发式判定（P1-1 规划启用的第二因素）
+
+        规则（PLAN_COMPLEX_KEYWORDS / PLAN_COMPLEX_MIN_CHARS 类常量）：
+            - 命中任一多任务关键词（"并且/同时/对比/分别"等复合问题信号）→ 复杂
+            - 问题长度 ≥ 字数阈值（长问题通常含多个查询意图）→ 复杂
+            - 其余视为简单问题，不触发规划
+
+        :param state: 图状态（读取 messages 末条 user 问题）
+        :return: True 表示问题预估复杂，应触发规划
+        """
+        question = ""
+        for msg in reversed(state.get("messages") or []):
+            if msg.get("role") == "user":
+                question = msg.get("content") or ""
+                break
+        if not question:
+            return False
+        if len(question) >= MasterAgentService.PLAN_COMPLEX_MIN_CHARS:
+            return True
+        return any(kw in question for kw in MasterAgentService.PLAN_COMPLEX_KEYWORDS)
+
+    @staticmethod
     def _route_after_think(state: AgentState) -> str:
         """
         think 节点后路由
@@ -884,9 +1284,11 @@ class MasterAgentService:
         tool_exec 节点后路由
 
         :param state: 当前图状态
-        :return: "think"（继续下一轮思考） | "finalize"（熔断收尾）
+        :return: "think"（继续下一轮思考） | "finalize"（熔断/硬停止收尾）
         """
-        if state.get("circuit_broken"):
+        # circuit_broken（R3 熔断）或 final_answer（MCP 连接失败硬停止）
+        # 已置位 → 直接收尾，防止回 think 后 LLM 覆盖失败说明编造结果
+        if state.get("circuit_broken") or state.get("final_answer") is not None:
             return "finalize"
         return "think"
 
@@ -941,8 +1343,10 @@ class MasterAgentService:
             ],
             "tool_results": [],
             "trace": [],
+            "plan_steps": [],
             "iteration": 0,
             "max_iterations": max_iterations,
+            "plan_enabled": self._resolve_plan_enabled(application),
             "llm_failures": 0,
             "circuit_broken": False,
             "needs_clarification": False,
@@ -967,18 +1371,21 @@ class MasterAgentService:
         )
 
         # SSE plan 事件（旁路）：工具清单 + 迭代上限
+        # （P1-1：规划启用且问题复杂时由 plan 节点追加推送含 steps 的升级版
+        #  plan 事件；此处保持旧契约载荷——前端两版事件均可消费）
         await _emit_event(on_event, {
             "type": "plan",
             "tools": registry.get_tool_names(),
             "max_iterations": max_iterations,
         })
 
-        # 图执行（recursion_limit = max_iterations*2+2 双保险：每轮 think+tool_exec 两步）
+        # 图执行（recursion_limit = max_iterations*2+3 双保险：每轮 think+tool_exec
+        # 两步 + P1-1 plan 节点一步；超步由框架抛 GraphRecursionError 兜底）
         try:
             final_state = await self._graph.ainvoke(
                 init_state,
                 context=ctx,
-                config={"recursion_limit": max_iterations * 2 + 2},
+                config={"recursion_limit": max_iterations * 2 + 3},
             )
         except Exception as e:  # noqa: BLE001 - 图执行异常统一兜底
             # GraphRecursionError / 节点超时 / 未预期异常 → 兜底失败结果
@@ -1041,8 +1448,10 @@ class MasterAgentService:
             ],
             "tool_results": [],
             "trace": [],
+            "plan_steps": [],
             "iteration": 0,
             "max_iterations": max_iterations,
+            "plan_enabled": self._resolve_plan_enabled(application),
             "llm_failures": 0,
             "circuit_broken": False,
             "needs_clarification": False,
@@ -1065,6 +1474,8 @@ class MasterAgentService:
         )
 
         # plan 事件：图启动前直接 yield（get_stream_writer 尚无上下文）
+        # （P1-1：规划启用且问题复杂时由 plan 节点经 custom 流追加推送含
+        #  steps/currentStep 的升级版 plan 事件，前端两版事件均可消费）
         yield {
             "type": "plan",
             "tools": registry.get_tool_names(),
@@ -1078,7 +1489,7 @@ class MasterAgentService:
                 init_state,
                 context=ctx,
                 stream_mode=["custom", "values"],
-                config={"recursion_limit": max_iterations * 2 + 2},
+                config={"recursion_limit": max_iterations * 2 + 3},
             ):
                 mode, payload = chunk
                 if mode == "custom":
@@ -1122,13 +1533,18 @@ class MasterAgentService:
             trace=final_state.get("trace") or [],
             needs_clarification=final_state.get("needs_clarification") or False,
             clarify_question=final_state.get("clarify_question") or "",
+            answer_streamed=final_state.get("answer_streamed") or False,
         )
         self._aggregate_payload(final_state.get("tool_results") or [], result)
 
-        # 熔断/上限/LLM失败等异常终止 → success 标记 False（chat 层据此展示）
+        # 熔断/上限/LLM失败/MCP连接失败等异常终止 → success 标记 False
+        # （chat 层据此展示失败状态）
         trace_list = result.trace
         finish_reason = trace_list[-1].finish_reason if trace_list else ""
-        if finish_reason in ("circuit_break", "llm_failures", "max_iterations"):
+        if finish_reason in (
+            "circuit_break", "llm_failures", "max_iterations",
+            "mcp_connection_failure",
+        ):
             result.success = False
 
         return result
@@ -1581,8 +1997,10 @@ class MasterAgentService:
             ],
             "tool_results": [],
             "trace": [],
+            "plan_steps": [],
             "iteration": 0,
             "max_iterations": max_iterations,
+            "plan_enabled": self._resolve_plan_enabled(application),
             "llm_failures": 0,
             "circuit_broken": False,
             "needs_clarification": False,
@@ -1612,6 +2030,13 @@ class MasterAgentService:
             "max_iterations": max_iterations,
         })
 
+        # P1-1 条件规划（与图版 _route_after_start 路由语义一致）：
+        # 应用规划开关 × 问题复杂启发式同时满足 → 执行 plan 节点
+        # （复用图节点 _node_plan，规划失败/超时内部降级为空清单）
+        if self._route_after_start(state) == "plan":
+            increment = await self._node_plan(state, runtime)
+            state = self._merge_increment(state, increment)
+
         # ReAct 循环：think(决策) ⇄ tool_exec(执行) → finalize(收尾)
         while True:
             increment = await self._node_think(state, runtime)
@@ -1638,7 +2063,12 @@ class MasterAgentService:
             if messages and messages[-1].get("tool_calls"):
                 increment = await self._node_tool_exec(state, runtime)
                 state = self._merge_increment(state, increment)
-                if state.get("circuit_broken"):
+                # 熔断或 MCP 连接失败硬停止（final_answer 已置）→ 收尾，
+                # 防止回 think 后 LLM 覆盖失败说明编造结果
+                if (
+                    state.get("circuit_broken")
+                    or state.get("final_answer") is not None
+                ):
                     break
                 continue
             break
@@ -1661,7 +2091,7 @@ class MasterAgentService:
         """
         merged = dict(state)
         for key, value in increment.items():
-            if key in ("messages", "tool_results", "trace"):
+            if key in ("messages", "tool_results", "trace", "plan_steps"):
                 merged[key] = (merged.get(key) or []) + (value or [])
             else:
                 merged[key] = value
@@ -1686,6 +2116,19 @@ class MasterAgentService:
         if val <= 0:
             return self.DEFAULT_MAX_ITERATIONS
         return max(self.MIN_MAX_ITERATIONS, min(self.MAX_MAX_ITERATIONS, val))
+
+    @staticmethod
+    def _resolve_plan_enabled(application: Application) -> bool:
+        """
+        解析应用配置的规划开关（P1-1，默认关闭——存量应用零行为变化）
+
+        :param application: 应用配置对象
+        :return: True 表示该应用允许规划（还需问题复杂才真正进 plan 节点）
+        """
+        try:
+            return bool(getattr(application, "agent_plan_enabled", None))
+        except Exception:  # noqa: BLE001 - 配置读取异常按关闭处理
+            return False
 
     def _resolve_tool_timeout(self, registry: Any, tool_name: str) -> float:
         """

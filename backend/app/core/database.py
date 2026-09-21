@@ -241,6 +241,18 @@ async def _auto_add_columns(conn) -> None:
                     "UPDATE applications SET agent_max_iterations = 8 WHERE agent_max_iterations IS NULL"
                 ))
                 logger.info("已为 applications 表添加 agent_max_iterations 列")
+            # P1-1 planner 规划开关：agent_plan_enabled（存量环境自动补列，默认关闭）
+            if 'agent_plan_enabled' not in existing_cols:
+                sync_conn.execute(text(
+                    "ALTER TABLE applications ADD COLUMN agent_plan_enabled BOOLEAN DEFAULT FALSE"
+                ))
+                sync_conn.execute(text(
+                    "COMMENT ON COLUMN applications.agent_plan_enabled IS 'Agent模式规划开关(True=复杂问题先经planner产出步骤清单再执行)'"
+                ))
+                sync_conn.execute(text(
+                    "UPDATE applications SET agent_plan_enabled = FALSE WHERE agent_plan_enabled IS NULL"
+                ))
+                logger.info("已为 applications 表添加 agent_plan_enabled 列")
 
         # users 表添加 user_source 字段
         if 'users' in inspector.get_table_names():

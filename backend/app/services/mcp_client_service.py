@@ -750,7 +750,13 @@ class MCPClientService:
                 url, transport, extra_headers=extra_headers
             )
             if not init_success:
-                logger.warning(f"MCP会话初始化失败，尝试直接调用: {url}")
+                # 会话初始化失败说明 MCP Server 不可达/认证失败，
+                # 直接返回失败，避免继续发送无效请求产生歧义结果
+                logger.error(f"MCP会话初始化失败，中止工具调用: tool={tool_name}, url={url}")
+                return {
+                    "success": False,
+                    "result": f"MCP会话初始化失败: 无法建立与 MCP Server 的连接（url={url}），请确认服务已启动且网络可达"
+                }
 
             # 构建 JSON-RPC 请求：tools/call
             request_id = MCPClientService._get_next_id()

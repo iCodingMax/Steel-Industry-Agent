@@ -56,6 +56,8 @@ class AgentReflector:
         "未注册",              # 工具未注册
         "不存在。",            # Skill名称不在enum清单内
         "配置缺失或已停用",     # Skill配置被删除/停用
+        "无法连接到MCP Server",  # MCP 连接类失败（MasterAgent 硬停止兜底，防止路径复活）
+        "MCP会话初始化失败",     # MCP Server 不可达（初始化握手失败）
     )
 
     def __init__(self) -> None:

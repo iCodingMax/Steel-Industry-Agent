@@ -1064,8 +1064,14 @@ class ToolRegistry:
         if not success or not answer:
             observation = answer or f"Skill {matched_name!r} 执行未返回结果"
         else:
+            # 报告类内容就近转述指令：Skill 输出已按其模板生成结构化报告，
+            # 明确告知 LLM 保留原始结构（防 MasterAgent 二次概括删减章节/表格）
             observation = (
-                f"Skill {matched_name!r} 执行完成，输出如下：\n{answer}"
+                f"Skill {matched_name!r} 执行完成，输出如下：\n{answer}\n\n"
+                "---\n【转述要求】以上 Skill 输出为按技能模板生成的结构化报告，"
+                "请在其格式基础上就近原样转述给用户：完整保留章节标题、表格与"
+                "头部字段，禁止删减、合并或概括压缩；如需补充说明，请在报告"
+                "原文之后追加。"
             )
 
         return ToolExecutionResult(

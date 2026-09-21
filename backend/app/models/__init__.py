@@ -13,6 +13,8 @@ from app.models.application import Application, AppPrompt
 from app.models.session import Session, Message, Trace
 from app.models.audit_log import AuditLog
 from app.models.tool_config import ToolConfig
+from app.models.table_relation import TableRelation
+from app.models.sql_example import SqlExample
 
 __all__ = [
     "User",
@@ -32,4 +34,6 @@ __all__ = [
     "Trace",
     "AuditLog",
     "ToolConfig",
+    "TableRelation",
+    "SqlExample",
 ]

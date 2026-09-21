@@ -9,6 +9,8 @@ from app.api.v1.user import router as user_router
 from app.api.v1.chat_user import router as chat_user_router
 from app.api.v1.chat_auth import router as chat_auth_router
 from app.api.v1.datasource import router as datasource_router
+from app.api.v1.table_relation import router as table_relation_router
+from app.api.v1.sql_example import router as sql_example_router
 from app.api.v1.metric import router as metric_router
 from app.api.v1.dimension import router as dimension_router
 from app.api.v1.term import router as term_router
@@ -29,7 +31,11 @@ api_router.include_router(oauth_router, prefix="/oauth", tags=["OAuth2认证"])
 api_router.include_router(user_router, prefix="/users", tags=["用户管理"])
 api_router.include_router(chat_user_router, tags=["对话用户"])
 api_router.include_router(chat_auth_router, tags=["对话用户认证"])
+# 注意：sql_example_router 含 /sql-examples 全局路由，必须先于 datasource_router 注册，
+# 否则 GET /datasources/sql-examples 会被 datasource 的 /{ds_id} 路径参数吞掉，int 解析失败返回 422
+api_router.include_router(sql_example_router, prefix="/datasources", tags=["示例SQL库"])
 api_router.include_router(datasource_router, prefix="/datasources", tags=["数据源管理"])
+api_router.include_router(table_relation_router, prefix="/datasources", tags=["表关系管理"])
 api_router.include_router(metric_router, prefix="/metrics", tags=["指标管理"])
 api_router.include_router(dimension_router, prefix="/dimensions", tags=["维度管理"])
 api_router.include_router(term_router, prefix="/terms", tags=["术语管理"])

@@ -501,9 +501,12 @@ async def stream_chat(
                 if agent_result.needs_clarification:
                     yield f"data: {json.dumps({'type': 'clarify', 'question': agent_result.clarify_question})}\n\n"
 
-                # 推送最终回答（整段输出，agent循环为非流式生成）
+                # 推送最终回答
                 yield emit_thinking(3, 3, '生成回答', '智能体已完成分析，输出最终回答...')
-                if agent_result.answer:
+                # P0-1：answer_streamed=True 时增量已通过 answer_delta 事件下发
+                # （前端打字机已渲染完整回答），跳过整段 content 避免重复显示；
+                # False（降级/异常回退非流式）时保持整段下发
+                if agent_result.answer and not agent_result.answer_streamed:
                     yield f"data: {json.dumps({'type': 'content', 'content': agent_result.answer})}\n\n"
 
                 # 保存AI回复
@@ -1533,9 +1536,12 @@ async def embed_chat(
                 if agent_result.needs_clarification:
                     yield f"data: {json.dumps({'type': 'clarify', 'question': agent_result.clarify_question})}\n\n"
 
-                # 推送最终回答（整段输出，agent循环为非流式生成）
+                # 推送最终回答
                 yield emit_thinking(3, 3, '生成回答', '智能体已完成分析，输出最终回答...')
-                if agent_result.answer:
+                # P0-1：answer_streamed=True 时增量已通过 answer_delta 事件下发
+                # （前端打字机已渲染完整回答），跳过整段 content 避免重复显示；
+                # False（降级/异常回退非流式）时保持整段下发
+                if agent_result.answer and not agent_result.answer_streamed:
                     yield f"data: {json.dumps({'type': 'content', 'content': agent_result.answer})}\n\n"
 
                 # 保存AI回复
