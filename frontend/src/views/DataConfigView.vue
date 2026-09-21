@@ -28,7 +28,11 @@
           </div>
 
           <el-table :data="datasources" style="width: 100%" v-loading="datasourceLoading">
-            <el-table-column prop="name" label="数据源名称" min-width="160" />
+            <el-table-column prop="name" label="数据源名称" min-width="160">
+              <template #default="{ row }">
+                <el-link type="primary" @click="handleViewSchema(row)">{{ row.name }}</el-link>
+              </template>
+            </el-table-column>
             <el-table-column prop="type" label="类型" width="120">
               <template #default="{ row }">
                 <el-tag :type="dbTypeColor[row.type]" effect="plain">
@@ -54,18 +58,9 @@
             <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
                 <div class="action-btns">
-                  <el-button link type="primary" @click="handleSyncSchema(row)">同步</el-button>
+                  <el-button link type="primary" @click="handleTestConn(row)">测试连接</el-button>
                   <el-button link type="primary" @click="handleEditDatasource(row)">编辑</el-button>
                   <el-button link type="danger" @click="handleDeleteDatasource(row)">删除</el-button>
-                  <el-dropdown trigger="click">
-                    <el-button link type="primary">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item @click="handleTestConn(row)">测试连接</el-dropdown-item>
-                        <el-dropdown-item @click="handleViewSchema(row)">查看Schema</el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
                 </div>
               </template>
             </el-table-column>
@@ -303,17 +298,23 @@
             </el-table-column>
           </el-table>
           <div class="pagination-container">
-            <el-pagination
-              v-model:current-page="termPage"
-              v-model:page-size="termPageSize"
-              :page-sizes="[10, 20, 50, 100]"
-              :total="termTotal"
-              layout="total, sizes, prev, pager, next, jumper"
-              background
-              @size-change="loadTerms"
-              @current-change="loadTerms"
-            />
-          </div>
+              <el-pagination
+                v-model:current-page="termPage"
+                v-model:page-size="termPageSize"
+                :page-sizes="[10, 20, 50, 100]"
+                :total="termTotal"
+                layout="total, sizes, prev, pager, next, jumper"
+                background
+                @size-change="loadTerms"
+                @current-change="loadTerms"
+              />
+            </div>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="示例SQL" name="sqlExample" lazy>
+        <div class="tab-content sql-example-tab">
+          <SqlExamplePanel />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -530,7 +531,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { Plus, Search, Loading, ArrowDown } from '@element-plus/icons-vue'
+import { Plus, Search, Loading } from '@element-plus/icons-vue'
 import {
   getDatasources,
   getDatasource,
@@ -538,7 +539,6 @@ import {
   updateDatasource,
   deleteDatasource,
   testConnection,
-  syncSchema,
   getSchema,
   type DatasourceForm,
 } from '@/api/datasource'
@@ -563,6 +563,7 @@ import {
   deleteTerm,
   type TermForm,
 } from '@/api/term'
+import SqlExamplePanel from '@/components/datasource/SqlExamplePanel.vue'
 
 const router = useRouter()
 
@@ -965,22 +966,6 @@ async function handleTestConnFromDialog() {
   }
 }
 
-async function handleSyncSchema(row: any) {
-  try {
-    const res: any = await syncSchema(row.id)
-    if (res.code === 0) {
-      const { total = 0, added = 0, removed = 0, updated = 0 } = res.data || {}
-      if (added === 0 && removed === 0 && updated === 0) {
-        ElMessage.success(`Schema已是最新，共 ${total} 张表`)
-      } else {
-        ElMessage.success(`Schema同步完成，共 ${total} 张表（新增 ${added}，移除 ${removed}，更新 ${updated}）`)
-      }
-    }
-  } catch (e: any) {
-    console.error('Schema同步失败', e)
-  }
-}
-
 async function handleDeleteDatasource(row: any) {
   try {
     await ElMessageBox.confirm(`确定删除数据源「${row.name}」吗？`, '删除确认', {
@@ -1303,6 +1288,10 @@ onMounted(() => {
     justify-content: flex-end;
     margin-top: 16px;
   }
+}
+
+.sql-example-tab {
+  height: calc(100vh - 210px);
 }
 
 .schema-comment {

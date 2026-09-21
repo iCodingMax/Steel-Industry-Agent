@@ -133,6 +133,13 @@
                     <el-input-number v-model="appForm.agentMaxIterations" :min="3" :max="30" style="width: 200px" />
                     <span class="slider-value" style="margin-left: 10px;">轮（防死循环上限，默认8）</span>
                   </el-form-item>
+                  <!-- P1-1 planner 规划开关：复杂问题先经规划器产出步骤清单再执行 -->
+                  <el-form-item v-if="appForm.agentMode === 'agent'" label="任务规划">
+                    <el-switch v-model="appForm.agentPlanEnabled" />
+                    <span class="slider-value" style="margin-left: 10px;">
+                      复杂问题先规划步骤再执行（简单问题自动跳过，无额外延迟）
+                    </span>
+                  </el-form-item>
                 </el-card>
 
                 <el-card shadow="never" class="form-card">
@@ -633,6 +640,7 @@ const appForm = reactive<ApplicationUpdateForm & { mcpIds: number[], skillIds: n
   topP: 0.9,
   agentMode: 'classic',
   agentMaxIterations: 8,
+  agentPlanEnabled: false,
 })
 
 const appRules: FormRules = {
@@ -1119,14 +1127,6 @@ const previewUrl = computed(() => {
   return `/chat/${currentApp.value.accessHash}?${params.toString()}`
 })
 
-const embedCode = computed(() => {
-  if (!currentApp.value) return ''
-  const origin = window.location.origin
-  const url = `${origin}/chat/${currentApp.value.accessHash}`
-  const borderStyle = integrationForm.iframeBorder === '0' ? 'none' : integrationForm.iframeBorder
-  return `<iframe src="${url}" width="${integrationForm.iframeWidth}" height="${integrationForm.iframeHeight}" style="border: ${borderStyle}" frameborder="0" title="智能助手"></iframe>`
-})
-
 async function loadApplications() {
   loading.value = true
   try {
@@ -1196,15 +1196,6 @@ async function loadTools() {
     console.error('加载工具列表失败', error)
     mcpTools.value = []
     skillTools.value = []
-  }
-}
-
-function toggleTool(toolId: number) {
-  const index = appForm.toolConfigIds.indexOf(toolId)
-  if (index > -1) {
-    appForm.toolConfigIds.splice(index, 1)
-  } else {
-    appForm.toolConfigIds.push(toolId)
   }
 }
 
@@ -1324,6 +1315,7 @@ function handleDetail(app: Application) {
       topP: app.topP,
       agentMode: app.agentMode || 'classic',
       agentMaxIterations: app.agentMaxIterations ?? 8,
+      agentPlanEnabled: app.agentPlanEnabled ?? false,
     })
     authConfig.requireAuth = app.requireAuth ?? true
     // 检测系统提示词是否溢出
@@ -1609,6 +1601,11 @@ async function handleDebugSend(content?: string) {
             }
           } else if (data.type === 'intent') {
             // 意图识别结果
+          } else if (data.type === 'answer_delta') {
+            // P0-1：token 流式回答增量，拼接进 content 形成打字机效果
+            aiMsg.content += data.delta
+            aiMsg.isStreaming = true
+            scrollToBottom()
           } else if (data.type === 'content') {
             aiMsg.content += data.content
             aiMsg.isStreaming = true

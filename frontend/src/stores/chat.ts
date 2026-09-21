@@ -44,7 +44,13 @@ export interface ChatMessage {
   thinkingSteps?: ThinkingStep[]  // 思考过程步骤
   toolCalls?: any[]  // 工具调用信息（MCP/Skill通用）
   toolResults?: any[]  // 工具调用结果（MCP/Skill通用）
-  agentPlan?: { tools: string[]; maxIterations: number; message?: string }  // 智能体执行计划（plan事件）
+  agentPlan?: {
+    tools: string[]
+    maxIterations: number
+    message?: string
+    steps?: string[]        // P1-1 planner 步骤清单（规划启用时推送）
+    currentStep?: number    // P1-1 当前执行步索引（0=规划完成待执行）
+  }  // 智能体执行计划（plan事件）
   agentSteps?: AgentStep[]  // 智能体工具调用步骤（step事件）
   agentReflections?: AgentReflection[]  // 智能体反思记录（reflect事件）
   needsClarification?: boolean  // 澄清追问标记（clarify事件）
@@ -303,10 +309,25 @@ export const useChatStore = defineStore('chat', () => {
               break
             case 'plan':
               // 智能体执行计划：工具清单 + 迭代上限（步骤条骨架）
-              msg.agentPlan = {
-                tools: event.tools || [],
-                maxIterations: event.max_iterations || 0,
-                message: event.message,
+              // P1-1：规划启用时同一事件先后两条——先旧契约(tools/max_iterations)，
+              // 后升级版(steps/currentStep)。含 steps 的载荷合并保留旧字段，
+              // 未含 steps 的载荷不覆盖已有步骤清单（防后到的旧契约冲掉新数据）
+              if (event.steps && event.steps.length) {
+                msg.agentPlan = {
+                  tools: msg.agentPlan?.tools || event.tools || [],
+                  maxIterations: msg.agentPlan?.maxIterations || event.max_iterations || 0,
+                  message: msg.agentPlan?.message || event.message,
+                  steps: event.steps,
+                  currentStep: event.currentStep ?? 0,
+                }
+              } else {
+                msg.agentPlan = {
+                  tools: event.tools || [],
+                  maxIterations: event.max_iterations || 0,
+                  message: event.message,
+                  steps: msg.agentPlan?.steps,
+                  currentStep: msg.agentPlan?.currentStep,
+                }
               }
               break
             case 'step': {
@@ -393,6 +414,11 @@ export const useChatStore = defineStore('chat', () => {
             case 'tool_results':
               // 工具调用结果
               msg.toolResults = event.data
+              break
+            case 'answer_delta':
+              // P0-1：token 流式回答增量（think 节点边收边推）
+              // 拼接进 content，配合消息气泡 streaming-cursor 形成打字机效果
+              msg.content += event.delta
               break
             case 'content':
               // 流式内容，逐字追加

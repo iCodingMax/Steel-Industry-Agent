@@ -27,6 +27,7 @@ export interface Application {
   topP: number
   agentMode?: string         // 执行模式: classic(意图分类路由)/agent(智能体ReAct循环)
   agentMaxIterations?: number // Agent模式最大推理迭代次数
+  agentPlanEnabled?: boolean // Agent模式规划开关(P1-1:复杂问题先经planner产出步骤清单)
   createdAt?: string
   updatedAt?: string
   createdBy?: number
@@ -64,6 +65,7 @@ export interface ApplicationCreateForm {
   topP?: number
   agentMode?: string
   agentMaxIterations?: number
+  agentPlanEnabled?: boolean
 }
 
 export interface ApplicationUpdateForm {
@@ -90,6 +92,7 @@ export interface ApplicationUpdateForm {
   topP?: number
   agentMode?: string
   agentMaxIterations?: number
+  agentPlanEnabled?: boolean
 }
 
 export interface AppPromptCreateForm {

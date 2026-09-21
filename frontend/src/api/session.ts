@@ -111,6 +111,8 @@ export function sendMessage(data: ChatRequest) {
  * SSE 事件类型（event.type）：
  *   - intent:    意图分类结果（knowledge/data/mcp/skill/hybrid/chat）
  *   - thinking:  思考过程步骤（推理链，逐步展示AI的思考过程）
+ *   - answer_delta: token 流式回答增量（P0-1，think 节点边收边推，
+ *                  前端拼接成打字机效果；此后 result 事件不再整段重发）
  *   - content:   文本内容块（逐字推送，前端拼接成完整回答）
  *   - sql:       SQL查询语句（NL2SQL生成的SQL，展示在"查看SQL"弹窗中）
  *   - data:      数据查询结果（表格数据，展示在数据可视化组件中）

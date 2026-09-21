@@ -11,9 +11,13 @@
     "format": "prettier --write \"src/**/*.{js,ts,vue,json,scss,css,md}\""
   },
   "dependencies": {
+    "@antv/x6": "^2.18.1",
+    "@antv/x6-plugin-selection": "^2.2.2",
+    "@antv/x6-plugin-snapline": "^2.1.7",
     "@element-plus/icons-vue": "^2.3.0",
     "@vueuse/core": "^10.0.0",
     "axios": "^1.6.0",
+    "dagre": "^0.8.5",
     "echarts": "^5.5.0",
     "element-plus": "^2.8.0",
     "file-saver": "^2.0.5",

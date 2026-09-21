@@ -414,8 +414,8 @@ function buildChartOption(msg: any): any {
       }))
       if (data.length > 20) {
         const top = data.slice(0, 19)
-        const rest = data.slice(19).reduce((s, r) => s + (r.count || 0), 0)
-        const restAvg = data.slice(19).reduce((s, r) => s + (Number(r[yField]) || 0) * (r.count || 1), 0) / Math.max(rest, 1)
+        const rest = data.slice(19).reduce((s: number, r: any) => s + (r.count || 0), 0)
+        const restAvg = data.slice(19).reduce((s: number, r: any) => s + (Number(r[yField]) || 0) * (r.count || 1), 0) / Math.max(rest, 1)
         top.push({ [xField]: '其他', [yField]: Math.round(restAvg * 100) / 100, count: rest })
         data = top
       }

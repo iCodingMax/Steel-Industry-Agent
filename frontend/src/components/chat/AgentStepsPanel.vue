@@ -20,6 +20,30 @@
         <span class="plan-meta">可用工具 {{ plan.tools.length }} 个 · 最多 {{ plan.maxIterations }} 轮</span>
       </div>
 
+      <!-- P1-1 规划器步骤清单（plan事件升级版：steps + currentStep） -->
+      <div v-if="planSteps.length" class="plan-steps">
+        <div class="plan-steps-header">
+          <el-icon><List /></el-icon>
+          <span>任务计划（{{ planSteps.length }} 步）</span>
+          <span class="plan-steps-progress">进度 {{ planCurrentStep }}/{{ planSteps.length }}</span>
+        </div>
+        <div class="plan-steps-body">
+          <div
+            v-for="(step, idx) in planSteps"
+            :key="idx"
+            class="plan-step-item"
+            :class="{
+              done: idx < planCurrentStep,
+              current: idx === planCurrentStep,
+              pending: idx > planCurrentStep,
+            }"
+          >
+            <span class="plan-step-index">{{ idx + 1 }}</span>
+            <span class="plan-step-text">{{ step }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 工具调用步骤时间线（step事件） -->
       <div v-if="steps.length" class="steps-timeline">
         <div v-for="(step, idx) in steps" :key="idx" class="step-item">
@@ -55,8 +79,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { ArrowRight, Cpu, Compass, Loading, CircleCheck, CircleClose, Warning } from '@element-plus/icons-vue'
+import { computed, ref } from 'vue'
+import { ArrowRight, Cpu, Compass, List, Loading, CircleCheck, CircleClose, Warning } from '@element-plus/icons-vue'
 
 // 步骤条数据结构（与 stores/chat.ts 中 AgentStep/AgentReflection 对齐）
 interface AgentStep {
@@ -74,8 +98,14 @@ interface AgentReflection {
   detail: string
 }
 
-withDefaults(defineProps<{
-  plan?: { tools: string[]; maxIterations: number; message?: string } | null
+const props = withDefaults(defineProps<{
+  plan?: {
+    tools: string[]
+    maxIterations: number
+    message?: string
+    steps?: string[]      // P1-1 planner 步骤清单
+    currentStep?: number  // P1-1 当前执行步索引
+  } | null
   steps?: AgentStep[]
   reflections?: AgentReflection[]
 }>(), {
@@ -85,6 +115,10 @@ withDefaults(defineProps<{
 })
 
 const expanded = ref(true)
+
+// P1-1 规划步骤清单（空清单时不渲染该区域）
+const planSteps = computed(() => props.plan?.steps || [])
+const planCurrentStep = computed(() => props.plan?.currentStep ?? 0)
 
 /** 步骤状态中文标签 */
 function statusLabel(status: string): string {
@@ -198,6 +232,94 @@ function ruleLabel(rule: string): string {
       font-size: 11px;
       color: #818cf8;
       margin-left: auto;
+    }
+  }
+
+  // P1-1 规划器步骤清单
+  .plan-steps {
+    margin-bottom: 10px;
+    border: 1px solid #e0e7ff;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .plan-steps-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: #eef2ff;
+    font-size: 12px;
+    font-weight: 600;
+    color: #4338ca;
+
+    .el-icon {
+      font-size: 14px;
+      color: #6366f1;
+    }
+  }
+
+  .plan-steps-progress {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: #818cf8;
+  }
+
+  .plan-steps-body {
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .plan-step-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 18px;
+
+    .plan-step-index {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      transform: translateY(2px);
+      background: #e2e8f0;
+      color: #94a3b8;
+    }
+
+    .plan-step-text {
+      color: #94a3b8;
+      word-break: break-word;
+    }
+
+    &.done {
+      .plan-step-index {
+        background: #10b981;
+        color: #fff;
+      }
+
+      .plan-step-text {
+        color: #64748b;
+      }
+    }
+
+    &.current {
+      .plan-step-index {
+        background: #6366f1;
+        color: #fff;
+      }
+
+      .plan-step-text {
+        color: #1e293b;
+        font-weight: 500;
+      }
     }
   }
 

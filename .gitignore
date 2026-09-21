@@ -57,3 +57,7 @@ frontend/.vite/deps/
 backend/storage/documents/
 backend/uploads/
 docs/
+
+frontend/.pnpm-cache/
+frontend/.pnpm-state/
+frontend/.pnpm-store/
