@@ -57,6 +57,8 @@ class SqlExample(Base):
             "schemaVersion": self.schema_version,
             "status": self.status,
             "successCount": self.success_count,
+            # 晋升建议（治理2）：auto 来源同题复用成功≥5次，提示可人工审核转为指标
+            "suggestPromotion": self.source == "auto" and (self.success_count or 0) >= 5,
             "feedback": self.feedback,
             "createdBy": self.created_by,
             "createdAt": self.created_at.isoformat() if self.created_at else None,

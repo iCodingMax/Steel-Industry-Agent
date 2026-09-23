@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     ENV: str = _CURRENT_ENV
     API_PREFIX: str = "/api/v1"
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # 启动时是否执行种子数据填充（演示环境 true；开发/联调环境可设 false 避免数据源被刷新）
+    SEED_ON_STARTUP: bool = True
 
     MYSQL_HOST: str = "localhost"
     MYSQL_PORT: int = 3306

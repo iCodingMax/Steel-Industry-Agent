@@ -7,6 +7,12 @@ from sqlalchemy.sql import func
 
 from app.core.base_model import Base
 
+# pgvector 向量类型（驱动缺失时降级为占位列，参照 SqlExample/agent_memory 模式）
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:  # pragma: no cover
+    Vector = None
+
 
 class Metric(Base):
     """业务指标定义表"""
@@ -24,6 +30,13 @@ class Metric(Base):
     group_name = Column(String(50), nullable=True, comment="分组名称")
     tags = Column(String(255), nullable=True, comment="标签(JSON数组)")
     status = Column(String(20), default="active", comment="状态: active/inactive")
+    # 指标召回键向量化（方案8：名称+描述+标签拼接向量，Top-K 召回候选供 LLM 精选）
+    # 驱动未安装时降级为占位列，召回侧过滤 embedding IS NOT NULL，回退 LLM 全量匹配
+    embedding = (
+        Column(Vector(1024), nullable=True, comment="指标召回键向量(bge-m3,1024维)")
+        if Vector
+        else Column(Text, nullable=True, comment="指标召回键向量(降级占位列)")
+    )
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
 

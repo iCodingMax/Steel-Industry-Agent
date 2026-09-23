@@ -248,14 +248,24 @@ class ChatBIService:
                             "rows": len(results),
                         })
                         explanation = ""
-                    else:
+                    elif error:
+                        # SQL 执行/校验失败（重试耗尽）：如实报告错误，不能误报为"无数据"
                         results = []
                         sql_traces.append({
                             "sql": sql,
                             "source": "nl2sql",
                             "rows": 0,
                         })
-                        explanation = f"查询完成，但未找到数据。{error or ''}"
+                        explanation = f"抱歉，SQL执行失败，未能完成查询。{error}"
+                    else:
+                        # SQL 执行成功但结果为空
+                        results = []
+                        sql_traces.append({
+                            "sql": sql,
+                            "source": "nl2sql",
+                            "rows": 0,
+                        })
+                        explanation = "查询完成，但未找到数据。请尝试调整过滤条件或时间范围。"
                 else:
                     explanation = f"抱歉，无法生成有效的查询。错误: {error or 'SQL生成失败'}"
 

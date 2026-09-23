@@ -337,6 +337,111 @@ class SqlExampleService:
 
     # ---------- Few-shot 注入召回 ----------
 
+    # 口径治理：问题与已有指标召回键的相似度达到该阈值时，视为"指标已覆盖"
+    METRIC_OVERLAP_THRESHOLD = 0.85
+
+    @classmethod
+    async def _overlaps_existing_metric(cls, db: AsyncSession, question: str) -> bool:
+        """
+        判断问题是否与已有指标高度相似（口径治理，防旁路漂移）
+
+        规则：指标（active 且已向量化）召回键向量与问题向量的余弦相似度
+        ≥ METRIC_OVERLAP_THRESHOLD 时认为该问题已被指标覆盖。
+        降级：pgvector 缺失 / 指标模型无向量列 / 向量化失败 / 检索异常 → False（不拦截）
+        """
+        try:
+            from pgvector.sqlalchemy import Vector  # noqa: F401 驱动可用性探测
+            from app.models.metric import Metric
+            if Metric.embedding is None:
+                return False
+            query_vec = await cls._embed_question(question.strip())
+            if query_vec is None:
+                return False
+            sim_expr = 1.0 - Metric.embedding.cosine_distance(query_vec)
+            stmt = (
+                select(func.max(sim_expr)).where(
+                    Metric.status == "active",
+                    Metric.embedding.is_not(None),
+                )
+            )
+            max_sim = (await db.execute(stmt)).scalar()
+            if max_sim is not None and float(max_sim) >= cls.METRIC_OVERLAP_THRESHOLD:
+                logger.debug(
+                    f"[SqlExample] 问题与已有指标高度相似: sim={float(max_sim):.3f}, q={question[:30]}"
+                )
+                return True
+            return False
+        except ImportError:
+            return False
+        except Exception as e:
+            logger.warning(f"[SqlExample] 指标相似度检查异常(旁路不拦截): {type(e).__name__}: {e}")
+            return False
+
+    @classmethod
+    async def auto_deposit(
+        cls,
+        db: AsyncSession,
+        question: str,
+        sql: str,
+        ds_id: int,
+    ) -> Optional[SqlExample]:
+        """
+        自动沉淀入口（NL2SQL 执行成功后旁路调用，失败仅告警不影响主流程）
+
+        规则：
+        - 仅沉淀执行成功且结果非空的问答对（调用方保证）
+        - 去重：同数据源下 question 完全相同的已有示例（manual/auto）直接跳过
+        - source=auto，schema_version 取当前版本，向量化复用手动示例旁路逻辑
+        :return: 新沉淀的示例对象；跳过/失败时返回 None
+        """
+        question = str(question or "").strip()
+        sql = str(sql or "").strip()
+        if not question or not sql:
+            return None
+
+        try:
+            # 去重：同数据源同问题已存在（含手工示例）则不重复沉淀
+            dup_stmt = select(SqlExample).where(
+                SqlExample.datasource_id == ds_id,
+                SqlExample.question == question,
+            )
+            dup = (await db.execute(dup_stmt)).scalar_one_or_none()
+            if dup:
+                logger.debug(f"自动沉淀跳过（同题已存在）: ds_id={ds_id}, q={question[:30]}")
+                return None
+
+            # 口径治理：与已有指标高度相似的问题不沉淀为示例，
+            # 避免旁路口径绕开指标库造成"同一问题两个答案"的口径漂移
+            if await cls._overlaps_existing_metric(db, question):
+                logger.info(f"自动沉淀跳过（与已有指标高度相似，口径以指标库为准）: q={question[:30]}")
+                return None
+
+            embedding = await cls._embed_question(question)
+            schema_version = await cls._current_schema_version(db, ds_id)
+
+            example = SqlExample(
+                datasource_id=ds_id,
+                question=question,
+                sql=sql,
+                description="自动沉淀（NL2SQL执行成功）",
+                source="auto",
+                embedding=embedding,
+                schema_version=schema_version,
+                status="active",
+            )
+            db.add(example)
+            await db.commit()
+            await db.refresh(example)
+            logger.info(
+                f"自动沉淀示例SQL: ds_id={ds_id}, id={example.id}, "
+                f"向量化={'成功' if embedding else '失败(旁路)'}, q={question[:30]}"
+            )
+            return example
+        except Exception as e:
+            # 旁路原则：沉淀失败不影响查询主流程
+            logger.warning(f"自动沉淀示例SQL失败(旁路): {type(e).__name__}: {e}")
+            return None
+
     @classmethod
     async def recall_examples(
         cls,

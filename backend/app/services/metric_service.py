@@ -28,6 +28,36 @@ from app.schemas.metric import MetricCreate, MetricUpdate
 from app.middlewares.exception_handler import BusinessException
 
 
+def _reset_match_breaker() -> None:
+    """指标库发生变更时重置 NL2Metrics 匹配熔断器（局部导入避免循环依赖）"""
+    from app.services.nl2metrics_service import match_breaker
+    match_breaker.reset()
+    logger.debug("指标库变更，已重置NL2Metrics匹配熔断器")
+
+
+async def _embed_metric(metric_data) -> Optional[List[float]]:
+    """
+    指标召回键向量化（方案8）：name + description + tags 拼接后向量化
+
+    旁路原则：失败返回 None（不阻断保存），召回侧过滤 embedding IS NOT NULL
+    """
+    import asyncio
+    try:
+        from app.services.sql_example_service import SqlExampleService
+        # 召回键拼接：名称（必填）+ 描述 + 标签，空段跳过
+        tags = []
+        if metric_data.tags:
+            tags = metric_data.tags if isinstance(metric_data.tags, list) else []
+        segments = [metric_data.name or "", metric_data.description or "", " ".join(tags)]
+        recall_key = " ".join(s for s in segments if s.strip())
+        if not recall_key.strip():
+            return None
+        return await SqlExampleService._embed_question(recall_key)
+    except Exception as e:
+        logger.warning(f"指标向量化失败(旁路,embedding置空): {type(e).__name__}: {e}")
+        return None
+
+
 class MetricService:
     """
     指标服务类
@@ -62,10 +92,12 @@ class MetricService:
             unit=data.unit,
             group_name=data.groupName,
             tags=json.dumps(data.tags, ensure_ascii=False) if data.tags else None,
+            embedding=await _embed_metric(data),
         )
         db.add(metric)
         await db.commit()
         await db.refresh(metric)
+        _reset_match_breaker()
         logger.info(f"创建指标成功: {metric.name} (ID: {metric.id})")
         return metric
 
@@ -150,8 +182,24 @@ class MetricService:
             if hasattr(metric, key):
                 setattr(metric, key, value)
 
+        # 召回键字段（名称/描述/标签）变化时重新向量化（旁路失败置 None）
+        if any(k in update_data for k in ("name", "description", "tags")):
+            merged = MetricCreate(
+                name=metric.name,
+                code=metric.code,
+                description=metric.description,
+                sqlExpression=metric.sql_expression,
+                resultType=metric.result_type,
+                unit=metric.unit,
+                groupName=metric.group_name,
+                tags=json.loads(metric.tags) if metric.tags else None,
+                datasourceId=metric.datasource_id,
+            )
+            metric.embedding = await _embed_metric(merged)
+
         await db.commit()
         await db.refresh(metric)
+        _reset_match_breaker()
         logger.info(f"更新指标成功: {metric.name} (ID: {metric.id})")
         return metric
 
@@ -170,6 +218,7 @@ class MetricService:
 
         await db.delete(metric)
         await db.commit()
+        _reset_match_breaker()
         logger.info(f"删除指标成功: {metric.name} (ID: {metric_id})")
 
 

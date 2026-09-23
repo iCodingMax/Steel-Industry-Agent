@@ -490,20 +490,17 @@ async def seed():
     await init_db()
 
     async with SystemAsyncSession() as db:
-        # 1. 确保唯一数据源存在且密码正确
-        # 查找任何现有数据源（名称可能不同，但应该是唯一的业务数据源）
-        all_ds_result = await db.execute(select(DataSource))
-        all_ds_list = list(all_ds_result.scalars().all())
+        # 1. 确保种子数据源存在且连接信息正确（按名称匹配，只管理自己创建的数据源）
+        # 注意：seed 只负责"钢铁行业生产数据库"这一个演示数据源的自愈，
+        # 用户手动创建的其他数据源（如测试库）是用户资产，绝不删除或改写
+        SEED_DS_NAME = "钢铁行业生产数据库"
+        ds_result = await db.execute(
+            select(DataSource).where(DataSource.name == SEED_DS_NAME)
+        )
+        ds = ds_result.scalar_one_or_none()
 
-        if all_ds_list:
-            # 取第一个（应该只有一个）
-            ds = all_ds_list[0]
-            # 如果有多余的数据源，删除
-            for extra_ds in all_ds_list[1:]:
-                logger.warning(f"删除多余数据源: {extra_ds.name} (ID={extra_ds.id})")
-                await db.delete(extra_ds)
-            # 更新连接信息（确保密码、数据库名正确）
-            ds.name = "钢铁行业生产数据库"
+        if ds:
+            # 存在则仅刷新连接信息（确保密码、数据库名与 .env 一致）
             ds.type = "mysql"
             ds.host = settings.BUSINESS_DB_HOST or settings.MYSQL_HOST
             ds.port = settings.BUSINESS_DB_PORT or settings.MYSQL_PORT
@@ -512,13 +509,13 @@ async def seed():
             ds.password = settings.BUSINESS_DB_PASSWORD or settings.MYSQL_PASSWORD
             ds.charset = "utf8mb4"
             ds.status = "active"
-            logger.info(f"更新数据源: {ds.name} (ID={ds.id}), database={ds.database}")
+            logger.info(f"更新种子数据源: {ds.name} (ID={ds.id}), database={ds.database}")
             await db.flush()
         else:
             ds = DataSource(**DATASOURCE_DATA)
             db.add(ds)
             await db.flush()
-            logger.info(f"创建数据源: {ds.name} (ID={ds.id})")
+            logger.info(f"创建种子数据源: {ds.name} (ID={ds.id})")
 
         datasource_id = ds.id
 

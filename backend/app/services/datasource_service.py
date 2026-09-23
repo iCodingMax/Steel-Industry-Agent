@@ -11,11 +11,11 @@
 import json
 import re
 from typing import List, Optional
-from sqlalchemy import select, delete as sa_delete, text
+from sqlalchemy import select, delete as sa_delete, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from app.models.datasource import DataSource, TableSchema
+from app.models.datasource import DataSource, TableSchema, SchemaEmbedding
 from app.schemas.datasource import DataSourceCreate, DataSourceUpdate, TestConnectionRequest
 from app.middlewares.exception_handler import BusinessException
 
@@ -540,16 +540,35 @@ class DataSourceService:
 
             # 步骤7：重建该数据源的 Schema 向量索引（一期升级）
             # 旁路原则：重建失败仅告警，不影响同步主流程（向量召回会自动回退关键词逻辑）
+            # 门控条件：仅当结构真正变更（新增/移除/更新表）或索引为空时才重建。
+            # 若无条件重建，schema_version 每次同步都会 +1（如开发模式 --reload 每次重启
+            # 都会触发 seed → sync_schema），导致所有示例SQL 被"版本漂移"防护误伤跳过，
+            # Few-shot 召回被清空
             embedding_count = 0
             try:
                 from app.models.term import Term
                 from app.services.schema_embedding_service import SchemaEmbeddingService
-                terms_result = await db.execute(select(Term))
-                terms = list(terms_result.scalars().all())
-                embedding_count = await SchemaEmbeddingService.rebuild_datasource(
-                    db, ds_id, terms=terms
+                schema_changed = (
+                    added_count > 0 or removed_count > 0 or updated_count > 0
                 )
-                await db.commit()
+                has_index = (
+                    await db.execute(
+                        select(func.count()).select_from(SchemaEmbedding).where(
+                            SchemaEmbedding.datasource_id == ds_id
+                        )
+                    )
+                ).scalar() or 0
+                if schema_changed or not has_index:
+                    terms_result = await db.execute(select(Term))
+                    terms = list(terms_result.scalars().all())
+                    embedding_count = await SchemaEmbeddingService.rebuild_datasource(
+                        db, ds_id, terms=terms
+                    )
+                    await db.commit()
+                else:
+                    logger.debug(
+                        f"Schema无变更且向量索引已存在，跳过索引重建: ds_id={ds_id}"
+                    )
             except Exception as embed_err:
                 await db.rollback()
                 logger.warning(

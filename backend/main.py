@@ -72,8 +72,12 @@ async def lifespan(app: FastAPI):
         await auth_service.init_default_admin(db)
 
     # 第三步：填充种子数据（示例数据源、指标、维度、术语）
-    from app.services.seed_data import seed
-    await seed()
+    # 开发/联调环境可在 .env 设置 SEED_ON_STARTUP=false 跳过，避免种子逻辑刷新数据源连接信息
+    if settings.SEED_ON_STARTUP:
+        from app.services.seed_data import seed
+        await seed()
+    else:
+        logger.info("SEED_ON_STARTUP=false，跳过种子数据填充")
 
     logger.success("系统启动成功!")
 

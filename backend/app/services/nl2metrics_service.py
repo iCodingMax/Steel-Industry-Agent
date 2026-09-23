@@ -16,7 +16,9 @@ NL2Metrics指标查询引擎模块
 - Dimension模型：维度定义
 - LLMService：语义匹配
 """
+import json
 import re
+import time
 from typing import List, Optional, Tuple
 from loguru import logger
 
@@ -25,10 +27,65 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.metric import Metric
 from app.models.dimension import Dimension
-from app.models.term import Term
-from app.models.datasource import DataSource, TableSchema
+from app.models.datasource import DataSource
 from app.services.llm_service import llm_service
 from app.services.nl2sql_service import NL2SQLEngine
+
+
+class _MatchBreaker:
+    """
+    指标匹配熔断器（进程内状态，轻量实现）
+
+    背景：指标库存在但用户问题均与指标无关时，每次查询仍会白白消耗一次
+    指标匹配 LLM 调用（约1-3秒）。熔断器在连续多次无匹配后跳过匹配，
+    直接落入 NL2SQL 兜底；指标库发生增删改时由 MetricService 重置熔断。
+
+    规则：
+    - 连续 consecutive_limit 次无匹配 → 进入熔断，breaker_open=True
+    - 熔断后 cooldown_seconds 内所有查询跳过指标匹配
+    - 冷却期结束后放行一次探测查询（半开状态），命中则恢复，否则继续熔断
+    """
+
+    def __init__(self, consecutive_limit: int = 5, cooldown_seconds: float = 600.0):
+        self.consecutive_limit = consecutive_limit
+        self.cooldown_seconds = cooldown_seconds
+        self._miss_streak = 0          # 连续无匹配计数
+        self._open_until = 0.0         # 熔断截止时间戳（0=未熔断）
+
+    def should_skip(self) -> bool:
+        """判断当前是否应跳过指标匹配（熔断生效中）"""
+        if self._open_until == 0.0:
+            return False
+        if time.time() >= self._open_until:
+            # 冷却期结束：进入半开状态，放行本次作为探测查询
+            self._open_until = 0.0
+            logger.info("指标匹配熔断冷却结束，进入半开状态放行探测")
+            return False
+        return True
+
+    def record_miss(self) -> None:
+        """记录一次无匹配；连续无匹配达到阈值时开启熔断"""
+        self._miss_streak += 1
+        if self._miss_streak >= self.consecutive_limit:
+            self._open_until = time.time() + self.cooldown_seconds
+            self._miss_streak = 0
+            logger.warning(
+                f"指标连续{self.consecutive_limit}次无匹配，熔断{self.cooldown_seconds}秒"
+                f"（期间跳过指标匹配直接走NL2SQL，指标库变更时自动重置）"
+            )
+
+    def record_hit(self) -> None:
+        """记录一次命中，恢复计数"""
+        self._miss_streak = 0
+
+    def reset(self) -> None:
+        """重置熔断状态（指标库增删改时调用）"""
+        self._miss_streak = 0
+        self._open_until = 0.0
+
+
+# 模块级熔断器实例（进程内共享）
+match_breaker = _MatchBreaker()
 
 
 class NL2MetricsEngine:
@@ -38,6 +95,52 @@ class NL2MetricsEngine:
     优先于NL2SQL执行，提高查询效率和准确性
     """
 
+    # 指标向量召回参数（方案8）：候选池大小与相似度阈值
+    METRIC_RECALL_CANDIDATES = 8
+    METRIC_RECALL_SIM_THRESHOLD = 0.5
+
+    @staticmethod
+    async def _vector_recall_metrics(
+        db: AsyncSession,
+        question: str,
+        candidate_limit: int,
+    ) -> Optional[List[Metric]]:
+        """
+        指标向量召回（方案8）：问题向量 Top-K 候选，供 LLM 精选
+
+        降级规则（返回 None 表示"向量不可用，调用方回退全量 LLM 匹配"）：
+            - Metric.embedding 列缺失（pgvector 未安装，降级占位列定义仍存在，此判断保底）
+            - 问题向量化失败
+            - 检索异常
+        过滤规则：status=active 且 embedding 非空，余弦相似度降序取前 candidate_limit
+        """
+        if Metric.embedding is None:
+            return None
+        try:
+            from pgvector.sqlalchemy import Vector  # noqa: F401 驱动可用性探测
+            from app.services.sql_example_service import SqlExampleService
+            query_vec = await SqlExampleService._embed_question(question.strip())
+            if query_vec is None:
+                return None
+            sim_expr = 1.0 - Metric.embedding.cosine_distance(query_vec)
+            stmt = (
+                select(Metric)
+                .where(
+                    Metric.status == "active",
+                    Metric.embedding.is_not(None),
+                )
+                .order_by(sim_expr.desc())
+                .limit(candidate_limit)
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            return list(rows) if rows else []
+        except ImportError:
+            logger.warning("[NL2Metrics] pgvector未安装，指标向量召回降级为LLM全量匹配")
+            return None
+        except Exception as e:
+            logger.warning(f"[NL2Metrics] 指标向量召回异常，回退LLM全量匹配: {type(e).__name__}: {e}")
+            return None
+
     @staticmethod
     async def match_metrics(
         db: AsyncSession,
@@ -45,8 +148,14 @@ class NL2MetricsEngine:
         top_k: int = 3,
     ) -> List[Tuple[Metric, float]]:
         """
-        匹配相关指标
-        使用LLM进行语义匹配，从预定义指标库中选择最相关的指标
+        匹配相关指标（方案8：向量召回 Top-K 候选 → LLM 语义精选）
+
+        流程：
+            1. 向量召回：问题向量化，与指标召回键（名称+描述+标签）余弦相似度 Top-K 候选
+            2. LLM 精选：候选列表远小于全量，Prompt 精简、匹配更快更准
+            3. 无匹配返回空列表（触发熔断计数）
+
+        降级：向量不可用（pgvector 缺失/检索异常）时回退 LLM 全量指标匹配（原逻辑）
 
         :param db: 数据库会话
         :param question: 用户问题
@@ -63,6 +172,20 @@ class NL2MetricsEngine:
         if not metrics:
             logger.debug("没有找到活跃指标")
             return []
+
+        # 方案8：优先向量召回缩小候选池，失败/无候选回退全量
+        recall_metrics = await NL2MetricsEngine._vector_recall_metrics(
+            db, question, NL2MetricsEngine.METRIC_RECALL_CANDIDATES
+        )
+        if recall_metrics:
+            metrics = recall_metrics
+            logger.info(
+                f"[NL2Metrics] 向量召回候选: {len(metrics)}个（相似度Top-{NL2MetricsEngine.METRIC_RECALL_CANDIDATES}）"
+            )
+        elif recall_metrics == []:
+            # 有向量基础设施但无任何召回候选（可能存量指标均未向量化）
+            logger.info("[NL2Metrics] 向量召回无候选（存量指标未向量化），回退LLM全量匹配")
+        # recall_metrics 为 None 时：pgvector 缺失或检索异常，同样回退全量
 
         # 构建指标列表文本，包含查询表名，用于LLM语义匹配
         metric_list = "\n".join([
@@ -195,6 +318,72 @@ class NL2MetricsEngine:
         logger.info(f"维度提取完成: 指标={metric.name}, 过滤数={len(filters)}")
         return filters
 
+    # 方案7：数据库日期类型前缀（覆盖 MySQL/PostgreSQL/SQLServer 常见类型）
+    _DATE_TYPE_PREFIXES = ("date", "datetime", "timestamp", "time")
+
+    @staticmethod
+    async def _load_date_columns(db: AsyncSession, datasource_id) -> set:
+        """
+        从 TableSchema 加载数据源下所有日期类型列（方案7：替代硬编码列名白名单）
+
+        识别规则：columns JSON 中列 type 以 date/datetime/timestamp/time 开头
+        （不区分大小写，覆盖 MySQL/PostgreSQL/SQLServer 常见日期类型）。
+        降级：数据源未绑定 / Schema 缺失 / 解析异常 → 空集合（回退 data_type 判断）。
+
+        :return: {(table_name, column_name)} 集合（均小写）
+        """
+        if datasource_id is None:
+            return set()
+        try:
+            from app.models.datasource import TableSchema
+            stmt = select(TableSchema.table_name, TableSchema.columns).where(
+                TableSchema.datasource_id == datasource_id
+            )
+            rows = (await db.execute(stmt)).all()
+            date_cols = set()
+            for table_name, columns_data in rows:
+                columns = []
+                if isinstance(columns_data, str):
+                    try:
+                        columns = json.loads(columns_data) if columns_data else []
+                    except Exception:
+                        columns = []
+                elif isinstance(columns_data, list):
+                    columns = columns_data
+                for col in columns:
+                    col_type = str(col.get("type", "") or "").lower()
+                    if col_type.startswith(NL2MetricsEngine._DATE_TYPE_PREFIXES):
+                        col_name = str(col.get("name", "") or "").lower()
+                        if col_name:
+                            date_cols.add((str(table_name).lower(), col_name))
+            if date_cols:
+                logger.debug(f"[方案7] Schema日期列识别: {len(date_cols)}个（数据源{datasource_id}）")
+            return date_cols
+        except Exception as e:
+            logger.warning(f"[方案7] Schema日期列加载异常(回退data_type判断): {type(e).__name__}: {e}")
+            return set()
+
+    @staticmethod
+    def _is_date_dimension(dim: Dimension, date_columns: set) -> bool:
+        """
+        判断维度是否为日期维度（方案7）
+
+        判定优先级：
+            1. 维度自身 data_type == "date"（人工录入语义类型）
+            2. Schema 列类型命中日期类型集合（真实物理类型）
+            3. 兜底：常见日期列名约定（列名以 date/time 结尾或等于 date）
+        """
+        # 1. 语义类型
+        if (dim.data_type or "").lower() == "date":
+            return True
+        # 2. Schema 物理类型（表名+列名二元组匹配；列名全局唯一场景直接命中）
+        col_lower = (dim.column_name or "").lower()
+        table_lower = (dim.table_name or "").lower()
+        if (table_lower, col_lower) in date_columns:
+            return True
+        # 3. 列名约定兜底（Schema 缺失/未同步场景）
+        return col_lower.endswith("_date") or col_lower.endswith("date") or col_lower.endswith("_time") or col_lower == "time"
+
     @staticmethod
     def _remove_time_filter_from_template(sql: str) -> str:
         """
@@ -300,11 +489,15 @@ class NL2MetricsEngine:
         base_sql = metric.sql_expression
         logger.debug(f"基础SQL模板: {base_sql[:100]}...")
 
+        # 方案7：从 TableSchema 读取维度绑定列的真实类型，构建日期列集合
+        # （替代原硬编码列名白名单 PRODUCE_DATE/DATE/CREATED_AT/HEAT_DATE）
+        date_columns = await NL2MetricsEngine._load_date_columns(db, metric.datasource_id)
+
         # 分离日期维度和非日期维度
         date_dims = []
         other_dims = []
         for dim, value in dimensions:
-            if dim.data_type == "date" or dim.column_name.upper() in ("PRODUCE_DATE", "DATE", "CREATED_AT", "HEAT_DATE"):
+            if NL2MetricsEngine._is_date_dimension(dim, date_columns):
                 date_dims.append((dim, value))
             else:
                 other_dims.append((dim, value))
@@ -431,13 +624,20 @@ class NL2MetricsEngine:
         """
         logger.info(f"开始NL2Metrics查询: {question[:50]}...")
 
+        # 熔断检查：近期连续无匹配时跳过指标匹配，直接落入NL2SQL兜底
+        if match_breaker.should_skip():
+            logger.info("指标匹配熔断生效中，跳过NL2Metrics直接走NL2SQL")
+            return None, None, None
+
         try:
             # 步骤1：匹配指标（使用LLM语义匹配）
             matched_metrics = await NL2MetricsEngine.match_metrics(db, question)
             if not matched_metrics:
                 logger.info("NL2Metrics查询失败: 未匹配到指标")
+                match_breaker.record_miss()
                 return None, None, None
 
+            match_breaker.record_hit()
             metric, score = matched_metrics[0]
             logger.debug(f"匹配到指标: {metric.name}, 分数={score}")
 

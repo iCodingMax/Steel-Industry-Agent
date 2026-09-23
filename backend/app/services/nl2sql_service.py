@@ -627,6 +627,13 @@ class NL2SQLEngine:
 6. 为每个查询字段和聚合结果添加中文别名（AS子句），别名优先使用字段COMMENT中的中文名称；聚合函数使用语义化中文别名，如SUM(BLOW_COUNT) AS 总吹炼次数。如果别名以数字开头或包含特殊字符（如连字符-），必须用反引号括起来，例如：AS `40-25`、AS `16以上`、AS `10-5`
 7. ORDER BY子句中也使用中文别名排序
 8. 只返回纯SQL语句，不要包含markdown代码块标记或解释文字
+9. 窗口函数规则（非常重要，MySQL方言约束）：
+   - 窗口函数（如 AVG(...) OVER (PARTITION BY ...)、ROW_NUMBER()、RANK() 等）只能出现在 SELECT 列表或 ORDER BY 子句中
+   - 严禁在 WHERE 或 HAVING 子句中使用窗口函数（MySQL 会报错 3593）
+   - 需要"筛选窗口函数结果"时（如：找出某指标高于其分组平均值的记录），必须用派生表两层写法：
+     SELECT * FROM ( SELECT ..., AVG(指标) OVER (PARTITION BY 分组列) AS 分组平均 FROM ... ) AS t
+     WHERE t.指标 > t.分组平均
+   - 聚合函数嵌套窗口函数（如 SUM(AVG(x) OVER ...)）同样禁止
 
 请直接返回SQL语句："""
 
@@ -1532,11 +1539,23 @@ class NL2SQLEngine:
             try:
                 logger.info(f"NL2SQL第{attempt}次尝试: 问题={question[:30]}...")
 
-                # 1. 获取术语
-                term_stmt = select(Term).where(Term.status == "active")
+                # 1. 获取术语（优先当前数据源绑定的术语；仅当无任何绑定术语时回退全局共享）
+                term_stmt = select(Term).where(
+                    Term.status == "active",
+                    Term.datasource_id == datasource_id,
+                )
                 term_result = await db.execute(term_stmt)
                 terms = list(term_result.scalars().all())
-                logger.debug(f"获取到术语数量: {len(terms)}")
+                if not terms:
+                    # 当前数据源未配置专属术语，回退使用全局术语（datasource_id 为空）
+                    global_term_stmt = select(Term).where(
+                        Term.status == "active",
+                        Term.datasource_id.is_(None),
+                    )
+                    terms = list((await db.execute(global_term_stmt)).scalars().all())
+                    logger.debug(f"当前数据源无专属术语，回退全局术语数量: {len(terms)}")
+                else:
+                    logger.debug(f"获取到数据源专属术语数量: {len(terms)}")
 
                 # 2. 生成SQL（传入history用于多轮对话上下文；
                 #    V2.1 二期改动4：非首次尝试时注入上次失败原因，定向修正而非盲重跑）
@@ -1566,6 +1585,14 @@ class NL2SQLEngine:
                 if success:
                     final_sql = actual_sql_used or sql
                     logger.info(f"NL2SQL查询成功: 问题={question[:30]}..., 结果数={len(results) if results else 0}")
+                    # Few-shot 自动沉淀（旁路，失败不影响主流程）：执行成功且结果非空时
+                    # 将 question+sql 沉淀为 auto 示例，供后续同类问题召回参考
+                    if results:
+                        # 局部导入避免循环依赖（sql_example_service -> nl2sql_engine）
+                        from app.services.sql_example_service import SqlExampleService
+                        await SqlExampleService.auto_deposit(
+                            db, question, final_sql, datasource_id
+                        )
                     return final_sql, results, error if error else None, column_meta
                 else:
                     last_error = error
