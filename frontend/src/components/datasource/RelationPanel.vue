@@ -130,7 +130,7 @@
           <el-tag size="small" effect="light" :type="statusTagType(row.status)">{{ statusText(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="探测结论" width="130">
+      <el-table-column label="探测结论" width="130" align="center">
         <template #default="{ row }">
           <span v-if="probeFactor(row) !== null" :class="probeClass(probeFactor(row)!)">
             {{ probeFactor(row) }}x {{ probeFactor(row)! <= 1.05 ? '✓ 无放大' : '⚠ 数据放大' }}

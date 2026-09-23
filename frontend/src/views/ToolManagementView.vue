@@ -637,19 +637,20 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .tool-management-view {
-  padding: 20px;
+  height: 100%;
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .page-title {
   font-size: 20px;
   font-weight: 600;
-  color: #1a1a1a;
+  color: $text-primary;
+  margin: 0;
 }
 
 .tab-content {

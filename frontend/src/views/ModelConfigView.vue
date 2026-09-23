@@ -468,13 +468,14 @@ onMounted(() => {
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .page-title {
   font-size: 20px;
   font-weight: 600;
   color: $text-primary;
+  margin: 0;
 }
 
 .toolbar {

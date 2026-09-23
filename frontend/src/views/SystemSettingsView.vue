@@ -1,7 +1,7 @@
 <template>
   <div class="user-manage-view">
     <div class="page-header">
-      <h1 class="page-title">系统设置</h1>
+      <h2 class="page-title">系统设置</h2>
     </div>
 
     <el-tabs v-model="activeTab" class="settings-tabs">
@@ -634,7 +634,7 @@ onMounted(() => {
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .page-title {

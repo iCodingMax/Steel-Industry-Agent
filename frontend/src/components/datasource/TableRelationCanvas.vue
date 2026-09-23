@@ -469,13 +469,18 @@ function buildTableNode(node: any): Node.Metadata {
       cursor: "pointer",
     },
     expandIcon: {
-      refX: NODE_WIDTH - 20,
-      refY: 24,
+      // 与字段文本一致：用 x/y 绝对坐标 + 置 null refX/refY，
+      // 规避 X6 Base 类经 CSS 选择器兜底施加的默认 refX/refY:0.5（会导致 (宽/2, 高/2) 额外偏移）
+      x: NODE_WIDTH - 20,
+      y: 20,
+      refX: null,
+      refY: null,
       text: isExpanded ? "−" : "+",
       fill: "#ffffff",
       fontSize: 14,
       fontWeight: "bold",
       textAnchor: "middle",
+      textVerticalAnchor: "middle",
       event: "toggle-expand",
       cursor: "pointer",
     },

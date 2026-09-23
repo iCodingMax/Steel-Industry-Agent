@@ -1,7 +1,7 @@
 <template>
   <div class="chat-user-view">
     <div class="page-header">
-      <h1 class="page-title">对话用户</h1>
+      <h2 class="page-title">对话用户</h2>
     </div>
 
     <el-tabs v-model="activeTab" class="user-tabs">
@@ -564,18 +564,12 @@ onMounted(() => {
 <style lang="scss" scoped>
 .chat-user-view {
   .page-header {
-    margin-bottom: 20px;
+    margin-bottom: 24px;
 
     .page-title {
       font-size: 20px;
       font-weight: 600;
-      color: #1f2937;
-      margin: 0 0 8px;
-    }
-
-    .page-desc {
-      font-size: 14px;
-      color: #6b7280;
+      color: $text-primary;
       margin: 0;
     }
   }

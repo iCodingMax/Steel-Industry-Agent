@@ -5,7 +5,12 @@
     </div>
 
     <el-tabs v-model="activeTab" class="config-tabs">
-      <el-tab-pane label="数据源管理" name="datasource">
+      <el-tab-pane name="datasource">
+        <template #label>
+          <span class="tab-label">
+            <span class="tab-group-tag group-base">基础</span>数据源管理
+          </span>
+        </template>
         <div class="tab-content">
           <div class="tab-toolbar">
             <div class="toolbar-left">
@@ -80,7 +85,12 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="指标管理" name="metric">
+      <el-tab-pane name="metric">
+        <template #label>
+          <span class="tab-label">
+            <span class="tab-group-tag group-semantic">语义层</span>指标管理
+          </span>
+        </template>
         <div class="tab-content">
           <div class="tab-toolbar">
             <div class="toolbar-left">
@@ -152,7 +162,12 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="维度管理" name="dimension">
+      <el-tab-pane name="dimension">
+        <template #label>
+          <span class="tab-label">
+            <span class="tab-group-tag group-semantic">语义层</span>维度管理
+          </span>
+        </template>
         <div class="tab-content">
           <div class="tab-toolbar">
             <div class="toolbar-left">
@@ -225,7 +240,12 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="术语管理" name="term">
+      <el-tab-pane name="term">
+        <template #label>
+          <span class="tab-label">
+            <span class="tab-group-tag group-nl2sql">NL2SQL增强</span>术语管理
+          </span>
+        </template>
         <div class="tab-content">
           <div class="tab-toolbar">
             <div class="toolbar-left">
@@ -312,7 +332,12 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="示例SQL" name="sqlExample" lazy>
+      <el-tab-pane name="sqlExample" lazy>
+        <template #label>
+          <span class="tab-label">
+            <span class="tab-group-tag group-nl2sql">NL2SQL增强</span>示例SQL
+          </span>
+        </template>
         <div class="tab-content sql-example-tab">
           <SqlExamplePanel />
         </div>
@@ -1252,14 +1277,46 @@ onMounted(() => {
   gap: 0;
 }
 
+/* ===== tab 分组标识（方案9：语义层 / NL2SQL增强 两组）===== */
+.tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-group-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 500;
+}
+
+.group-base {
+  color: #909399;
+  background: #f4f4f5;
+}
+
+.group-semantic {
+  color: #409eff;
+  background: #ecf5ff;
+}
+
+.group-nl2sql {
+  color: #67c23a;
+  background: #f0f9eb;
+}
+
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .page-title {
   font-size: 20px;
   font-weight: 600;
   color: $text-primary;
+  margin: 0;
 }
 
 .config-tabs {
